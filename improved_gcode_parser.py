@@ -692,12 +692,33 @@ class ImprovedGCodeParser:
 
         # Extract drill depth early (needed for CB depth verification)
         drill_depth = None
+        in_drill_op = False
         for line in lines:
+            line_upper = line.upper()
+
+            # Track when we're in drill operation
+            if 'T101' in line_upper or 'DRILL' in line_upper:
+                in_drill_op = True
+            elif re.search(r'T[12][0-9]{2}', line_upper) and 'T101' not in line_upper:
+                # Moved to different tool
+                in_drill_op = False
+
+            # Look for drill depth in canned cycles
             if line.strip().startswith(('G81', 'G83')):
                 z_match = re.search(r'Z\s*-\s*([\d.]+)', line, re.IGNORECASE)
                 if z_match:
                     drill_depth = float(z_match.group(1))
                     break
+
+            # Also look for simple G01 Z movements in drill operation
+            if in_drill_op and line.strip().startswith('G01'):
+                z_match = re.search(r'Z\s*-\s*([\d.]+)', line, re.IGNORECASE)
+                # Make sure it's not a rapid positioning (needs Z > 0.3 for actual drill)
+                if z_match:
+                    z_val = float(z_match.group(1))
+                    if z_val > 0.3:  # Actual drill depth, not positioning
+                        drill_depth = z_val
+                        break
 
         for i, line in enumerate(lines):
             line_upper = line.upper()
@@ -800,9 +821,10 @@ class ImprovedGCodeParser:
                     if 2.2 < x_val < 4.0:
                         ob_candidates.append(x_val)
 
-        # Select CB: smallest from candidates (actual bore diameter)
+        # Select CB: largest from candidates (final bore diameter after all passes)
+        # The finishing bore pass is typically larger than roughing passes
         if cb_candidates:
-            result.cb_from_gcode = min(cb_candidates) * 25.4  # Convert to mm
+            result.cb_from_gcode = max(cb_candidates) * 25.4  # Convert to mm
 
         # Select OB: Smart detection using title OB as reference
         # Progressive facing pattern: X decreases (facing inward), then either:
