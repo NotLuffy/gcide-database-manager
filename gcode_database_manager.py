@@ -492,7 +492,7 @@ class GCodeDatabaseGUI:
         hsb = ttk.Scrollbar(tree_frame, orient="horizontal")
         
         # Treeview
-        columns = ("Program #", "Type", "OD", "Thick", "CB", "Hub H", "Hub D",
+        columns = ("Program #", "Title", "Type", "OD", "Thick", "CB", "Hub H", "Hub D",
                   "CB Bore", "Material", "Status", "File")
 
         self.tree = ttk.Treeview(tree_frame, columns=columns, show="headings",
@@ -511,6 +511,7 @@ class GCodeDatabaseGUI:
         # Configure columns
         column_widths = {
             "Program #": 100,
+            "Title": 250,
             "Type": 120,
             "OD": 80,
             "Thick": 80,
@@ -718,8 +719,8 @@ class GCodeDatabaseGUI:
                     else:
                         # Insert new
                         cursor.execute('''
-                            INSERT INTO programs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        ''', (record.program_number, record.spacer_type, record.outer_diameter,
+                            INSERT INTO programs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ''', (record.program_number, record.title, record.spacer_type, record.outer_diameter,
                              record.thickness, record.thickness_display, record.center_bore, record.hub_height,
                              record.hub_diameter, record.counter_bore_diameter,
                              record.counter_bore_depth, record.paired_program,
@@ -727,8 +728,8 @@ class GCodeDatabaseGUI:
                              record.last_modified, record.file_path, record.detection_confidence,
                              record.detection_method, record.validation_status,
                              record.validation_issues, record.validation_warnings,
-                             record.bore_warnings, record.dimensional_issues,
-                             record.cb_from_gcode, record.ob_from_gcode))
+                             record.cb_from_gcode, record.ob_from_gcode,
+                             record.bore_warnings, record.dimensional_issues))
                         added += 1
                         
                 except Exception as e:
@@ -862,37 +863,38 @@ class GCodeDatabaseGUI:
 
         for row in results:
             program_number = row[0]
-            spacer_type = row[1]
-            od = f"{row[2]:.3f}" if row[2] else "-"
+            title = row[1] if row[1] else "-"  # NEW: Title from G-code
+            spacer_type = row[2]  # Shifted from row[1]
+            od = f"{row[3]:.3f}" if row[3] else "-"  # Shifted from row[2]
 
-            # Use thickness_display (row[4]) if available, otherwise fall back to formatted thickness (row[3])
-            thick = row[4] if row[4] else (f"{row[3]:.3f}" if row[3] else "-")
+            # Use thickness_display (row[5]) if available, otherwise fall back to formatted thickness (row[4])
+            thick = row[5] if row[5] else (f"{row[4]:.3f}" if row[4] else "-")  # Shifted from row[4]/row[3]
 
-            cb = f"{row[5]:.1f}" if row[5] else "-"
+            cb = f"{row[6]:.1f}" if row[6] else "-"  # Shifted from row[5]
 
             # Hub Height - only applicable for hub_centric
             if spacer_type == 'hub_centric':
-                hub_h = f"{row[6]:.2f}" if row[6] else "-"
+                hub_h = f"{row[7]:.2f}" if row[7] else "-"  # Shifted from row[6]
             else:
                 hub_h = "N/A"
 
             # Hub Diameter (OB) - only applicable for hub_centric
             if spacer_type == 'hub_centric':
-                hub_d = f"{row[7]:.1f}" if row[7] else "-"
+                hub_d = f"{row[8]:.1f}" if row[8] else "-"  # Shifted from row[7]
             else:
                 hub_d = "N/A"
 
             # Counter Bore - only applicable for STEP parts
             if spacer_type == 'step':
-                cb_bore = f"{row[8]:.1f}" if row[8] else "-"
+                cb_bore = f"{row[9]:.1f}" if row[9] else "-"  # Shifted from row[8]
             else:
                 cb_bore = "N/A"
 
-            material = row[11] if row[11] else "-"
-            filename = os.path.basename(row[15]) if row[15] else "-"
+            material = row[12] if row[12] else "-"  # Shifted from row[11]
+            filename = os.path.basename(row[16]) if row[16] else "-"  # Shifted from row[15]
 
-            # Validation status (index 18 - validation_status)
-            validation_status = row[18] if len(row) > 18 and row[18] else "N/A"
+            # Validation status (index 19 - validation_status)
+            validation_status = row[19] if len(row) > 19 and row[19] else "N/A"  # Shifted from row[18]
 
             # Determine color tag (prioritized by severity)
             tag = ''
@@ -911,7 +913,7 @@ class GCodeDatabaseGUI:
                 tag = 'critical'
 
             self.tree.insert("", "end", values=(
-                program_number, spacer_type, od, thick, cb,
+                program_number, title, spacer_type, od, thick, cb,
                 hub_h, hub_d, cb_bore, material, validation_status, filename
             ), tags=(tag,))
         
@@ -1545,21 +1547,22 @@ class DetailsWindow:
         # Format details
         fields = [
             ("Program Number", 0),
-            ("Spacer Type", 1),
-            ("Outer Diameter", 2),
-            ("Thickness", 3),
-            ("Thickness Display", 4),
-            ("Center Bore", 5),
-            ("Hub Height", 6),
-            ("Hub Diameter", 7),
-            ("Counter Bore Diameter", 8),
-            ("Counter Bore Depth", 9),
-            ("Paired Program", 10),
-            ("Material", 11),
-            ("Notes", 12),
-            ("Date Created", 13),
-            ("Last Modified", 14),
-            ("File Path", 15),
+            ("Title", 1),
+            ("Spacer Type", 2),
+            ("Outer Diameter", 3),
+            ("Thickness", 4),
+            ("Thickness Display", 5),
+            ("Center Bore", 6),
+            ("Hub Height", 7),
+            ("Hub Diameter", 8),
+            ("Counter Bore Diameter", 9),
+            ("Counter Bore Depth", 10),
+            ("Paired Program", 11),
+            ("Material", 12),
+            ("Notes", 13),
+            ("Date Created", 14),
+            ("Last Modified", 15),
+            ("File Path", 16),
         ]
 
         text.insert(tk.END, "="*50 + "\n")
@@ -1571,31 +1574,31 @@ class DetailsWindow:
             text.insert(tk.END, f"{label}:\n  {value}\n\n")
 
         # Add validation information if available
-        if len(self.record) > 17:
+        if len(self.record) > 18:
             text.insert(tk.END, "="*50 + "\n")
             text.insert(tk.END, "  VALIDATION RESULTS\n")
             text.insert(tk.END, "="*50 + "\n\n")
 
             # Detection info
-            if self.record[15]:  # detection_confidence
-                text.insert(tk.END, f"Detection Confidence: {self.record[15]}\n")
-            if self.record[16]:  # detection_method
-                text.insert(tk.END, f"Detection Method: {self.record[16]}\n")
+            if self.record[17]:  # detection_confidence (shifted from 16)
+                text.insert(tk.END, f"Detection Confidence: {self.record[17]}\n")
+            if self.record[18]:  # detection_method (shifted from 17)
+                text.insert(tk.END, f"Detection Method: {self.record[18]}\n")
 
             # Validation status
-            status = self.record[17] if self.record[17] else "N/A"
+            status = self.record[19] if self.record[19] else "N/A"  # shifted from 18
             text.insert(tk.END, f"\nValidation Status: {status}\n\n")
 
             # G-code dimensions
-            if self.record[20]:  # cb_from_gcode
-                text.insert(tk.END, f"CB from G-code: {self.record[20]:.1f}mm\n")
-            if self.record[21]:  # ob_from_gcode
-                text.insert(tk.END, f"OB from G-code: {self.record[21]:.1f}mm\n")
+            if self.record[22]:  # cb_from_gcode (shifted from 21)
+                text.insert(tk.END, f"CB from G-code: {self.record[22]:.1f}mm\n")
+            if self.record[23]:  # ob_from_gcode (shifted from 22)
+                text.insert(tk.END, f"OB from G-code: {self.record[23]:.1f}mm\n")
 
             # Validation issues
-            if self.record[18]:  # validation_issues
+            if self.record[20]:  # validation_issues (shifted from 19)
                 try:
-                    issues = json.loads(self.record[18])
+                    issues = json.loads(self.record[20])
                     if issues:
                         text.insert(tk.END, "\n❌ ISSUES:\n")
                         for issue in issues:
@@ -1604,9 +1607,9 @@ class DetailsWindow:
                     pass
 
             # Validation warnings
-            if self.record[19]:  # validation_warnings
+            if self.record[21]:  # validation_warnings (shifted from 20)
                 try:
-                    warnings = json.loads(self.record[19])
+                    warnings = json.loads(self.record[21])
                     if warnings:
                         text.insert(tk.END, "\n⚠️  WARNINGS:\n")
                         for warning in warnings:
