@@ -683,10 +683,20 @@ class ImprovedGCodeParser:
         in_turn_op2 = False
 
         cb_candidates = []
+        cb_found = False  # Stop collecting after finding definitive CB
         ob_candidates = []
         od_candidates = []  # Track OD from turning operations
         op2_z_depths = []  # Track Z depths in OP2 for hub height extraction
         last_z_before_ob = None  # Last Z depth before reaching OB
+
+        # Extract drill depth early (needed for CB depth verification)
+        drill_depth = None
+        for line in lines:
+            if line.strip().startswith(('G81', 'G83')):
+                z_match = re.search(r'Z\s*-\s*([\d.]+)', line, re.IGNORECASE)
+                if z_match:
+                    drill_depth = float(z_match.group(1))
+                    break
 
         for i, line in enumerate(lines):
             line_upper = line.upper()
@@ -719,22 +729,41 @@ class ImprovedGCodeParser:
                     x_val = float(x_match.group(1))
                     # CB is typically 2.0-4.0 inches in diameter
                     if 1.5 < x_val < 6.0:
-                        # Check if there's a Z depth on same line or next few lines
-                        has_depth = z_match is not None
-                        if not has_depth:
-                            # Look ahead a few lines
-                            for j in range(i+1, min(i+3, len(lines))):
-                                if re.search(r'Z\s*-\s*([\d.]+)', lines[j], re.IGNORECASE):
-                                    has_depth = True
-                                    break
+                        # Check if there's a Z depth on same or next lines
+                        max_z_depth = None
+                        if z_match:
+                            max_z_depth = float(z_match.group(1))
+                        
+                        # Look ahead for Z movements (check if reaches full drill depth)
+                        for j in range(i+1, min(i+5, len(lines))):
+                            next_z = re.search(r'Z\s*-\s*([\d.]+)', lines[j], re.IGNORECASE)
+                            next_x = re.search(r'X\s*([\d.]+)', lines[j], re.IGNORECASE)
+                            
+                            if next_z:
+                                z_val = float(next_z.group(1))
+                                if max_z_depth is None or z_val > max_z_depth:
+                                    max_z_depth = z_val
+                            
+                            # Stop if we see another X value (next operation)
+                            if next_x:
+                                break
 
-                        if has_depth:
-                            # If this line has "(X IS CB)" comment, this is THE CB value
-                            # Clear any previous candidates and use only this value
-                            if has_cb_marker:
-                                cb_candidates = [x_val]  # Replace all candidates with this definitive value
-                            else:
+                        if max_z_depth and max_z_depth > 0.3:
+                            # Check if this X reaches full drill depth
+                            reaches_full_depth = False
+                            if drill_depth and max_z_depth >= drill_depth * 0.95:
+                                reaches_full_depth = True
+                            
+                            # Rule: (X IS CB) is only valid if it reaches full drill depth
+                            # If it doesn't reach full depth, it's a counter bore
+                            if has_cb_marker and reaches_full_depth:
+                                cb_candidates = [x_val]  # Definitive CB
+                                cb_found = True  # Stop collecting more candidates
+                            elif reaches_full_depth and not cb_found:
+                                # Any X that reaches full depth is a CB candidate
+                                # But stop collecting after definitive CB is found
                                 cb_candidates.append(x_val)
+                            # If doesn't reach full depth, skip (it's counter bore)
 
             # Extract OD from any X value in turning operations
             # Lathe is in diameter mode, so X value IS the diameter (no multiplication needed)
