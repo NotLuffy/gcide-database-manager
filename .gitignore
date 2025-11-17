@@ -1,0 +1,39 @@
+# Database files (don't commit the actual database, only the schema)
+*.db
+gcode_database_backup_*.db
+
+# Config files (user-specific settings)
+gcode_manager_config.json
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+
+# Test files (if you create any)
+test_*.py
+*_test.py
