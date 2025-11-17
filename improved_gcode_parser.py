@@ -804,18 +804,47 @@ class ImprovedGCodeParser:
         if cb_candidates:
             result.cb_from_gcode = min(cb_candidates) * 25.4  # Convert to mm
 
-        # Select OB: largest from OP2 candidates (hub diameter is the target of progressive facing)
-        # Progressive facing cuts DOWN from large diameter TO the hub diameter (OB)
-        # Then chamfers further down toward CB
-        if ob_candidates and cb_candidates:
-            cb_inches = min(cb_candidates)
-            # Filter OB candidates to only those significantly larger than CB (> 0.15" margin)
-            valid_ob = [x for x in ob_candidates if x > cb_inches + 0.15]
-            if valid_ob:
-                # Use MAXIMUM X value - progressive facing cuts down TO this diameter (hub OD)
-                result.ob_from_gcode = max(valid_ob) * 25.4  # Convert to mm
-        elif ob_candidates:
-            result.ob_from_gcode = min(ob_candidates) * 25.4  # Convert to mm
+        # Select OB: Smart detection using title OB as reference
+        # Progressive facing pattern: X decreases (facing inward), then either:
+        #   - Retracts to OD (X increases significantly) = roughing pass
+        #   - Continues with similar/smaller X = finishing pass
+        # Strategy: Find X value closest to title OB spec (if available)
+        if ob_candidates:
+            if result.hub_diameter:  # Have title OB spec to use as reference
+                title_ob_inches = result.hub_diameter / 25.4  # Convert title spec to inches
+                
+                # Find finishing passes (no big retract after them)
+                finishing_passes = []
+                ob_candidates_sorted = sorted(set(ob_candidates))  # Remove duplicates and sort
+                
+                for j, x_val in enumerate(ob_candidates_sorted):
+                    # Check if next X value is a retract (significantly larger)
+                    if j + 1 < len(ob_candidates_sorted):
+                        next_x = ob_candidates_sorted[j + 1]
+                        if next_x > x_val + 1.0:  # Big increase = retract = roughing pass
+                            continue  # Skip roughing passes
+                    
+                    # This is a finishing pass candidate
+                    finishing_passes.append(x_val)
+                
+                # Find the X value closest to title OB spec
+                if finishing_passes:
+                    closest_x = min(finishing_passes, key=lambda x: abs(x - title_ob_inches))
+                    result.ob_from_gcode = closest_x * 25.4  # Convert to mm
+                else:
+                    # Fallback: use minimum of all candidates
+                    result.ob_from_gcode = min(ob_candidates) * 25.4
+            else:
+                # No title OB available, use maximum (original logic)
+                if cb_candidates:
+                    cb_inches = min(cb_candidates)
+                    valid_ob = [x for x in ob_candidates if x > cb_inches + 0.15]
+                    if valid_ob:
+                        result.ob_from_gcode = max(valid_ob) * 25.4
+                    else:
+                        result.ob_from_gcode = min(ob_candidates) * 25.4
+                else:
+                    result.ob_from_gcode = min(ob_candidates) * 25.4
 
         # Select OD: maximum from turning operations (already in diameter mode)
         if od_candidates:
