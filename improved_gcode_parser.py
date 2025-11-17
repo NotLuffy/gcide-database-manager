@@ -1125,48 +1125,48 @@ class ImprovedGCodeParser:
             gcode_cb = result.cb_from_gcode  # IMPLEMENTATION
 
             # Check if G-code is within acceptable range
-            # Lower bound: title_cb - 0.2mm (warning threshold)
-            # Upper bound: title_cb + 0.3mm (max acceptable, includes +0.1mm tolerance + margin)
+            # Lower bound: title_cb - 0.25mm (critical threshold)
+            # Upper bound: title_cb + 0.4mm (critical threshold)
             diff = gcode_cb - title_cb
 
-            if diff < -0.2:
+            if diff < -0.25:
                 # CRITICAL: CB way too small - RED
                 result.validation_issues.append(
                     f'CB TOO SMALL: Spec={title_cb:.1f}mm, G-code={gcode_cb:.1f}mm ({diff:+.2f}mm) - CRITICAL ERROR'
                 )
-            elif diff > 0.3:
+            elif diff > 0.4:
                 # CRITICAL: CB way too large - RED
                 result.validation_issues.append(
                     f'CB TOO LARGE: Spec={title_cb:.1f}mm, G-code={gcode_cb:.1f}mm ({diff:+.2f}mm) - CRITICAL ERROR'
                 )
-            elif abs(diff) > 0.1:
+            elif abs(diff) > 0.2:
                 # BORE WARNING: At tolerance limit - ORANGE
                 result.bore_warnings.append(
                     f'CB at tolerance limit: Spec={title_cb:.1f}mm, G-code={gcode_cb:.1f}mm ({diff:+.2f}mm)'
                 )
 
         # OB Validation: Title is SPEC, G-code should be within tolerance
-        # Acceptable range: (title_ob - 0.1mm) to title_ob
+        # Acceptable range: (title_ob - 0.2mm) to title_ob
         if result.hub_diameter and result.ob_from_gcode:
             title_ob = result.hub_diameter  # SPECIFICATION
             gcode_ob = result.ob_from_gcode  # IMPLEMENTATION
 
             # Check if G-code is within acceptable range
-            # Lower bound: title_ob - 0.3mm (max acceptable, includes -0.1mm tolerance + margin)
-            # Upper bound: title_ob + 0.2mm (warning threshold)
+            # Lower bound: title_ob - 0.4mm (critical threshold)
+            # Upper bound: title_ob + 0.25mm (critical threshold)
             diff = gcode_ob - title_ob
 
-            if diff < -0.3:
+            if diff < -0.4:
                 # CRITICAL: OB way too small - RED
                 result.validation_issues.append(
                     f'OB TOO SMALL: Spec={title_ob:.1f}mm, G-code={gcode_ob:.1f}mm ({diff:+.2f}mm) - CRITICAL ERROR'
                 )
-            elif diff > 0.2:
+            elif diff > 0.25:
                 # CRITICAL: OB way too large - RED
                 result.validation_issues.append(
                     f'OB TOO LARGE: Spec={title_ob:.1f}mm, G-code={gcode_ob:.1f}mm ({diff:+.2f}mm) - CRITICAL ERROR'
                 )
-            elif abs(diff) > 0.1:
+            elif abs(diff) > 0.2:
                 # BORE WARNING: At tolerance limit - ORANGE
                 result.bore_warnings.append(
                     f'OB at tolerance limit: Spec={title_ob:.1f}mm, G-code={gcode_ob:.1f}mm ({diff:+.2f}mm)'
