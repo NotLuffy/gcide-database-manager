@@ -699,7 +699,7 @@ class GCodeDatabaseGUI:
                         # Update existing
                         cursor.execute('''
                             UPDATE programs SET
-                                spacer_type = ?, outer_diameter = ?, thickness = ?, thickness_display = ?,
+                                title = ?, spacer_type = ?, outer_diameter = ?, thickness = ?, thickness_display = ?,
                                 center_bore = ?, hub_height = ?, hub_diameter = ?,
                                 counter_bore_diameter = ?, counter_bore_depth = ?,
                                 material = ?, last_modified = ?, file_path = ?,
@@ -708,7 +708,7 @@ class GCodeDatabaseGUI:
                                 validation_warnings = ?, bore_warnings = ?, dimensional_issues = ?,
                                 cb_from_gcode = ?, ob_from_gcode = ?
                             WHERE program_number = ?
-                        ''', (record.spacer_type, record.outer_diameter, record.thickness, record.thickness_display,
+                        ''', (record.title, record.spacer_type, record.outer_diameter, record.thickness, record.thickness_display,
                              record.center_bore, record.hub_height, record.hub_diameter,
                              record.counter_bore_diameter, record.counter_bore_depth,
                              record.material, record.last_modified, record.file_path,
