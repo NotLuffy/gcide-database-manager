@@ -1592,30 +1592,52 @@ class DetailsWindow:
             text.insert(tk.END, f"\nValidation Status: {status}\n\n")
 
             # G-code dimensions
-            if self.record[22]:  # cb_from_gcode (shifted from 21)
-                text.insert(tk.END, f"CB from G-code: {self.record[22]:.1f}mm\n")
-            if self.record[23]:  # ob_from_gcode (shifted from 22)
-                text.insert(tk.END, f"OB from G-code: {self.record[23]:.1f}mm\n")
+            if len(self.record) > 24 and self.record[24]:  # cb_from_gcode
+                text.insert(tk.END, f"CB from G-code: {self.record[24]:.1f}mm\n")
+            if len(self.record) > 25 and self.record[25]:  # ob_from_gcode
+                text.insert(tk.END, f"OB from G-code: {self.record[25]:.1f}mm\n")
 
-            # Validation issues
-            if self.record[20]:  # validation_issues (shifted from 19)
+            # Validation issues (CRITICAL - RED)
+            if self.record[20]:  # validation_issues
                 try:
                     issues = json.loads(self.record[20])
                     if issues:
-                        text.insert(tk.END, "\n❌ ISSUES:\n")
+                        text.insert(tk.END, "\nCRITICAL ISSUES:\n")
                         for issue in issues:
-                            text.insert(tk.END, f"  • {issue}\n")
+                            text.insert(tk.END, f"  - {issue}\n")
                 except:
                     pass
 
-            # Validation warnings
-            if self.record[21]:  # validation_warnings (shifted from 20)
+            # Bore warnings (ORANGE)
+            if len(self.record) > 22 and self.record[22]:  # bore_warnings
+                try:
+                    bore_warns = json.loads(self.record[22])
+                    if bore_warns:
+                        text.insert(tk.END, "\nBORE WARNINGS:\n")
+                        for warning in bore_warns:
+                            text.insert(tk.END, f"  - {warning}\n")
+                except:
+                    pass
+
+            # Dimensional issues (PURPLE)
+            if len(self.record) > 23 and self.record[23]:  # dimensional_issues
+                try:
+                    dim_issues = json.loads(self.record[23])
+                    if dim_issues:
+                        text.insert(tk.END, "\nDIMENSIONAL ISSUES:\n")
+                        for issue in dim_issues:
+                            text.insert(tk.END, f"  - {issue}\n")
+                except:
+                    pass
+
+            # Validation warnings (YELLOW)
+            if self.record[21]:  # validation_warnings
                 try:
                     warnings = json.loads(self.record[21])
                     if warnings:
-                        text.insert(tk.END, "\n⚠️  WARNINGS:\n")
+                        text.insert(tk.END, "\nWARNINGS:\n")
                         for warning in warnings:
-                            text.insert(tk.END, f"  • {warning}\n")
+                            text.insert(tk.END, f"  - {warning}\n")
                 except:
                     pass
 
