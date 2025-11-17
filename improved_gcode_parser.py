@@ -815,58 +815,100 @@ class ImprovedGCodeParser:
 
                 if x_match and result.spacer_type == 'hub_centric':
                     x_val = float(x_match.group(1))
+                    z_val = float(z_match.group(1)) if z_match else None
+
                     # OB (Hub D) is typically 2.2-4.0 inches (filter out OD facing operations > 4.0)
                     # Progressive facing cuts down to the OB, then retracts to smaller X (CB)
                     # Exclude values too large (OD facing) and too small (CB)
                     if 2.2 < x_val < 4.0:
-                        ob_candidates.append(x_val)
+                        # Store X with its Z depth and line index for chamfer pattern detection
+                        ob_candidates.append((x_val, z_val, i))
+
+                    # Also collect CB candidates from OP2 chamfer area (for hub-centric parts)
+                    # CB chamfer is at shallow Z (< 0.15) and smaller than OB
+                    # Use title spec to filter: CB should be close to title CB, not title OB
+                    if z_val and z_val < 0.15:  # Shallow Z = chamfer area
+                        if 2.0 < x_val < 3.2:  # CB range
+                            # Only add if close to title CB spec (not OB spec)
+                            if result.center_bore:  # Have title CB to compare
+                                title_cb_inches = result.center_bore / 25.4
+                                title_ob_inches = result.hub_diameter / 25.4 if result.hub_diameter else 999
+                                # Distance from title CB vs distance from title OB
+                                dist_to_cb = abs(x_val - title_cb_inches)
+                                dist_to_ob = abs(x_val - title_ob_inches)
+                                # Only add if closer to CB spec than OB spec
+                                if dist_to_cb < dist_to_ob:
+                                    cb_candidates.append(x_val)
+                            else:
+                                cb_candidates.append(x_val)  # No title spec, add anyway
 
         # Select CB: largest from candidates (final bore diameter after all passes)
         # The finishing bore pass is typically larger than roughing passes
         if cb_candidates:
             result.cb_from_gcode = max(cb_candidates) * 25.4  # Convert to mm
 
-        # Select OB: Smart detection using title OB as reference
-        # Progressive facing pattern: X decreases (facing inward), then either:
-        #   - Retracts to OD (X increases significantly) = roughing pass
-        #   - Continues with similar/smaller X = finishing pass
-        # Strategy: Find X value closest to title OB spec (if available)
+        # Select OB: Look for chamfer pattern - OB is between two chamfers
+        # Pattern: X3.078 (chamfer) -> X2.874 (OB) -> Z up -> X2.774 (CB chamfer)
+        # The OB is the X value that:
+        #   1. Has a chamfer before it (larger X with Z movement)
+        #   2. Is at a deeper Z than the following lines (Z goes up after OB)
+        #   3. Is followed by movements toward CB (smaller X values)
         if ob_candidates:
             if result.hub_diameter:  # Have title OB spec to use as reference
                 title_ob_inches = result.hub_diameter / 25.4  # Convert title spec to inches
-                
-                # Find finishing passes (no big retract after them)
-                finishing_passes = []
-                ob_candidates_sorted = sorted(set(ob_candidates))  # Remove duplicates and sort
-                
-                for j, x_val in enumerate(ob_candidates_sorted):
-                    # Check if next X value is a retract (significantly larger)
-                    if j + 1 < len(ob_candidates_sorted):
-                        next_x = ob_candidates_sorted[j + 1]
-                        if next_x > x_val + 1.0:  # Big increase = retract = roughing pass
-                            continue  # Skip roughing passes
-                    
-                    # This is a finishing pass candidate
-                    finishing_passes.append(x_val)
-                
-                # Find the X value closest to title OB spec
-                if finishing_passes:
-                    closest_x = min(finishing_passes, key=lambda x: abs(x - title_ob_inches))
+
+                # Look for chamfer pattern: X value between two Z direction changes
+                ob_with_chamfer_pattern = []
+
+                for j, (x_val, z_val, line_idx) in enumerate(ob_candidates):
+                    if z_val is None:
+                        continue
+
+                    # Look at previous and next movements to detect chamfer pattern
+                    has_chamfer_before = False
+                    has_chamfer_after = False
+
+                    # Check previous lines for chamfer (larger X, Z movement)
+                    if j > 0:
+                        prev_x, prev_z, _ = ob_candidates[j-1]
+                        if prev_x and prev_x > x_val + 0.1:  # X decreased (faced inward)
+                            has_chamfer_before = True
+
+                    # Check next lines for Z going up (shallower) = chamfer to CB
+                    if j < len(ob_candidates) - 1:
+                        next_x, next_z, _ = ob_candidates[j+1]
+                        if next_z and next_z < z_val:  # Z went up (shallower depth)
+                            has_chamfer_after = True
+
+                    # If between chamfers, this is likely the OB
+                    if has_chamfer_before and has_chamfer_after:
+                        ob_with_chamfer_pattern.append(x_val)
+
+                    # Also check if this X is very close to title spec (within 0.05")
+                    if abs(x_val - title_ob_inches) < 0.05:
+                        ob_with_chamfer_pattern.append(x_val)
+
+                # Select OB from chamfer pattern candidates, or use closest to title
+                if ob_with_chamfer_pattern:
+                    closest_x = min(ob_with_chamfer_pattern, key=lambda x: abs(x - title_ob_inches))
                     result.ob_from_gcode = closest_x * 25.4  # Convert to mm
                 else:
-                    # Fallback: use minimum of all candidates
-                    result.ob_from_gcode = min(ob_candidates) * 25.4
+                    # Fallback: find X closest to title spec from all candidates
+                    all_x_values = [x for x, z, idx in ob_candidates]
+                    closest_x = min(all_x_values, key=lambda x: abs(x - title_ob_inches))
+                    result.ob_from_gcode = closest_x * 25.4
             else:
-                # No title OB available, use maximum (original logic)
+                # No title OB available, use largest value > CB
+                all_x_values = [x for x, z, idx in ob_candidates]
                 if cb_candidates:
-                    cb_inches = min(cb_candidates)
-                    valid_ob = [x for x in ob_candidates if x > cb_inches + 0.15]
+                    cb_inches = max(cb_candidates)
+                    valid_ob = [x for x in all_x_values if x > cb_inches + 0.15]
                     if valid_ob:
                         result.ob_from_gcode = max(valid_ob) * 25.4
                     else:
-                        result.ob_from_gcode = min(ob_candidates) * 25.4
+                        result.ob_from_gcode = max(all_x_values) * 25.4
                 else:
-                    result.ob_from_gcode = min(ob_candidates) * 25.4
+                    result.ob_from_gcode = max(all_x_values) * 25.4
 
         # Select OD: maximum from turning operations (already in diameter mode)
         if od_candidates:
