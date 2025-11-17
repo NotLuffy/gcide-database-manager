@@ -1592,10 +1592,10 @@ class DetailsWindow:
             text.insert(tk.END, f"\nValidation Status: {status}\n\n")
 
             # G-code dimensions
-            if len(self.record) > 24 and self.record[24]:  # cb_from_gcode
-                text.insert(tk.END, f"CB from G-code: {self.record[24]:.1f}mm\n")
-            if len(self.record) > 25 and self.record[25]:  # ob_from_gcode
-                text.insert(tk.END, f"OB from G-code: {self.record[25]:.1f}mm\n")
+            if len(self.record) > 22 and self.record[22]:  # cb_from_gcode (index 22)
+                text.insert(tk.END, f"CB from G-code: {self.record[22]:.1f}mm\n")
+            if len(self.record) > 23 and self.record[23]:  # ob_from_gcode (index 23)
+                text.insert(tk.END, f"OB from G-code: {self.record[23]:.1f}mm\n")
 
             # Validation issues (CRITICAL - RED)
             if self.record[20]:  # validation_issues
@@ -1609,9 +1609,9 @@ class DetailsWindow:
                     pass
 
             # Bore warnings (ORANGE)
-            if len(self.record) > 22 and self.record[22]:  # bore_warnings
+            if len(self.record) > 24 and self.record[24]:  # bore_warnings (index 24)
                 try:
-                    bore_warns = json.loads(self.record[22])
+                    bore_warns = json.loads(self.record[24])
                     if bore_warns:
                         text.insert(tk.END, "\nBORE WARNINGS:\n")
                         for warning in bore_warns:
@@ -1620,9 +1620,9 @@ class DetailsWindow:
                     pass
 
             # Dimensional issues (PURPLE)
-            if len(self.record) > 23 and self.record[23]:  # dimensional_issues
+            if len(self.record) > 25 and self.record[25]:  # dimensional_issues (index 25)
                 try:
-                    dim_issues = json.loads(self.record[23])
+                    dim_issues = json.loads(self.record[25])
                     if dim_issues:
                         text.insert(tk.END, "\nDIMENSIONAL ISSUES:\n")
                         for issue in dim_issues:
