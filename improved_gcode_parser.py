@@ -1276,8 +1276,22 @@ class ImprovedGCodeParser:
                         actual_pcodes = [p for p in result.pcodes_found if p in pcode_map or p+1 in pcode_map]
                         if actual_pcodes:
                             # DIMENSIONAL: P-code doesn't match thickness - PURPLE
+                            # Build descriptive message showing what each P-code means
+                            actual_thickness_strs = []
+                            for p in actual_pcodes:
+                                if p in pcode_map:
+                                    actual_thick = pcode_map[p]
+                                    # Format thickness nicely
+                                    if actual_thick < 0.5:
+                                        # Show in MM
+                                        actual_thickness_strs.append(f'P{p}={actual_thick*25.4:.0f}MM')
+                                    else:
+                                        # Show in inches
+                                        actual_thickness_strs.append(f'P{p}={actual_thick:.2f}"')
+
+                            actual_desc = ', '.join(actual_thickness_strs) if actual_thickness_strs else str(actual_pcodes)
                             result.dimensional_issues.append(
-                                f'P-CODE MISMATCH: Thickness {result.thickness}\" expects P{expected_pcode}/P{expected_pcode+1}, but found {actual_pcodes}'
+                                f'P-CODE MISMATCH: Title thickness {result.thickness}" requires P{expected_pcode}/P{expected_pcode+1}, but G-code uses {actual_desc}'
                             )
 
 
