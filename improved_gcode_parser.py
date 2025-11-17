@@ -712,6 +712,9 @@ class ImprovedGCodeParser:
                 x_match = re.search(r'X\s*([\d.]+)', line, re.IGNORECASE)
                 z_match = re.search(r'Z\s*-\s*([\d.]+)', line, re.IGNORECASE)
 
+                # Check for explicit CB marker comment
+                has_cb_marker = '(X IS CB)' in line_upper or 'X IS CB' in line
+
                 if x_match:
                     x_val = float(x_match.group(1))
                     # CB is typically 2.0-4.0 inches in diameter
@@ -726,7 +729,12 @@ class ImprovedGCodeParser:
                                     break
 
                         if has_depth:
-                            cb_candidates.append(x_val)
+                            # If this line has "(X IS CB)" comment, this is THE CB value
+                            # Clear any previous candidates and use only this value
+                            if has_cb_marker:
+                                cb_candidates = [x_val]  # Replace all candidates with this definitive value
+                            else:
+                                cb_candidates.append(x_val)
 
             # Extract OD from any X value in turning operations
             # Lathe is in diameter mode, so X value IS the diameter (no multiplication needed)
@@ -756,23 +764,26 @@ class ImprovedGCodeParser:
 
                 if x_match and result.spacer_type == 'hub_centric':
                     x_val = float(x_match.group(1))
-                    # OB is typically 2.2-4.0 inches (filter out retract moves < 2.2)
+                    # OB (Hub D) is typically 2.2-4.0 inches (filter out OD facing operations > 4.0)
                     # Progressive facing cuts down to the OB, then retracts to smaller X (CB)
-                    if 2.2 < x_val < 6.0:
+                    # Exclude values too large (OD facing) and too small (CB)
+                    if 2.2 < x_val < 4.0:
                         ob_candidates.append(x_val)
 
         # Select CB: smallest from candidates (actual bore diameter)
         if cb_candidates:
             result.cb_from_gcode = min(cb_candidates) * 25.4  # Convert to mm
 
-        # Select OB: smallest from OP2 candidates, but must be larger than CB
-        # Progressive facing cuts down to OB, which is larger than CB
+        # Select OB: largest from OP2 candidates (hub diameter is the target of progressive facing)
+        # Progressive facing cuts DOWN from large diameter TO the hub diameter (OB)
+        # Then chamfers further down toward CB
         if ob_candidates and cb_candidates:
             cb_inches = min(cb_candidates)
             # Filter OB candidates to only those significantly larger than CB (> 0.15" margin)
             valid_ob = [x for x in ob_candidates if x > cb_inches + 0.15]
             if valid_ob:
-                result.ob_from_gcode = min(valid_ob) * 25.4  # Convert to mm
+                # Use MAXIMUM X value - progressive facing cuts down TO this diameter (hub OD)
+                result.ob_from_gcode = max(valid_ob) * 25.4  # Convert to mm
         elif ob_candidates:
             result.ob_from_gcode = min(ob_candidates) * 25.4  # Convert to mm
 
