@@ -155,6 +155,7 @@ class MultiSelectCombobox(ttk.Frame):
 class ProgramRecord:
     """Represents a gcode program record"""
     program_number: str
+    title: Optional[str]  # Raw title from G-code (content in parentheses)
     spacer_type: str
     outer_diameter: Optional[float]
     thickness: Optional[float]
@@ -586,6 +587,7 @@ class GCodeDatabaseGUI:
             # Convert to ProgramRecord
             return ProgramRecord(
                 program_number=result.program_number,
+                title=result.title,
                 spacer_type=result.spacer_type,
                 outer_diameter=result.outer_diameter,
                 thickness=result.thickness,

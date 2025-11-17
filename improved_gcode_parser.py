@@ -23,6 +23,7 @@ class GCodeParseResult:
     """Complete parsing result for a G-code file"""
     # Identifiers
     program_number: str
+    title: Optional[str]  # Raw title from G-code (content in parentheses)
     filename: str
     file_path: str
 
