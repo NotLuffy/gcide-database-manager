@@ -539,6 +539,27 @@ class ImprovedGCodeParser:
         # Thickness extraction - capture both value and original format
         # Patterns ordered by priority (most specific first)
         # Note: "15HC" means 15MM thickness + has hub (hub height = 0.50" by default)
+
+        # Check for fractional inch values first (before decimal patterns)
+        # Special case: 3/8" → display as "10MM" (3/8" = 0.375" ≈ 9.525mm ≈ 10mm)
+        # Other fractions like 7/8" → keep as fraction display
+        fraction_match = re.search(r'(\d+)/(\d+)(?:\s*"|\s+|$)', title)
+        if fraction_match:
+            numerator = int(fraction_match.group(1))
+            denominator = int(fraction_match.group(2))
+            thickness_inches = numerator / denominator
+
+            # Validate reasonable thickness range
+            if 0.25 <= thickness_inches <= 4.0:
+                result.thickness = thickness_inches
+
+                # Special case: 3/8" displays as "10MM"
+                if numerator == 3 and denominator == 8:
+                    result.thickness_display = "10MM"
+                else:
+                    # Keep other fractions as fractional display (e.g., "7/8")
+                    result.thickness_display = f"{numerator}/{denominator}"
+
         thick_patterns = [
             (r'\s+(\d+)\s*HC(?:\s|$)', 'MM', True),      # "15HC" or " 15 HC" - MM thickness with hub (no "MM" in text)
             (r'(\d+\.?\d*)\s*MM\s+HC', 'MM', True),      # "15MM HC" - MM thickness with hub (explicit MM)
