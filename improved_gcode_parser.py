@@ -776,16 +776,31 @@ class ImprovedGCodeParser:
                             if drill_depth and max_z_depth >= drill_depth * 0.95:
                                 reaches_full_depth = True
                             
-                            # Rule: (X IS CB) is only valid if it reaches full drill depth
-                            # If it doesn't reach full depth, it's a counter bore
-                            if has_cb_marker and reaches_full_depth:
-                                cb_candidates = [x_val]  # Definitive CB
-                                cb_found = True  # Stop collecting more candidates
+                            # THIN HUB or CB=COUNTERBORE: Special handling for shelf patterns
+                            # 1. Thin hub (CB and OB within 5mm): Shelf in OP1 to preserve hub material
+                            # 2. CB=Counterbore in title: (X IS CB) marker refers to CB, not counterbore
+                            is_special_case = False
+                            if result.center_bore and result.hub_diameter:
+                                cb_ob_diff = abs(result.hub_diameter - result.center_bore)
+                                if cb_ob_diff <= 5.0:  # Thin hub
+                                    is_special_case = True
+                            elif result.center_bore and result.counter_bore_diameter:
+                                if abs(result.counter_bore_diameter - result.center_bore) < 1.0:  # CB = Counterbore
+                                    is_special_case = True
+
+                            # Rule for CB detection:
+                            # 1. SPECIAL CASE + (X IS CB): Trust marker even at partial depth
+                            # 2. NORMAL + (X IS CB): Only valid if reaches full drill depth
+                            # 3. NO MARKER: X must reach full drill depth to be CB candidate
+
+                            if has_cb_marker:
+                                if is_special_case or reaches_full_depth:
+                                    cb_candidates = [x_val]  # Definitive CB
+                                    cb_found = True  # Stop collecting more candidates
+                                # Else: marker at partial depth on normal part = counterbore, skip
                             elif reaches_full_depth and not cb_found:
-                                # Any X that reaches full depth is a CB candidate
-                                # But stop collecting after definitive CB is found
                                 cb_candidates.append(x_val)
-                            # If doesn't reach full depth, skip (it's counter bore)
+                            # If doesn't reach full depth and no marker, skip
 
             # Extract OD from any X value in turning operations
             # Lathe is in diameter mode, so X value IS the diameter (no multiplication needed)
