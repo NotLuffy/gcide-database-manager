@@ -28,7 +28,7 @@ class GCodeParseResult:
     file_path: str
 
     # Part Type
-    spacer_type: str  # 'standard', 'hub_centric', 'step', '2PC LUG', '2PC STUD', '2PC UNSURE', 'metric_spacer'
+    spacer_type: str  # 'standard', 'hub_centric', 'step', 'steel_ring', '2PC LUG', '2PC STUD', '2PC UNSURE', 'metric_spacer'
     detection_method: str  # 'BOTH', 'KEYWORD', 'PATTERN', 'NONE'
     detection_confidence: str  # 'HIGH', 'MEDIUM', 'LOW', 'CONFLICT', 'NONE'
 
@@ -123,8 +123,33 @@ class ImprovedGCodeParser:
         _thickness += 0.25
         _pcode += 2
 
+    # Standard OD sizes (inches) - actual machined sizes are slightly under
+    STANDARD_OD_SIZES = [5.75, 6.00, 6.25, 6.50, 7.00, 7.50, 8.00, 8.50, 9.50, 10.25, 10.50, 13.00]
+
     def __init__(self):
         self.debug = False
+
+    @staticmethod
+    def _round_to_standard_od(od_value: float) -> float:
+        """
+        Round OD value to nearest standard size.
+        Machined parts are typically 0.02-0.04" under nominal size.
+        """
+        if od_value is None:
+            return None
+
+        # Find the nearest standard OD size
+        closest = None
+        min_diff = float('inf')
+
+        for std_od in ImprovedGCodeParser.STANDARD_OD_SIZES:
+            diff = abs(od_value - std_od)
+            # Allow up to 0.1" tolerance for rounding to standard
+            if diff < min_diff and diff <= 0.1:
+                min_diff = diff
+                closest = std_od
+
+        return closest if closest else od_value
 
     def parse_file(self, file_path: str) -> Optional[GCodeParseResult]:
         """
@@ -224,14 +249,14 @@ class ImprovedGCodeParser:
         """
         Extract program number from filename and validate against file content
         """
-        # From filename
-        match = re.search(r'[oO](\d{4,6})', filename)
+        # From filename (4+ digits)
+        match = re.search(r'[oO](\d{4,})', filename)
         file_prog_num = match.group(1) if match else None
 
         # From file content (first 30 lines)
         internal_prog_num = None
         for line in lines[:30]:
-            match = re.search(r'^[oO](\d{4,6})', line.strip())
+            match = re.search(r'^[oO](\d{4,})', line.strip())
             if match:
                 internal_prog_num = match.group(1)
                 break
@@ -388,6 +413,11 @@ class ImprovedGCodeParser:
         # STEP indicators (highest priority)
         if any(word in title_upper for word in ['STEP', 'DEEP', 'B/C']):
             return 'step', 'HIGH'
+
+        # Steel Ring indicators
+        # Patterns: "STEEL S-1", "HCS-1", "STEEL HCS-2", "STEEL HCS-1"
+        if re.search(r'STEEL\s+S-\d|HCS-\d|STEEL\s+HCS-\d', title_upper):
+            return 'steel_ring', 'HIGH'
 
         # HC keyword
         if 'HC' in title_upper:
@@ -602,19 +632,19 @@ class ImprovedGCodeParser:
 
         # Outer Diameter (inches)
         od_patterns = [
-            r'(\d+\.?\d*)\s*IN\$?\s+DIA',       # Match "5.75IN$ DIA" or "5.75IN DIA"
+            r'(\d+\.?\d*)\s*IN[\$]?\s+DIA',     # Match "5.75IN$ DIA" or "5.75IN DIA"
             r'(\d+\.?\d*)\s*IN\s+(?!DIA)\d',    # Match "5.75 IN 60MM" (IN followed by number, not DIA)
             r'(\d+\.?\d*)\s*IN\s+ROUND',
             r'(\d+\.?\d*)\s*"\s*(?:DIA|ROUND)',
-            r'^(\d+\.?\d*)\s+\d+\.?\d*MM',      # OD at start before MM pattern (e.g., "5.75 70.3MM")
+            r'^(\d+\.?\d*)\s+\d+\.?\d*[/\d\.]*(?:IN|MM)',  # OD at start before IN or MM pattern (e.g., "13.0 170.1/220MM")
         ]
         for pattern in od_patterns:
             match = re.search(pattern, title, re.IGNORECASE)
             if match:
                 try:
                     od_value = float(match.group(1))
-                    # Validate OD is in reasonable range (3-12 inches)
-                    if 3.0 <= od_value <= 12.0:
+                    # Validate OD is in reasonable range (3-14 inches to include 13" rounds)
+                    if 3.0 <= od_value <= 14.0:
                         result.outer_diameter = od_value
                         break
                 except:
@@ -650,7 +680,9 @@ class ImprovedGCodeParser:
             (r'(\d+\.?\d*)\s*MM\s+THK', 'MM', False),    # "10MM THK" - MM thickness standard
             (r'\s+(\d+\.?\d*)\s*MM\s*$', 'MM', False),   # "10MM" at end
             (r'ID\s+(\d+\.?\d*)\s*MM\s+', 'MM', False),  # "ID 10MM SPACER"
+            (r'ID\s+(\d*\.?\d+)\s+2PC', 'IN', False),    # "ID 1.25 2PC" - thickness before 2PC
             (r'ID\s+(\d*\.?\d+)(?:\s+|$)', 'IN', False), # "ID 1.5" - inches
+            (r'(\d*\.?\d+)\s+2PC', 'IN', False),         # "1.75 2PC" - thickness before 2PC
             (r'(\d*\.?\d+)\s+THK', 'IN', False),         # "0.75 THK" - inches
             (r'B/C\s+(\d*\.?\d+)', 'IN', False),         # "B/C 1.50"
             (r'MM\s+(\d*\.?\d+)\s+(?:THK|HC)', 'IN', False),  # "MM 1.50 THK"
@@ -830,6 +862,7 @@ class ImprovedGCodeParser:
 
         # Track Z depth after CB chamfer for step depth extraction
         step_depth_candidate = None
+        last_bore_x = None  # Track previous X for chamfer detection
 
         for i, line in enumerate(lines):
             line_upper = line.upper()
@@ -857,18 +890,27 @@ class ImprovedGCodeParser:
 
                 # Track step depth: Z depth after chamfer creates CB
                 # Pattern: X with Z (chamfer move) -> Z-only (step depth)
-                # Detect chamfer by: explicit comment OR X and Z on same line with small Z
+                # Detect chamfer by: explicit comment OR 45-degree diagonal move (Z = X_change / 2)
                 is_chamfer_line = False
                 if 'CHAMFER' in line_upper or '(X IS CB)' in line_upper:
                     is_chamfer_line = True
-                elif x_match and z_match:
-                    # X and Z on same line with small initial Z = likely chamfer
+                elif x_match and z_match and last_bore_x:
+                    # Check for 45-degree chamfer: Z depth should be ~half of X change
+                    x_val = float(x_match.group(1))
                     z_val = float(z_match.group(1))
-                    if z_val <= 0.15:  # Small Z depth indicates chamfer start
+                    x_change = abs(last_bore_x - x_val)
+                    # 45-degree chamfer: Z should be approximately half of X change
+                    # Allow some tolerance (0.4 to 0.6 ratio)
+                    if x_change > 0.1 and 0.4 <= z_val / x_change <= 0.6:
                         is_chamfer_line = True
 
-                if is_chamfer_line:
+                # Track X positions for chamfer detection
+                if x_match:
+                    last_bore_x = float(x_match.group(1))
+
+                if is_chamfer_line and step_depth_candidate is None:
                     # Look for the next Z-only movement (step depth)
+                    # Only capture the first one found
                     for j in range(i+1, min(i+5, len(lines))):
                         next_line = lines[j]
                         next_x = re.search(r'X\s*([\d.]+)', next_line, re.IGNORECASE)
@@ -877,7 +919,7 @@ class ImprovedGCodeParser:
                         if next_z and not next_x:
                             # Z-only movement after chamfer = step depth
                             z_val = float(next_z.group(1))
-                            if 0.1 < z_val < 2.0:  # Reasonable step depth range
+                            if 0.1 < z_val < 5.0:  # Step depth range (up to 5" for thick parts)
                                 step_depth_candidate = z_val
                             break
                         elif next_x:
@@ -1156,9 +1198,13 @@ class ImprovedGCodeParser:
 
         # COMPREHENSIVE FALLBACK LOGIC - Use G-code extraction when title parsing fails
 
-        # OD fallback
+        # OD fallback - round to standard size
         if not result.outer_diameter and result.od_from_gcode:
-            result.outer_diameter = result.od_from_gcode
+            result.outer_diameter = self._round_to_standard_od(result.od_from_gcode)
+
+        # Also round title-extracted OD to standard size
+        if result.outer_diameter:
+            result.outer_diameter = self._round_to_standard_od(result.outer_diameter)
 
         # CB fallback
         if not result.center_bore and result.cb_from_gcode:
@@ -1371,7 +1417,7 @@ class ImprovedGCodeParser:
         """
         # Program number mismatch (filename vs internal)
         filename = result.filename
-        file_prog_match = re.search(r'[oO](\d{4,6})', filename)
+        file_prog_match = re.search(r'[oO](\d{4,})', filename)
         if file_prog_match and result.program_number:
             file_prog_num = f"o{file_prog_match.group(1)}"
             if file_prog_num != result.program_number:
@@ -1441,8 +1487,23 @@ class ImprovedGCodeParser:
             # Calculate actual thickness from drill depth
             # Standard/STEP: thickness = drill_depth - 0.15"
             # Hub-Centric: thickness = drill_depth - 0.65" (includes 0.50" hub + 0.15" clearance)
+            # 2PC with hub: title shows body thickness, but drill includes 0.25" hub
+            #               so thickness = drill_depth - 0.40" (0.25" hub + 0.15" clearance)
             if result.spacer_type == 'hub_centric':
                 calculated_thickness = result.drill_depth - 0.65
+            elif result.spacer_type in ('2PC LUG', '2PC STUD', '2PC UNSURE'):
+                # 2PC parts: check if it has a hub
+                # If has hub, title shows body thickness, drill includes 0.25" hub
+                # If no hub (step only), use standard calculation
+                title_upper = result.title.upper() if result.title else ''
+                # Check for hub indicators: "HC" in title, or hub_height was extracted
+                has_hub = 'HC' in title_upper or result.hub_height is not None
+                if has_hub:
+                    # Title shows body thickness, actual full thickness = body + 0.25" hub
+                    calculated_thickness = result.drill_depth - 0.40  # 0.25" hub + 0.15" clearance
+                else:
+                    # 2PC without hub (step type) - standard calculation
+                    calculated_thickness = result.drill_depth - 0.15
             else:
                 calculated_thickness = result.drill_depth - 0.15
 
