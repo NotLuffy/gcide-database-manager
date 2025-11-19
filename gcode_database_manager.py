@@ -181,6 +181,7 @@ class ProgramRecord:
     dimensional_issues: Optional[str] = None  # JSON list - P-code/thickness issues (PURPLE)
     cb_from_gcode: Optional[float] = None
     ob_from_gcode: Optional[float] = None
+    lathe: Optional[str] = None  # 'L1', 'L2', 'L3', 'L2/L3'
 
 class GCodeDatabaseGUI:
     def __init__(self, root):
@@ -253,7 +254,8 @@ class GCodeDatabaseGUI:
                 bore_warnings TEXT,
                 dimensional_issues TEXT,
                 cb_from_gcode REAL,
-                ob_from_gcode REAL
+                ob_from_gcode REAL,
+                lathe TEXT
             )
         ''')
 
@@ -296,6 +298,10 @@ class GCodeDatabaseGUI:
             pass
         try:
             cursor.execute("ALTER TABLE programs ADD COLUMN thickness_display TEXT")
+        except:
+            pass
+        try:
+            cursor.execute("ALTER TABLE programs ADD COLUMN lathe TEXT")
         except:
             pass
 
@@ -493,8 +499,8 @@ class GCodeDatabaseGUI:
         hsb = ttk.Scrollbar(tree_frame, orient="horizontal")
         
         # Treeview
-        columns = ("Program #", "Title", "Type", "OD", "Thick", "CB", "Hub H", "Hub D",
-                  "CB Bore", "Material", "Status", "File")
+        columns = ("Program #", "Title", "Type", "Lathe", "OD", "Thick", "CB", "Hub H", "Hub D",
+                  "CB Bore", "Step D", "Material", "Status", "File")
 
         self.tree = ttk.Treeview(tree_frame, columns=columns, show="headings",
                                 yscrollcommand=vsb.set, xscrollcommand=hsb.set)
@@ -514,12 +520,14 @@ class GCodeDatabaseGUI:
             "Program #": 100,
             "Title": 250,
             "Type": 120,
+            "Lathe": 60,
             "OD": 80,
             "Thick": 80,
             "CB": 80,
             "Hub H": 80,
             "Hub D": 80,
             "CB Bore": 80,
+            "Step D": 70,
             "Material": 100,
             "Status": 90,
             "File": 200
@@ -611,7 +619,8 @@ class GCodeDatabaseGUI:
                 bore_warnings=json.dumps(result.bore_warnings) if result.bore_warnings else None,
                 dimensional_issues=json.dumps(result.dimensional_issues) if result.dimensional_issues else None,
                 cb_from_gcode=result.cb_from_gcode,
-                ob_from_gcode=result.ob_from_gcode
+                ob_from_gcode=result.ob_from_gcode,
+                lathe=result.lathe
             )
 
         except Exception as e:
@@ -706,7 +715,7 @@ class GCodeDatabaseGUI:
                                 detection_confidence = ?, detection_method = ?,
                                 validation_status = ?, validation_issues = ?,
                                 validation_warnings = ?, bore_warnings = ?, dimensional_issues = ?,
-                                cb_from_gcode = ?, ob_from_gcode = ?
+                                cb_from_gcode = ?, ob_from_gcode = ?, lathe = ?
                             WHERE program_number = ?
                         ''', (record.title, record.spacer_type, record.outer_diameter, record.thickness, record.thickness_display,
                              record.center_bore, record.hub_height, record.hub_diameter,
@@ -715,13 +724,13 @@ class GCodeDatabaseGUI:
                              record.detection_confidence, record.detection_method,
                              record.validation_status, record.validation_issues,
                              record.validation_warnings, record.bore_warnings, record.dimensional_issues,
-                             record.cb_from_gcode, record.ob_from_gcode,
+                             record.cb_from_gcode, record.ob_from_gcode, record.lathe,
                              record.program_number))
                         updated += 1
                     else:
                         # Insert new
                         cursor.execute('''
-                            INSERT INTO programs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            INSERT INTO programs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ''', (record.program_number, record.title, record.spacer_type, record.outer_diameter,
                              record.thickness, record.thickness_display, record.center_bore, record.hub_height,
                              record.hub_diameter, record.counter_bore_diameter,
@@ -731,7 +740,7 @@ class GCodeDatabaseGUI:
                              record.detection_method, record.validation_status,
                              record.validation_issues, record.validation_warnings,
                              record.cb_from_gcode, record.ob_from_gcode,
-                             record.bore_warnings, record.dimensional_issues))
+                             record.bore_warnings, record.dimensional_issues, record.lathe))
                         added += 1
                         
                 except Exception as e:
@@ -863,6 +872,15 @@ class GCodeDatabaseGUI:
         # 10:paired_program, 11:material, 12:notes, 13:date_created, 14:last_modified, 15:file_path,
         # 16:detection_confidence, 17:detection_method, 18:validation_status, ...
 
+        # Count status breakdown
+        status_counts = {
+            'CRITICAL': 0,
+            'BORE_WARNING': 0,
+            'DIMENSIONAL': 0,
+            'WARNING': 0,
+            'PASS': 0
+        }
+
         for row in results:
             program_number = row[0]
             title = row[1] if row[1] else "-"  # NEW: Title from G-code
@@ -892,11 +910,26 @@ class GCodeDatabaseGUI:
             else:
                 cb_bore = "N/A"
 
+            # Step Depth - only applicable for STEP parts (row[10] = counter_bore_depth)
+            if spacer_type == 'step':
+                step_d = f"{row[10]:.2f}" if row[10] else "-"
+            else:
+                step_d = "N/A"
+
             material = row[12] if row[12] else "-"  # Shifted from row[11]
             filename = os.path.basename(row[16]) if row[16] else "-"  # Shifted from row[15]
 
+            # Lathe (index 26)
+            lathe = row[26] if len(row) > 26 and row[26] else "-"
+
             # Validation status (index 19 - validation_status)
             validation_status = row[19] if len(row) > 19 and row[19] else "N/A"  # Shifted from row[18]
+
+            # Count status
+            if validation_status in status_counts:
+                status_counts[validation_status] += 1
+            elif validation_status == 'ERROR':  # Old status name
+                status_counts['CRITICAL'] += 1
 
             # Determine color tag (prioritized by severity)
             tag = ''
@@ -915,12 +948,26 @@ class GCodeDatabaseGUI:
                 tag = 'critical'
 
             self.tree.insert("", "end", values=(
-                program_number, title, spacer_type, od, thick, cb,
-                hub_h, hub_d, cb_bore, material, validation_status, filename
+                program_number, title, spacer_type, lathe, od, thick, cb,
+                hub_h, hub_d, cb_bore, step_d, material, validation_status, filename
             ), tags=(tag,))
-        
-        # Update count
-        self.results_label.config(text=f"Results: {len(results)} programs")
+
+        # Update count with status breakdown
+        status_text = f"Results: {len(results)} programs  |  "
+        status_parts = []
+        if status_counts['CRITICAL'] > 0:
+            status_parts.append(f"CRITICAL: {status_counts['CRITICAL']}")
+        if status_counts['BORE_WARNING'] > 0:
+            status_parts.append(f"BORE: {status_counts['BORE_WARNING']}")
+        if status_counts['DIMENSIONAL'] > 0:
+            status_parts.append(f"DIM: {status_counts['DIMENSIONAL']}")
+        if status_counts['WARNING'] > 0:
+            status_parts.append(f"WARN: {status_counts['WARNING']}")
+        if status_counts['PASS'] > 0:
+            status_parts.append(f"PASS: {status_counts['PASS']}")
+
+        status_text += "  ".join(status_parts) if status_parts else "No status data"
+        self.results_label.config(text=status_text)
         
     def clear_filters(self):
         """Clear all filter fields"""
@@ -1582,13 +1629,17 @@ class DetailsWindow:
             text.insert(tk.END, "="*50 + "\n\n")
 
             # Detection info
-            if self.record[17]:  # detection_confidence (shifted from 16)
+            if self.record[17]:  # detection_confidence
                 text.insert(tk.END, f"Detection Confidence: {self.record[17]}\n")
-            if self.record[18]:  # detection_method (shifted from 17)
+            if self.record[18]:  # detection_method
                 text.insert(tk.END, f"Detection Method: {self.record[18]}\n")
 
+            # Lathe assignment
+            if len(self.record) > 26 and self.record[26]:  # lathe
+                text.insert(tk.END, f"Lathe: {self.record[26]}\n")
+
             # Validation status
-            status = self.record[19] if self.record[19] else "N/A"  # shifted from 18
+            status = self.record[19] if self.record[19] else "N/A"
             text.insert(tk.END, f"\nValidation Status: {status}\n\n")
 
             # G-code dimensions
