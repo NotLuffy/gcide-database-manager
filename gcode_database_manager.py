@@ -425,6 +425,10 @@ class GCodeDatabaseGUI:
                  bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
                  width=14, height=2).pack(side=tk.LEFT, padx=3)
 
+        tk.Button(files_group, text="📋 Copy Filtered", command=self.copy_filtered_view,
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
+                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+
         tk.Button(files_group, text="➕ Add Entry", command=self.add_entry,
                  bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
                  width=14, height=2).pack(side=tk.LEFT, padx=3)
@@ -475,6 +479,10 @@ class GCodeDatabaseGUI:
         db_group.pack(fill=tk.X, padx=5, pady=5)
 
         tk.Button(db_group, text="🗑️ Clear DB", command=self.clear_database,
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
+                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+
+        tk.Button(db_group, text="❌ Delete Filtered", command=self.delete_filtered_view,
                  bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
                  width=14, height=2).pack(side=tk.LEFT, padx=3)
 
@@ -2462,6 +2470,271 @@ class GCodeDatabaseGUI:
                              bg=self.button_bg, fg=self.fg_color,
                              font=("Arial", 10, "bold"))
         close_btn.pack(pady=10)
+
+    def copy_filtered_view(self):
+        """Copy currently filtered/displayed files to folder with OD subfolders and auto-rename"""
+        import shutil
+
+        # Get currently displayed items from treeview
+        displayed_items = self.tree.get_children()
+        if not displayed_items:
+            messagebox.showwarning("No Results", "No files in current view to copy.\n\nPlease search/filter first.")
+            return
+
+        # Ask user for destination folder
+        dest_folder = filedialog.askdirectory(title="Select Destination Folder for Filtered Files")
+        if not dest_folder:
+            return
+
+        # Show progress window
+        progress_window = tk.Toplevel(self.root)
+        progress_window.title("Copying Filtered View...")
+        progress_window.geometry("700x500")
+        progress_window.configure(bg=self.bg_color)
+
+        progress_label = tk.Label(progress_window, text="Copying files...",
+                                 bg=self.bg_color, fg=self.fg_color,
+                                 font=("Arial", 12))
+        progress_label.pack(pady=20)
+
+        progress_text = scrolledtext.ScrolledText(progress_window,
+                                                 bg=self.input_bg, fg=self.fg_color,
+                                                 width=80, height=20)
+        progress_text.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
+
+        self.root.update()
+
+        # Get file info from database for displayed items
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        # Extract program numbers from treeview
+        program_numbers = []
+        for item in displayed_items:
+            values = self.tree.item(item)['values']
+            if values:
+                program_numbers.append(values[0])  # First column is Program #
+
+        progress_text.insert(tk.END, f"Found {len(program_numbers)} files in current view.\n")
+        progress_text.insert(tk.END, f"Destination: {dest_folder}\n\n")
+        progress_text.see(tk.END)
+        self.root.update()
+
+        # Get file details from database
+        placeholders = ','.join('?' * len(program_numbers))
+        cursor.execute(f'''
+            SELECT program_number, file_path, outer_diameter
+            FROM programs
+            WHERE program_number IN ({placeholders})
+        ''', program_numbers)
+        files_to_copy = cursor.fetchall()
+        conn.close()
+
+        # OD folder mapping
+        od_folders = {
+            5.75: "5.75 Round",
+            6.00: "6.00 Round",
+            6.25: "6.25 Round",
+            6.50: "6.50 Round",
+            7.00: "7.00 Round",
+            7.50: "7.50 Round",
+            8.00: "8.00 Round",
+            8.50: "8.50 Round",
+            9.50: "9.50 Round",
+            10.25: "10.25 Round",
+            10.50: "10.50 Round",
+            13.00: "13.00 Round"
+        }
+
+        copied = 0
+        skipped = 0
+        errors = 0
+        renamed = 0
+
+        # Track filenames to handle collisions with auto-rename
+        filename_tracker = {}  # {(folder, basename): occurrence_count}
+
+        for idx, (prog_num, file_path, od) in enumerate(files_to_copy, 1):
+            progress_label.config(text=f"Processing {idx}/{len(files_to_copy)}: {prog_num}")
+            self.root.update()
+
+            # Check if file exists
+            if not file_path or not os.path.exists(file_path):
+                progress_text.insert(tk.END, f"SKIP: {prog_num} - file not found\n")
+                progress_text.see(tk.END)
+                skipped += 1
+                continue
+
+            # Determine OD folder
+            if od is None:
+                folder_name = "Unknown OD"
+            else:
+                closest_od = min(od_folders.keys(), key=lambda x: abs(x - od))
+                if abs(closest_od - od) <= 0.1:
+                    folder_name = od_folders[closest_od]
+                else:
+                    folder_name = f"Other ({od:.2f})"
+
+            # Create destination folder
+            od_folder_path = os.path.join(dest_folder, folder_name)
+            os.makedirs(od_folder_path, exist_ok=True)
+
+            # Get filename and handle collisions
+            base_filename = os.path.basename(file_path)
+            name_without_ext, ext = os.path.splitext(base_filename)
+
+            # Check for collision and auto-rename with (1), (2), etc.
+            folder_file_key = (od_folder_path, base_filename)
+            if folder_file_key in filename_tracker:
+                # Collision detected - add suffix
+                filename_tracker[folder_file_key] += 1
+                occurrence = filename_tracker[folder_file_key]
+                new_filename = f"{name_without_ext}({occurrence}){ext}"
+                progress_text.insert(tk.END, f"COLLISION: {base_filename} -> {new_filename}\n")
+                renamed += 1
+            else:
+                # First occurrence
+                filename_tracker[folder_file_key] = 1
+                new_filename = base_filename
+
+            dest_path = os.path.join(od_folder_path, new_filename)
+
+            try:
+                shutil.copy2(file_path, dest_path)
+                progress_text.insert(tk.END, f"COPY: {prog_num} -> {folder_name}/{new_filename}\n")
+                progress_text.see(tk.END)
+                copied += 1
+            except Exception as e:
+                progress_text.insert(tk.END, f"ERROR: {prog_num} - {str(e)[:100]}\n")
+                progress_text.see(tk.END)
+                errors += 1
+
+        # Show results
+        progress_label.config(text="Complete!")
+        progress_text.insert(tk.END, f"\n{'='*70}\n")
+        progress_text.insert(tk.END, f"Total files: {len(files_to_copy)}\n")
+        progress_text.insert(tk.END, f"Copied: {copied}\n")
+        progress_text.insert(tk.END, f"Auto-renamed (collisions): {renamed}\n")
+        progress_text.insert(tk.END, f"Skipped: {skipped}\n")
+        progress_text.insert(tk.END, f"Errors: {errors}\n")
+        progress_text.see(tk.END)
+
+        close_btn = tk.Button(progress_window, text="Close",
+                             command=progress_window.destroy,
+                             bg=self.button_bg, fg=self.fg_color,
+                             font=("Arial", 10, "bold"))
+        close_btn.pack(pady=10)
+
+    def delete_filtered_view(self):
+        """Delete currently filtered/displayed files from database (NOT from filesystem)"""
+        # Get currently displayed items from treeview
+        displayed_items = self.tree.get_children()
+        if not displayed_items:
+            messagebox.showwarning("No Results", "No files in current view to delete.\n\nPlease search/filter first.")
+            return
+
+        # Extract program numbers
+        program_numbers = []
+        for item in displayed_items:
+            values = self.tree.item(item)['values']
+            if values:
+                program_numbers.append(values[0])  # First column is Program #
+
+        count = len(program_numbers)
+
+        # Confirmation dialog with count
+        result = messagebox.askyesno(
+            "Confirm Delete from Database",
+            f"This will DELETE {count} record(s) from the DATABASE.\n\n"
+            f"⚠️  The actual files on disk will NOT be deleted.\n"
+            f"⚠️  Only database records will be removed.\n\n"
+            f"Are you sure you want to continue?",
+            icon='warning'
+        )
+
+        if not result:
+            return
+
+        # Double confirmation - ask user to type DELETE
+        confirm_window = tk.Toplevel(self.root)
+        confirm_window.title("Final Confirmation")
+        confirm_window.geometry("400x200")
+        confirm_window.configure(bg=self.bg_color)
+
+        tk.Label(confirm_window,
+                text=f"You are about to delete {count} records",
+                bg=self.bg_color, fg=self.fg_color,
+                font=("Arial", 12, "bold")).pack(pady=10)
+
+        tk.Label(confirm_window,
+                text='Type "DELETE" to confirm:',
+                bg=self.bg_color, fg=self.fg_color,
+                font=("Arial", 10)).pack(pady=10)
+
+        confirm_entry = tk.Entry(confirm_window, bg=self.input_bg, fg=self.fg_color,
+                                font=("Arial", 12), width=20)
+        confirm_entry.pack(pady=10)
+        confirm_entry.focus()
+
+        confirmed = [False]  # Use list to modify in nested function
+
+        def check_confirmation():
+            if confirm_entry.get() == "DELETE":
+                confirmed[0] = True
+                confirm_window.destroy()
+            else:
+                messagebox.showerror("Invalid", 'You must type "DELETE" exactly to confirm.')
+
+        def cancel_delete():
+            confirm_window.destroy()
+
+        btn_frame = tk.Frame(confirm_window, bg=self.bg_color)
+        btn_frame.pack(pady=10)
+
+        tk.Button(btn_frame, text="Confirm", command=check_confirmation,
+                 bg=self.button_bg, fg=self.fg_color,
+                 font=("Arial", 10, "bold"), width=10).pack(side=tk.LEFT, padx=5)
+
+        tk.Button(btn_frame, text="Cancel", command=cancel_delete,
+                 bg=self.button_bg, fg=self.fg_color,
+                 font=("Arial", 10, "bold"), width=10).pack(side=tk.LEFT, padx=5)
+
+        # Bind Enter key to confirm
+        confirm_entry.bind('<Return>', lambda e: check_confirmation())
+
+        # Wait for window to close
+        self.root.wait_window(confirm_window)
+
+        if not confirmed[0]:
+            return
+
+        # Delete from database
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            placeholders = ','.join('?' * len(program_numbers))
+            cursor.execute(f'''
+                DELETE FROM programs
+                WHERE program_number IN ({placeholders})
+            ''', program_numbers)
+
+            deleted_count = cursor.rowcount
+            conn.commit()
+            conn.close()
+
+            # Refresh the display
+            self.refresh_filter_values()
+            self.refresh_results()
+
+            messagebox.showinfo(
+                "Delete Complete",
+                f"Successfully deleted {deleted_count} record(s) from the database.\n\n"
+                f"The files on disk were NOT deleted."
+            )
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to delete records:\n{str(e)}")
 
     def show_context_menu(self, event):
         """Show right-click context menu"""
