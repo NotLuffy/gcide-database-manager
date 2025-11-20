@@ -348,11 +348,17 @@ class GCodeDatabaseGUI:
         main_container = tk.Frame(self.root, bg=self.bg_color)
         main_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         
-        # Top section - Actions and Import
+        # Top section - Title and Ribbon Tabs
         top_frame = tk.Frame(main_container, bg=self.bg_color)
         top_frame.pack(fill=tk.X, pady=(0, 10))
-        
+
         self.create_top_section(top_frame)
+
+        # Ribbon tabs section
+        ribbon_frame = tk.Frame(main_container, bg=self.bg_color, relief=tk.RAISED, borderwidth=1)
+        ribbon_frame.pack(fill=tk.X, pady=(0, 10))
+
+        self.create_ribbon_tabs(ribbon_frame)
         
         # Middle section - Filters
         filter_frame = tk.LabelFrame(main_container, text="Search & Filter", 
@@ -373,74 +379,96 @@ class GCodeDatabaseGUI:
     def create_top_section(self, parent):
         """Create top action buttons"""
         # Title
-        title = tk.Label(parent, text="G-Code Database Manager", 
-                        font=("Arial", 16, "bold"), 
+        title = tk.Label(parent, text="G-Code Database Manager",
+                        font=("Arial", 16, "bold"),
                         bg=self.bg_color, fg=self.fg_color)
         title.pack(side=tk.LEFT, padx=10)
-        
-        # Buttons on the right
-        button_frame = tk.Frame(parent, bg=self.bg_color)
-        button_frame.pack(side=tk.RIGHT)
-        
-        btn_scan = tk.Button(button_frame, text="📁 Scan Folder",
-                            command=self.scan_folder,
-                            bg=self.button_bg, fg=self.fg_color,
-                            font=("Arial", 10, "bold"), width=15, height=2)
-        btn_scan.pack(side=tk.LEFT, padx=5)
 
-        btn_scan_new = tk.Button(button_frame, text="🆕 Scan New Only",
-                            command=self.scan_for_new_files,
-                            bg=self.button_bg, fg=self.fg_color,
-                            font=("Arial", 10, "bold"), width=15, height=2)
-        btn_scan_new.pack(side=tk.LEFT, padx=5)
+    def create_ribbon_tabs(self, parent):
+        """Create ribbon-style tab interface for organizing buttons"""
+        # Create notebook (tabbed interface)
+        style = ttk.Style()
+        style.configure('Ribbon.TNotebook', background=self.bg_color, borderwidth=0)
+        style.configure('Ribbon.TNotebook.Tab', padding=[20, 10], font=('Arial', 10, 'bold'))
 
-        btn_add = tk.Button(button_frame, text="➕ Add Entry", 
-                           command=self.add_entry,
-                           bg=self.button_bg, fg=self.fg_color,
-                           font=("Arial", 10, "bold"), width=15, height=2)
-        btn_add.pack(side=tk.LEFT, padx=5)
-        
-        btn_export = tk.Button(button_frame, text="📤 Export CSV",
-                              command=self.export_csv,
-                              bg=self.button_bg, fg=self.fg_color,
-                              font=("Arial", 10, "bold"), width=15, height=2)
-        btn_export.pack(side=tk.LEFT, padx=5)
+        ribbon = ttk.Notebook(parent, style='Ribbon.TNotebook')
+        ribbon.pack(fill=tk.X, padx=5, pady=5)
 
-        btn_help = tk.Button(button_frame, text="❓ Help/Legend",
-                            command=self.show_legend,
-                            bg=self.button_bg, fg=self.fg_color,
-                            font=("Arial", 10, "bold"), width=15, height=2)
-        btn_help.pack(side=tk.LEFT, padx=5)
+        # Tab 1: File Management
+        tab_files = tk.Frame(ribbon, bg=self.bg_color)
+        ribbon.add(tab_files, text='📂 Files')
 
-        btn_fix_pnum = tk.Button(button_frame, text="🔧 Fix Program #s",
-                                command=self.fix_program_numbers,
-                                bg=self.button_bg, fg=self.fg_color,
-                                font=("Arial", 10, "bold"), width=15, height=2)
-        btn_fix_pnum.pack(side=tk.LEFT, padx=5)
+        files_group = tk.Frame(tab_files, bg=self.bg_color)
+        files_group.pack(fill=tk.X, padx=5, pady=5)
 
-        btn_fix_dupes = tk.Button(button_frame, text="🔄 Fix Duplicates",
-                                 command=self.fix_duplicates,
-                                 bg=self.button_bg, fg=self.fg_color,
-                                 font=("Arial", 10, "bold"), width=15, height=2)
-        btn_fix_dupes.pack(side=tk.LEFT, padx=5)
+        tk.Button(files_group, text="📁 Scan Folder", command=self.scan_folder,
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
+                 width=14, height=2).pack(side=tk.LEFT, padx=3)
 
-        btn_clear = tk.Button(button_frame, text="🗑️ Clear DB",
-                             command=self.clear_database,
-                             bg=self.button_bg, fg=self.fg_color,
-                             font=("Arial", 10, "bold"), width=12, height=2)
-        btn_clear.pack(side=tk.LEFT, padx=5)
+        tk.Button(files_group, text="🆕 Scan New Only", command=self.scan_for_new_files,
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
+                 width=14, height=2).pack(side=tk.LEFT, padx=3)
 
-        btn_unused = tk.Button(button_frame, text="📋 Unused #s",
-                              command=self.export_unused_numbers,
-                              bg=self.button_bg, fg=self.fg_color,
-                              font=("Arial", 10, "bold"), width=12, height=2)
-        btn_unused.pack(side=tk.LEFT, padx=5)
+        tk.Button(files_group, text="📁 Organize by OD", command=self.organize_files_by_od,
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
+                 width=14, height=2).pack(side=tk.LEFT, padx=3)
 
-        btn_find_repeats = tk.Button(button_frame, text="🔍 Find Repeats",
-                                     command=self.find_and_mark_repeats,
-                                     bg=self.button_bg, fg=self.fg_color,
-                                     font=("Arial", 10, "bold"), width=15, height=2)
-        btn_find_repeats.pack(side=tk.LEFT, padx=5)
+        tk.Button(files_group, text="➕ Add Entry", command=self.add_entry,
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
+                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+
+        # Tab 2: Tools
+        tab_tools = tk.Frame(ribbon, bg=self.bg_color)
+        ribbon.add(tab_tools, text='🔧 Tools')
+
+        tools_group = tk.Frame(tab_tools, bg=self.bg_color)
+        tools_group.pack(fill=tk.X, padx=5, pady=5)
+
+        tk.Button(tools_group, text="🔧 Fix Program #s", command=self.fix_program_numbers,
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
+                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+
+        tk.Button(tools_group, text="🔄 Fix Duplicates", command=self.fix_duplicates,
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
+                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+
+        tk.Button(tools_group, text="🔍 Find Repeats", command=self.find_and_mark_repeats,
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
+                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+
+        # Tab 3: Reports
+        tab_reports = tk.Frame(ribbon, bg=self.bg_color)
+        ribbon.add(tab_reports, text='📊 Reports')
+
+        reports_group = tk.Frame(tab_reports, bg=self.bg_color)
+        reports_group.pack(fill=tk.X, padx=5, pady=5)
+
+        tk.Button(reports_group, text="📤 Export CSV", command=self.export_csv,
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
+                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+
+        tk.Button(reports_group, text="📋 Unused #s", command=self.export_unused_numbers,
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
+                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+
+        tk.Button(reports_group, text="❓ Help/Legend", command=self.show_legend,
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
+                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+
+        # Tab 4: Database
+        tab_database = tk.Frame(ribbon, bg=self.bg_color)
+        ribbon.add(tab_database, text='🗄️ Database')
+
+        db_group = tk.Frame(tab_database, bg=self.bg_color)
+        db_group.pack(fill=tk.X, padx=5, pady=5)
+
+        tk.Button(db_group, text="🗑️ Clear DB", command=self.clear_database,
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
+                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+
+        tk.Label(db_group, text="(Future: Backup, Restore, etc.)",
+                bg=self.bg_color, fg=self.fg_color,
+                font=("Arial", 9, "italic")).pack(side=tk.LEFT, padx=10)
 
     def create_filter_section(self, parent):
         """Create filter controls"""
@@ -1081,8 +1109,8 @@ class GCodeDatabaseGUI:
         self.refresh_results()
 
     def fix_program_numbers(self):
-        """Fix internal program numbers in G-code files to match filenames"""
-        folder = filedialog.askdirectory(title="Select Folder with G-Code Files to Fix",
+        """Rename files and internal program numbers to unused numbers based on OD ranges"""
+        folder = filedialog.askdirectory(title="Select Folder with G-Code Files to Rename",
                                         initialdir=self.config.get("last_folder", ""))
 
         if not folder:
@@ -1106,6 +1134,35 @@ class GCodeDatabaseGUI:
 
         self.root.update()
 
+        # Get all existing program numbers from database
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT program_number FROM programs")
+        existing_numbers = set()
+        for row in cursor.fetchall():
+            prog = row[0]
+            # Extract numeric part (handle duplicates like o70000(1))
+            match = re.search(r'[oO]?(\d+)', str(prog))
+            if match:
+                existing_numbers.add(int(match.group(1)))
+        conn.close()
+
+        # OD ranges for program numbers
+        od_ranges = {
+            5.75: (57000, 57999),
+            6.00: (60000, 60999),
+            6.25: (62000, 62999),
+            6.50: (65000, 65999),
+            7.00: (70000, 70999),
+            7.50: (75000, 75999),
+            8.00: (80000, 80999),
+            8.50: (85000, 85999),
+            9.50: (95000, 95999),
+            10.25: (10250, 10349),
+            10.50: (10500, 10599),
+            13.00: (13000, 13099)
+        }
+
         # Find G-code files
         gcode_files = []
         for root_dir, dirs, files in os.walk(folder):
@@ -1114,10 +1171,12 @@ class GCodeDatabaseGUI:
                 if re.search(r'[oO]\d{4,}', file):
                     gcode_files.append(os.path.join(root_dir, file))
 
-        progress_label.config(text=f"Found {len(gcode_files)} files. Processing...")
+        progress_text.insert(tk.END, f"Found {len(gcode_files)} files.\n")
+        progress_text.insert(tk.END, f"Parsing files to determine OD...\n\n")
+        progress_text.see(tk.END)
         self.root.update()
 
-        fixed = 0
+        renamed = 0
         skipped = 0
         errors = 0
         total_files = len(gcode_files)
@@ -1125,77 +1184,89 @@ class GCodeDatabaseGUI:
         for file_idx, filepath in enumerate(gcode_files, 1):
             filename = os.path.basename(filepath)
 
-            # Update progress label with counter
             progress_label.config(text=f"Processing {file_idx}/{total_files}: {filename}")
             self.root.update()
 
-            # Extract program number from filename (e.g., o57000 -> O57000)
-            match = re.search(r'[oO](\d{4,})', filename)
-            if not match:
-                progress_text.insert(tk.END, f"SKIP: {filename} - no valid program number\n")
-                progress_text.see(tk.END)
-                skipped += 1
-                continue
-
-            # Target program number (uppercase O)
-            target_pnum = f"O{match.group(1)}"
-
             try:
+                # Parse file to get OD
+                result = self.parse_gcode_file(filepath)
+
+                if not result or not result.outer_diameter:
+                    progress_text.insert(tk.END, f"SKIP: {filename} - no OD detected\n")
+                    progress_text.see(tk.END)
+                    skipped += 1
+                    continue
+
+                od = result.outer_diameter
+
+                # Find appropriate OD range
+                closest_od = min(od_ranges.keys(), key=lambda x: abs(x - od))
+                if abs(closest_od - od) > 0.1:  # Not within tolerance
+                    progress_text.insert(tk.END, f"SKIP: {filename} - OD {od:.2f} doesn't match standard sizes\n")
+                    progress_text.see(tk.END)
+                    skipped += 1
+                    continue
+
+                start_range, end_range = od_ranges[closest_od]
+
+                # Find next available number in range
+                new_prog_num = None
+                for num in range(start_range, end_range + 1):
+                    if num not in existing_numbers:
+                        new_prog_num = num
+                        existing_numbers.add(num)  # Mark as used
+                        break
+
+                if not new_prog_num:
+                    progress_text.insert(tk.END, f"ERROR: {filename} - no available numbers in {closest_od}\" range\n")
+                    progress_text.see(tk.END)
+                    errors += 1
+                    continue
+
+                new_prog_str = f"O{new_prog_num}"
+
                 # Read file content
-                with open(filepath, 'r') as f:
-                    content = f.read()
-                    lines = content.split('\n')
+                with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+                    lines = f.readlines()
 
-                # Find and fix internal program number
-                # Look for O##### at the start of the file (with or without title)
-                modified = False
-                new_lines = []
-
+                # Update internal program number (first line with O#####)
                 for i, line in enumerate(lines):
                     stripped = line.strip()
-                    # Check if line starts with program number (O followed by digits)
-                    # Handles both "O70055" and "O70055 (title here)"
                     match_line = re.match(r'^([oO]\d{4,})\s*(\(.*)?$', stripped)
                     if match_line:
-                        current_pnum = match_line.group(1).upper()
                         title_part = match_line.group(2) if match_line.group(2) else ""
-                        if current_pnum != target_pnum:
-                            # Fix the program number, preserve title if present
-                            if title_part:
-                                new_line = f"{target_pnum} {title_part}"
-                            else:
-                                new_line = target_pnum
-                            new_lines.append(new_line)
-                            progress_text.insert(tk.END, f"FIX: {filename}: {current_pnum} -> {target_pnum}\n")
-                            modified = True
+                        if title_part:
+                            lines[i] = f"{new_prog_str} {title_part}\n"
                         else:
-                            new_lines.append(line)
-                            progress_text.insert(tk.END, f"OK: {filename}: {target_pnum} (already correct)\n")
-                    else:
-                        new_lines.append(line)
+                            lines[i] = f"{new_prog_str}\n"
+                        break
 
-                # Write back if modified
-                if modified:
-                    with open(filepath, 'w') as f:
-                        f.write('\n'.join(new_lines))
-                    fixed += 1
-                else:
-                    skipped += 1
+                # Write updated content
+                with open(filepath, 'w', encoding='utf-8') as f:
+                    f.writelines(lines)
 
+                # Rename file
+                file_ext = os.path.splitext(filename)[1]
+                new_filename = f"o{new_prog_num}{file_ext}" if file_ext else f"o{new_prog_num}"
+                new_filepath = os.path.join(os.path.dirname(filepath), new_filename)
+
+                os.rename(filepath, new_filepath)
+
+                progress_text.insert(tk.END, f"RENAME: {filename} -> {new_filename} (OD: {closest_od}\")\n")
                 progress_text.see(tk.END)
-                self.root.update()
+                renamed += 1
 
             except Exception as e:
-                progress_text.insert(tk.END, f"ERROR: {filename}: {str(e)}\n")
-                errors += 1
+                progress_text.insert(tk.END, f"ERROR: {filename} - {str(e)[:100]}\n")
                 progress_text.see(tk.END)
-                self.root.update()
+                errors += 1
 
         # Show results
         progress_label.config(text="Complete!")
         progress_text.insert(tk.END, f"\n{'='*50}\n")
-        progress_text.insert(tk.END, f"Fixed: {fixed}\n")
-        progress_text.insert(tk.END, f"Skipped (already correct): {skipped}\n")
+        progress_text.insert(tk.END, f"Total files: {total_files}\n")
+        progress_text.insert(tk.END, f"Renamed: {renamed}\n")
+        progress_text.insert(tk.END, f"Skipped: {skipped}\n")
         progress_text.insert(tk.END, f"Errors: {errors}\n")
         progress_text.see(tk.END)
 
@@ -2171,6 +2242,125 @@ class GCodeDatabaseGUI:
 
         # Refresh the display
         self.refresh_results()
+
+    def organize_files_by_od(self):
+        """Copy all database files to organized folder structure by OD"""
+        import shutil
+
+        # Ask user for destination folder
+        dest_folder = filedialog.askdirectory(title="Select Destination Folder for Organized Files")
+
+        if not dest_folder:
+            return
+
+        # Show progress window
+        progress_window = tk.Toplevel(self.root)
+        progress_window.title("Organizing Files by OD...")
+        progress_window.geometry("600x400")
+        progress_window.configure(bg=self.bg_color)
+
+        progress_label = tk.Label(progress_window, text="Organizing files...",
+                                 bg=self.bg_color, fg=self.fg_color,
+                                 font=("Arial", 12))
+        progress_label.pack(pady=20)
+
+        progress_text = scrolledtext.ScrolledText(progress_window,
+                                                 bg=self.input_bg, fg=self.fg_color,
+                                                 width=70, height=15)
+        progress_text.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
+
+        self.root.update()
+
+        # Get all files from database with OD info
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT program_number, file_path, outer_diameter
+            FROM programs
+            WHERE file_path IS NOT NULL
+        ''')
+        all_files = cursor.fetchall()
+        conn.close()
+
+        progress_text.insert(tk.END, f"Found {len(all_files)} files in database.\n")
+        progress_text.insert(tk.END, f"Destination: {dest_folder}\n\n")
+        progress_text.see(tk.END)
+        self.root.update()
+
+        # OD folder mapping (round to standard sizes)
+        od_folders = {
+            5.75: "5.75 Round",
+            6.00: "6.00 Round",
+            6.25: "6.25 Round",
+            6.50: "6.50 Round",
+            7.00: "7.00 Round",
+            7.50: "7.50 Round",
+            8.00: "8.00 Round",
+            8.50: "8.50 Round",
+            9.50: "9.50 Round",
+            10.25: "10.25 Round",
+            10.50: "10.50 Round",
+            13.00: "13.00 Round"
+        }
+
+        copied = 0
+        skipped = 0
+        errors = 0
+
+        for idx, (prog_num, file_path, od) in enumerate(all_files, 1):
+            progress_label.config(text=f"Processing {idx}/{len(all_files)}: {prog_num}")
+            self.root.update()
+
+            # Check if file exists
+            if not os.path.exists(file_path):
+                progress_text.insert(tk.END, f"SKIP: {prog_num} - file not found: {file_path}\n")
+                progress_text.see(tk.END)
+                skipped += 1
+                continue
+
+            # Determine OD folder
+            if od is None:
+                folder_name = "Unknown OD"
+            else:
+                # Find closest standard OD
+                closest_od = min(od_folders.keys(), key=lambda x: abs(x - od))
+                if abs(closest_od - od) <= 0.1:  # Within tolerance
+                    folder_name = od_folders[closest_od]
+                else:
+                    folder_name = f"Other ({od:.2f})"
+
+            # Create destination folder if needed
+            od_folder_path = os.path.join(dest_folder, folder_name)
+            os.makedirs(od_folder_path, exist_ok=True)
+
+            # Copy file
+            filename = os.path.basename(file_path)
+            dest_path = os.path.join(od_folder_path, filename)
+
+            try:
+                shutil.copy2(file_path, dest_path)
+                progress_text.insert(tk.END, f"COPY: {prog_num} -> {folder_name}/{filename}\n")
+                progress_text.see(tk.END)
+                copied += 1
+            except Exception as e:
+                progress_text.insert(tk.END, f"ERROR: {prog_num} - {str(e)[:100]}\n")
+                progress_text.see(tk.END)
+                errors += 1
+
+        # Show results
+        progress_label.config(text="Complete!")
+        progress_text.insert(tk.END, f"\n{'='*60}\n")
+        progress_text.insert(tk.END, f"Total files: {len(all_files)}\n")
+        progress_text.insert(tk.END, f"Copied: {copied}\n")
+        progress_text.insert(tk.END, f"Skipped: {skipped}\n")
+        progress_text.insert(tk.END, f"Errors: {errors}\n")
+        progress_text.see(tk.END)
+
+        close_btn = tk.Button(progress_window, text="Close",
+                             command=progress_window.destroy,
+                             bg=self.button_bg, fg=self.fg_color,
+                             font=("Arial", 10, "bold"))
+        close_btn.pack(pady=10)
 
     def show_context_menu(self, event):
         """Show right-click context menu"""
