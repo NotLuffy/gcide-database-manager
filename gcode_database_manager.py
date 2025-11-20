@@ -304,6 +304,18 @@ class GCodeDatabaseGUI:
             cursor.execute("ALTER TABLE programs ADD COLUMN lathe TEXT")
         except:
             pass
+        try:
+            cursor.execute("ALTER TABLE programs ADD COLUMN duplicate_type TEXT")  # 'SOLID', 'NAME_COLLISION', 'CONTENT_DUP', NULL
+        except:
+            pass
+        try:
+            cursor.execute("ALTER TABLE programs ADD COLUMN parent_file TEXT")  # Reference to parent program_number
+        except:
+            pass
+        try:
+            cursor.execute("ALTER TABLE programs ADD COLUMN duplicate_group TEXT")  # Group ID for related duplicates
+        except:
+            pass
 
         conn.commit()
         conn.close()
@@ -504,7 +516,14 @@ class GCodeDatabaseGUI:
         self.filter_status = MultiSelectCombobox(row1, status_values, self.bg_color, self.fg_color,
                                                 self.input_bg, self.button_bg, width=15)
         self.filter_status.pack(side=tk.LEFT, padx=5)
-        
+
+        # Duplicate Type
+        tk.Label(row1, text="Dup Type:", bg=self.bg_color, fg=self.fg_color).pack(side=tk.LEFT, padx=5)
+        dup_type_values = ["SOLID", "NAME_COLLISION", "CONTENT_DUP", "None"]
+        self.filter_dup_type = MultiSelectCombobox(row1, dup_type_values, self.bg_color, self.fg_color,
+                                                   self.input_bg, self.button_bg, width=15)
+        self.filter_dup_type.pack(side=tk.LEFT, padx=5)
+
         # Row 2 - Dimensional filters
         row2 = tk.Frame(filter_container, bg=self.bg_color)
         row2.pack(fill=tk.X, pady=5)
@@ -1638,6 +1657,23 @@ class GCodeDatabaseGUI:
             query += f" AND validation_status IN ({placeholders})"
             params.extend(selected_statuses)
 
+        # Duplicate Type filter (multi-select)
+        selected_dup_types = self.filter_dup_type.get_selected()
+        if selected_dup_types and len(selected_dup_types) < len(self.filter_dup_type.values):
+            # Handle "None" selection (files with no duplicate_type)
+            if "None" in selected_dup_types:
+                other_types = [t for t in selected_dup_types if t != "None"]
+                if other_types:
+                    placeholders = ','.join('?' * len(other_types))
+                    query += f" AND (duplicate_type IN ({placeholders}) OR duplicate_type IS NULL)"
+                    params.extend(other_types)
+                else:
+                    query += " AND duplicate_type IS NULL"
+            else:
+                placeholders = ','.join('?' * len(selected_dup_types))
+                query += f" AND duplicate_type IN ({placeholders})"
+                params.extend(selected_dup_types)
+
         # OD range
         if self.filter_od_min.get():
             query += " AND outer_diameter >= ?"
@@ -1822,6 +1858,7 @@ class GCodeDatabaseGUI:
         self.filter_type.clear()
         self.filter_material.clear()
         self.filter_status.clear()
+        self.filter_dup_type.clear()
         self.filter_od_min.delete(0, tk.END)
         self.filter_od_max.delete(0, tk.END)
         self.filter_thickness_min.delete(0, tk.END)
@@ -2111,14 +2148,15 @@ class GCodeDatabaseGUI:
         )
 
     def find_and_mark_repeats(self):
-        """Find files with identical title and dimensions, mark older ones as REPEAT"""
+        """Enhanced duplicate detection with parent/child relationships and classification"""
+        import uuid
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
         # Show progress window
         progress_window = tk.Toplevel(self.root)
-        progress_window.title("Finding Repeat Files...")
-        progress_window.geometry("600x400")
+        progress_window.title("Finding & Classifying Duplicates...")
+        progress_window.geometry("700x500")
         progress_window.configure(bg=self.bg_color)
 
         progress_label = tk.Label(progress_window, text="Analyzing database...",
@@ -2128,33 +2166,43 @@ class GCodeDatabaseGUI:
 
         progress_text = scrolledtext.ScrolledText(progress_window,
                                                  bg=self.input_bg, fg=self.fg_color,
-                                                 width=70, height=15)
+                                                 width=80, height=20)
         progress_text.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
 
         self.root.update()
 
-        # Get all files from database
+        # Get all files from database with full info
         cursor.execute('''
             SELECT program_number, title, spacer_type, outer_diameter, thickness,
                    center_bore, hub_height, hub_diameter, counter_bore_diameter,
-                   counter_bore_depth, last_modified, file_path
+                   counter_bore_depth, last_modified, file_path, detection_confidence,
+                   validation_status, date_created
             FROM programs
         ''')
         all_files = cursor.fetchall()
 
         progress_text.insert(tk.END, f"Found {len(all_files)} total files in database.\n")
-        progress_text.insert(tk.END, f"Searching for files with identical title and dimensions...\n\n")
+        progress_text.insert(tk.END, f"Classifying duplicates...\n\n")
         progress_text.see(tk.END)
         self.root.update()
 
-        # Group files by their key attributes (title, type, dimensions)
-        groups = {}
-        for file_data in all_files:
-            prog_num, title, stype, od, thick, cb, hub_h, hub_d, cb_d, cb_dep, modified, fpath = file_data
+        # Build filename and content maps
+        filename_map = {}  # filename -> list of files
+        content_map = {}   # (title+dims) -> list of files
 
-            # Create a key from title and all dimensional attributes
-            # Round floats to avoid floating point comparison issues
-            key = (
+        for file_data in all_files:
+            prog_num, title, stype, od, thick, cb, hub_h, hub_d, cb_d, cb_dep, modified, fpath, confidence, val_status, created = file_data
+
+            filename = os.path.basename(fpath).lower() if fpath else ""
+
+            # Add to filename map
+            if filename:
+                if filename not in filename_map:
+                    filename_map[filename] = []
+                filename_map[filename].append(file_data)
+
+            # Create content key
+            content_key = (
                 title.strip().upper() if title else "",
                 stype,
                 round(od, 3) if od else None,
@@ -2166,72 +2214,125 @@ class GCodeDatabaseGUI:
                 round(cb_dep, 3) if cb_dep else None
             )
 
-            if key not in groups:
-                groups[key] = []
-            groups[key].append({
-                'program_number': prog_num,
-                'title': title,
-                'modified': modified,
-                'file_path': fpath
-            })
+            if content_key not in content_map:
+                content_map[content_key] = []
+            content_map[content_key].append(file_data)
 
-        # Find groups with multiple files (duplicates)
-        duplicate_groups = {k: v for k, v in groups.items() if len(v) > 1}
+        # Classify duplicates
+        solid_dups = 0
+        name_collisions = 0
+        content_dups = 0
 
-        progress_text.insert(tk.END, f"Found {len(duplicate_groups)} groups with repeated files.\n\n")
-        progress_text.see(tk.END)
-        self.root.update()
+        # Process SOLID DUPLICATES (same filename AND same content)
+        for filename, files in filename_map.items():
+            if len(files) > 1:
+                # Check if they also have same content
+                first_content = (files[0][1], files[0][2], files[0][3], files[0][4], files[0][5])
+                all_same_content = all(
+                    (f[1], f[2], f[3], f[4], f[5]) == first_content for f in files
+                )
 
-        if len(duplicate_groups) == 0:
-            progress_label.config(text="No repeats found!")
-            close_btn = tk.Button(progress_window, text="Close",
-                                 command=progress_window.destroy,
-                                 bg=self.button_bg, fg=self.fg_color,
-                                 font=("Arial", 10, "bold"))
-            close_btn.pack(pady=10)
-            conn.close()
-            return
+                if all_same_content:
+                    # SOLID DUPLICATE - same filename, same content
+                    group_id = str(uuid.uuid4())[:8]
 
-        # Process each duplicate group
-        total_marked = 0
-        for key, files in duplicate_groups.items():
-            title = key[0]
-            progress_text.insert(tk.END, f"Group: {title}\n")
-            progress_text.insert(tk.END, f"  Found {len(files)} identical files:\n")
+                    # Choose parent: oldest file with best validation
+                    def sort_key(f):
+                        # Priority: 1) Validation status, 2) Confidence, 3) Oldest date
+                        val_priority = {'PASS': 0, 'WARNING': 1, 'DIMENSIONAL': 2, 'BORE_WARNING': 3, 'CRITICAL': 4, 'REPEAT': 5}
+                        conf_priority = {'HIGH': 0, 'MEDIUM': 1, 'LOW': 2}
+                        date = f[14] if f[14] else f[10] if f[10] else '9999-12-31'  # created or modified
+                        return (val_priority.get(f[13], 9), conf_priority.get(f[12], 9), date)
 
-            # Sort by last_modified date (most recent first)
-            # Handle None values by treating them as very old dates
-            sorted_files = sorted(files, key=lambda x: x['modified'] if x['modified'] else '1970-01-01', reverse=True)
+                    sorted_files = sorted(files, key=sort_key)
+                    parent = sorted_files[0]
+                    children = sorted_files[1:]
 
-            # Keep the most recent file, mark the rest as REPEAT
-            keeper = sorted_files[0]
-            repeats = sorted_files[1:]
+                    progress_text.insert(tk.END, f"SOLID DUP: {filename}\n")
+                    progress_text.insert(tk.END, f"  ✓ Parent: {parent[0]} (oldest with best validation)\n")
 
-            progress_text.insert(tk.END, f"  ✓ Keeping: {keeper['program_number']} (most recent)\n")
+                    # Mark children as REPEAT
+                    for child in children:
+                        cursor.execute('''
+                            UPDATE programs
+                            SET validation_status = 'REPEAT',
+                                duplicate_type = 'SOLID',
+                                parent_file = ?,
+                                duplicate_group = ?
+                            WHERE program_number = ?
+                        ''', (parent[0], group_id, child[0]))
+                        progress_text.insert(tk.END, f"  ✗ Child: {child[0]}\n")
+                        solid_dups += 1
 
-            for repeat_file in repeats:
-                prog_num = repeat_file['program_number']
-                cursor.execute('''
-                    UPDATE programs
-                    SET validation_status = 'REPEAT'
-                    WHERE program_number = ?
-                ''', (prog_num,))
-                progress_text.insert(tk.END, f"  ✗ Marking as REPEAT: {prog_num}\n")
-                total_marked += 1
+                    progress_text.insert(tk.END, "\n")
+                    progress_text.see(tk.END)
+                    self.root.update()
+                else:
+                    # NAME COLLISION - same filename, different content
+                    group_id = str(uuid.uuid4())[:8]
+                    progress_text.insert(tk.END, f"NAME COLLISION: {filename}\n")
+                    for f in files:
+                        cursor.execute('''
+                            UPDATE programs
+                            SET duplicate_type = 'NAME_COLLISION',
+                                duplicate_group = ?
+                            WHERE program_number = ?
+                        ''', (group_id, f[0]))
+                        progress_text.insert(tk.END, f"  ! {f[0]} - Different content, needs rename\n")
+                        name_collisions += 1
+                    progress_text.insert(tk.END, "\n")
+                    progress_text.see(tk.END)
+                    self.root.update()
 
-            progress_text.insert(tk.END, "\n")
-            progress_text.see(tk.END)
-            self.root.update()
+        # Process CONTENT DUPLICATES (same content, different filenames)
+        for content_key, files in content_map.items():
+            if len(files) > 1:
+                # Get unique filenames in this group
+                filenames = set(os.path.basename(f[11]).lower() if f[11] else "" for f in files)
+
+                if len(filenames) > 1:  # Different filenames but same content
+                    group_id = str(uuid.uuid4())[:8]
+
+                    # Choose parent: oldest file with best validation
+                    def sort_key(f):
+                        val_priority = {'PASS': 0, 'WARNING': 1, 'DIMENSIONAL': 2, 'BORE_WARNING': 3, 'CRITICAL': 4, 'REPEAT': 5}
+                        conf_priority = {'HIGH': 0, 'MEDIUM': 1, 'LOW': 2}
+                        date = f[14] if f[14] else f[10] if f[10] else '9999-12-31'
+                        return (val_priority.get(f[13], 9), conf_priority.get(f[12], 9), date)
+
+                    sorted_files = sorted(files, key=sort_key)
+                    parent = sorted_files[0]
+                    children = sorted_files[1:]
+
+                    progress_text.insert(tk.END, f"CONTENT DUP: {content_key[0][:50]}\n")
+                    progress_text.insert(tk.END, f"  ✓ Parent: {parent[0]} (oldest with best validation)\n")
+
+                    for child in children:
+                        cursor.execute('''
+                            UPDATE programs
+                            SET validation_status = 'REPEAT',
+                                duplicate_type = 'CONTENT_DUP',
+                                parent_file = ?,
+                                duplicate_group = ?
+                            WHERE program_number = ?
+                        ''', (parent[0], group_id, child[0]))
+                        progress_text.insert(tk.END, f"  ✗ Child: {child[0]}\n")
+                        content_dups += 1
+
+                    progress_text.insert(tk.END, "\n")
+                    progress_text.see(tk.END)
+                    self.root.update()
 
         conn.commit()
         conn.close()
 
         # Show results
         progress_label.config(text="Complete!")
-        progress_text.insert(tk.END, f"{'='*60}\n")
-        progress_text.insert(tk.END, f"Total duplicate groups found: {len(duplicate_groups)}\n")
-        progress_text.insert(tk.END, f"Total files marked as REPEAT: {total_marked}\n")
-        progress_text.insert(tk.END, f"\nFiles marked as REPEAT can be filtered out or deleted later.\n")
+        progress_text.insert(tk.END, f"{'='*70}\n")
+        progress_text.insert(tk.END, f"SOLID Duplicates (same file+content): {solid_dups}\n")
+        progress_text.insert(tk.END, f"NAME Collisions (same name, diff content): {name_collisions}\n")
+        progress_text.insert(tk.END, f"CONTENT Duplicates (diff name, same content): {content_dups}\n")
+        progress_text.insert(tk.END, f"\nTotal duplicates found: {solid_dups + name_collisions + content_dups}\n")
         progress_text.see(tk.END)
 
         close_btn = tk.Button(progress_window, text="Close",
