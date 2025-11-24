@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Tuple, Set
 import json
 import sys
+import shutil
 
 # Import the improved parser
 from improved_gcode_parser import ImprovedGCodeParser, GCodeParseResult
@@ -231,6 +232,7 @@ class GCodeDatabaseGUI:
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS programs (
                 program_number TEXT PRIMARY KEY,
+                title TEXT,
                 spacer_type TEXT NOT NULL,
                 outer_diameter REAL,
                 thickness REAL,
@@ -260,6 +262,10 @@ class GCodeDatabaseGUI:
         ''')
 
         # Upgrade existing database if needed
+        try:
+            cursor.execute("ALTER TABLE programs ADD COLUMN title TEXT")
+        except:
+            pass
         try:
             cursor.execute("ALTER TABLE programs ADD COLUMN detection_confidence TEXT")
         except:
@@ -341,6 +347,57 @@ class GCodeDatabaseGUI:
         """Save configuration to file"""
         with open(self.config_file, 'w') as f:
             json.dump(self.config, f, indent=2)
+
+    def backup_database(self) -> bool:
+        """Create a backup of the database in a special backup folder
+
+        Returns:
+            bool: True if backup was successful, False otherwise
+        """
+        try:
+            # Create backup folder if it doesn't exist
+            backup_folder = "Database_Backups"
+            if not os.path.exists(backup_folder):
+                os.makedirs(backup_folder)
+
+            # Generate backup filename with timestamp
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup_filename = f"gcode_database_backup_{timestamp}.db"
+            backup_path = os.path.join(backup_folder, backup_filename)
+
+            # Copy database file
+            shutil.copy2(self.db_path, backup_path)
+
+            # Keep only last 10 backups to prevent folder bloat
+            self.cleanup_old_backups(backup_folder, keep_count=10)
+
+            return True
+        except Exception as e:
+            messagebox.showerror("Backup Error", f"Failed to create database backup:\n{str(e)}")
+            return False
+
+    def cleanup_old_backups(self, backup_folder: str, keep_count: int = 10):
+        """Keep only the most recent N backups
+
+        Args:
+            backup_folder: Path to backup folder
+            keep_count: Number of recent backups to keep
+        """
+        try:
+            # Get all backup files
+            backup_files = [f for f in os.listdir(backup_folder)
+                           if f.startswith("gcode_database_backup_") and f.endswith(".db")]
+
+            # Sort by modification time (newest first)
+            backup_files.sort(key=lambda x: os.path.getmtime(os.path.join(backup_folder, x)), reverse=True)
+
+            # Delete older backups
+            for old_backup in backup_files[keep_count:]:
+                old_path = os.path.join(backup_folder, old_backup)
+                os.remove(old_path)
+        except Exception as e:
+            # Don't show error for cleanup failures, just log it
+            print(f"Backup cleanup warning: {str(e)}")
 
     def get_available_values(self, column: str) -> List[str]:
         """Get distinct values from database column for filter dropdowns"""
@@ -452,6 +509,18 @@ class GCodeDatabaseGUI:
                  bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
                  width=14, height=2).pack(side=tk.LEFT, padx=3)
 
+        tk.Button(tools_group, text="🗑️ Delete Duplicates", command=self.delete_duplicates,
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
+                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+
+        tk.Button(tools_group, text="⚖️ Compare Files", command=self.compare_files,
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
+                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+
+        tk.Button(tools_group, text="📝 Rename Duplicates", command=self.rename_duplicate_files,
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
+                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+
         # Tab 3: Reports
         tab_reports = tk.Frame(ribbon, bg=self.bg_color)
         ribbon.add(tab_reports, text='📊 Reports')
@@ -467,7 +536,7 @@ class GCodeDatabaseGUI:
                  bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
                  width=14, height=2).pack(side=tk.LEFT, padx=3)
 
-        tk.Button(reports_group, text="❓ Help/Legend", command=self.show_legend,
+        tk.Button(reports_group, text="❓ Help & Workflow", command=self.show_legend,
                  bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
                  width=14, height=2).pack(side=tk.LEFT, padx=3)
 
@@ -784,7 +853,53 @@ class GCodeDatabaseGUI:
                 except:
                     continue
         return None
-        
+
+    def update_gcode_program_number(self, file_path, new_program_number):
+        """Update the internal O-number in a G-code file
+
+        Args:
+            file_path: Path to the G-code file
+            new_program_number: New program number (e.g., "o57001" or "57001")
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            # Ensure program number has 'o' prefix
+            if not new_program_number.lower().startswith('o'):
+                new_program_number = 'o' + new_program_number
+
+            # Read file content
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                lines = f.readlines()
+
+            # Find and update the program number line (usually first line starting with O)
+            updated = False
+            for i, line in enumerate(lines):
+                stripped = line.strip().upper()
+                # Match O##### at start of line
+                if stripped.startswith('O') and re.match(r'^O\d{4,}', stripped):
+                    # Replace the O-number
+                    lines[i] = new_program_number.upper() + '\n'
+                    updated = True
+                    break
+
+            if updated:
+                # Write back to file
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.writelines(lines)
+                return True
+            else:
+                # No O-number found in file, add it at the beginning
+                lines.insert(0, new_program_number.upper() + '\n')
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.writelines(lines)
+                return True
+
+        except Exception as e:
+            print(f"Error updating G-code program number: {e}")
+            return False
+
     def scan_folder(self):
         """Scan a folder for gcode files and import them"""
         folder = filedialog.askdirectory(title="Select Folder with G-Code Files",
@@ -799,48 +914,216 @@ class GCodeDatabaseGUI:
         # Show progress window
         progress_window = tk.Toplevel(self.root)
         progress_window.title("Scanning Files...")
-        progress_window.geometry("400x200")
+        progress_window.geometry("700x500")
         progress_window.configure(bg=self.bg_color)
-        
-        progress_label = tk.Label(progress_window, text="Scanning...", 
+
+        progress_label = tk.Label(progress_window, text="Scanning folder...",
                                  bg=self.bg_color, fg=self.fg_color,
                                  font=("Arial", 12))
         progress_label.pack(pady=20)
-        
-        progress_text = scrolledtext.ScrolledText(progress_window, 
+
+        progress_text = scrolledtext.ScrolledText(progress_window,
                                                  bg=self.input_bg, fg=self.fg_color,
-                                                 width=50, height=8)
-        progress_text.pack(padx=10, pady=10)
-        
+                                                 font=("Courier", 9),
+                                                 width=80, height=20)
+        progress_text.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
+
         self.root.update()
-        
+
         # Scan for gcode files (with or without extension)
-        gcode_files = []
+        all_scanned_files = []
+        file_count = 0
         for root, dirs, files in os.walk(folder):
             for file in files:
                 # Match any file containing o##### pattern (4+ digits)
                 # This includes: o57000, o57000.nc, o57000.gcode, etc.
                 if re.search(r'[oO]\d{4,}', file):
-                    gcode_files.append(os.path.join(root, file))
-        
-        progress_label.config(text=f"Found {len(gcode_files)} files. Processing...")
+                    all_scanned_files.append(os.path.join(root, file))
+                    file_count += 1
+                    # Update progress every 50 files
+                    if file_count % 50 == 0:
+                        progress_label.config(text=f"Scanning... found {file_count} files so far")
+                        self.root.update()
+
+        progress_label.config(text=f"Analyzing {len(all_scanned_files)} files...")
+        progress_text.insert(tk.END, f"Found {len(all_scanned_files)} total files. Analyzing...\n\n")
+        progress_text.see(tk.END)
         self.root.update()
-        
-        # Process files
+
+        # Get existing files from database
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
+        cursor.execute("SELECT file_path FROM programs WHERE file_path IS NOT NULL")
+        existing_files_data = {}  # {filename_lower: [file_paths]}
 
+        for row in cursor.fetchall():
+            file_path = row[0]
+            if file_path and os.path.exists(file_path):
+                basename = os.path.basename(file_path).lower()
+                if basename not in existing_files_data:
+                    existing_files_data[basename] = []
+                existing_files_data[basename].append(file_path)
+
+        # Detect duplicates within the scan AND against database
+        files_by_name = {}  # Group scanned files by filename
+        for filepath in all_scanned_files:
+            basename_lower = os.path.basename(filepath).lower()
+            if basename_lower not in files_by_name:
+                files_by_name[basename_lower] = []
+            files_by_name[basename_lower].append(filepath)
+
+        # Categorize files
+        files_to_process = []
+        exact_duplicates_db = []  # Same name + content as database
+        exact_duplicates_scan = []  # Same name + content within scan
+        name_collisions_db = []  # Same name, different content vs database
+        name_collisions_scan = []  # Same name, different content within scan
+
+        analyzed_count = 0
+        total_unique_names = len(files_by_name)
+
+        for basename_lower, filepaths in files_by_name.items():
+            analyzed_count += 1
+            # Update progress every 10 unique filenames
+            if analyzed_count % 10 == 0 or analyzed_count == total_unique_names:
+                progress_label.config(text=f"Analyzing duplicates... {analyzed_count}/{total_unique_names}")
+                self.root.update()
+            # Check against database first
+            in_database = basename_lower in existing_files_data
+
+            if len(filepaths) == 1:
+                # Single file with this name in scan
+                filepath = filepaths[0]
+
+                if in_database:
+                    # Compare content with database file(s)
+                    try:
+                        with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+                            new_content = f.read()
+
+                        is_exact_match = False
+                        for db_path in existing_files_data[basename_lower]:
+                            try:
+                                with open(db_path, 'r', encoding='utf-8', errors='ignore') as f:
+                                    db_content = f.read()
+                                if new_content == db_content:
+                                    is_exact_match = True
+                                    break
+                            except:
+                                continue
+
+                        if is_exact_match:
+                            exact_duplicates_db.append(filepath)
+                        else:
+                            name_collisions_db.append((filepath, existing_files_data[basename_lower][0]))
+                    except:
+                        name_collisions_db.append((filepath, existing_files_data[basename_lower][0]))
+                else:
+                    # New file, safe to add
+                    files_to_process.append(filepath)
+
+            else:
+                # Multiple files with same name in scan
+                # Read all contents and find unique ones
+                file_contents = {}
+                for filepath in filepaths:
+                    try:
+                        with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+                            content = f.read()
+                        if content not in file_contents:
+                            file_contents[content] = []
+                        file_contents[content].append(filepath)
+                    except:
+                        # If can't read, treat as unique
+                        file_contents[filepath] = [filepath]
+
+                # For each unique content, keep first file
+                for content, paths in file_contents.items():
+                    first_file = paths[0]
+                    duplicates_in_scan = paths[1:]
+
+                    # Check if this content matches database
+                    if in_database:
+                        try:
+                            is_exact_match = False
+                            for db_path in existing_files_data[basename_lower]:
+                                try:
+                                    with open(db_path, 'r', encoding='utf-8', errors='ignore') as f:
+                                        db_content = f.read()
+                                    if content == db_content:
+                                        is_exact_match = True
+                                        break
+                                except:
+                                    continue
+
+                            if is_exact_match:
+                                exact_duplicates_db.append(first_file)
+                            else:
+                                name_collisions_db.append((first_file, existing_files_data[basename_lower][0]))
+                        except:
+                            name_collisions_db.append((first_file, existing_files_data[basename_lower][0]))
+                    else:
+                        # New unique content, add first one
+                        files_to_process.append(first_file)
+
+                    # Mark duplicates within scan
+                    for dup in duplicates_in_scan:
+                        exact_duplicates_scan.append((dup, first_file))
+
+        # Display analysis results
+        progress_text.insert(tk.END, f"=== SCAN ANALYSIS ===\n")
+        progress_text.insert(tk.END, f"Files to process: {len(files_to_process)}\n")
+        progress_text.insert(tk.END, f"Exact duplicates (vs database): {len(exact_duplicates_db)}\n")
+        progress_text.insert(tk.END, f"Exact duplicates (within scan): {len(exact_duplicates_scan)}\n")
+        progress_text.insert(tk.END, f"Name collisions (vs database): {len(name_collisions_db)}\n")
+        progress_text.insert(tk.END, f"Name collisions (within scan): {len(name_collisions_scan)}\n\n")
+
+        # Show details
+        if exact_duplicates_db:
+            progress_text.insert(tk.END, f"=== SKIPPING - Already in Database (Exact Match) ===\n")
+            for dup in exact_duplicates_db[:10]:
+                progress_text.insert(tk.END, f"  SKIP: {os.path.basename(dup)}\n")
+            if len(exact_duplicates_db) > 10:
+                progress_text.insert(tk.END, f"  ... and {len(exact_duplicates_db) - 10} more\n")
+            progress_text.insert(tk.END, "\n")
+
+        if exact_duplicates_scan:
+            progress_text.insert(tk.END, f"=== SKIPPING - Duplicates Within Scan ===\n")
+            for dup, kept in exact_duplicates_scan[:10]:
+                progress_text.insert(tk.END, f"  SKIP: {os.path.basename(dup)} (same as {os.path.basename(kept)})\n")
+            if len(exact_duplicates_scan) > 10:
+                progress_text.insert(tk.END, f"  ... and {len(exact_duplicates_scan) - 10} more\n")
+            progress_text.insert(tk.END, "\n")
+
+        if name_collisions_db:
+            progress_text.insert(tk.END, f"⚠️  WARNING - Name Collisions vs Database ===\n")
+            progress_text.insert(tk.END, f"These files will be SKIPPED. Rename them first!\n\n")
+            for new_file, db_file in name_collisions_db[:5]:
+                progress_text.insert(tk.END, f"  ⚠️  {os.path.basename(new_file)}\n")
+                progress_text.insert(tk.END, f"     Scan: {new_file}\n")
+                progress_text.insert(tk.END, f"     Database: {db_file}\n\n")
+            if len(name_collisions_db) > 5:
+                progress_text.insert(tk.END, f"  ... and {len(name_collisions_db) - 5} more\n")
+            progress_text.insert(tk.END, "\n")
+
+        progress_text.insert(tk.END, f"Processing {len(files_to_process)} files...\n\n")
+        progress_text.see(tk.END)
+        self.root.update()
+
+        # Process only the unique files
         added = 0
         updated = 0
         errors = 0
-        duplicates = 0
 
-        # Track which program numbers we've seen in this scan
+        # Track which program numbers we've seen during processing
         seen_in_scan = {}  # program_number -> filepath
+        gcode_files = files_to_process  # Use filtered list
+        total_to_process = len(gcode_files)
 
-        for filepath in gcode_files:
+        for idx, filepath in enumerate(gcode_files, 1):
             filename = os.path.basename(filepath)
-            progress_text.insert(tk.END, f"Processing: {filename}\n")
+            progress_label.config(text=f"Processing {idx}/{total_to_process}: {filename}")
+            progress_text.insert(tk.END, f"[{idx}/{total_to_process}] Processing: {filename}\n")
             progress_text.see(tk.END)
             self.root.update()
             
@@ -900,7 +1183,7 @@ class GCodeDatabaseGUI:
                     else:
                         # Insert new
                         cursor.execute('''
-                            INSERT INTO programs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            INSERT INTO programs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ''', (record.program_number, record.title, record.spacer_type, record.outer_diameter,
                              record.thickness, record.thickness_display, record.center_bore, record.hub_height,
                              record.hub_diameter, record.counter_bore_diameter,
@@ -909,8 +1192,9 @@ class GCodeDatabaseGUI:
                              record.last_modified, record.file_path, record.detection_confidence,
                              record.detection_method, record.validation_status,
                              record.validation_issues, record.validation_warnings,
-                             record.cb_from_gcode, record.ob_from_gcode,
-                             record.bore_warnings, record.dimensional_issues, record.lathe))
+                             record.bore_warnings, record.dimensional_issues,
+                             record.cb_from_gcode, record.ob_from_gcode, record.lathe,
+                             None, None, None))  # duplicate_type, parent_file, duplicate_group
                         added += 1
                         
                 except Exception as e:
@@ -925,11 +1209,21 @@ class GCodeDatabaseGUI:
         conn.commit()
         conn.close()
         
+        # Calculate total duplicates (both exact duplicates and name collisions)
+        total_duplicates = len(exact_duplicates_db) + len(exact_duplicates_scan) + len(name_collisions_db) + len(name_collisions_scan)
+
         # Show results
         progress_label.config(text="Complete!")
         progress_text.insert(tk.END, f"\n{'='*50}\n")
-        progress_text.insert(tk.END, f"Files found: {len(gcode_files)}\n")
-        progress_text.insert(tk.END, f"Duplicates: {duplicates}\n")
+        progress_text.insert(tk.END, f"SCAN SUMMARY\n")
+        progress_text.insert(tk.END, f"{'='*50}\n")
+        progress_text.insert(tk.END, f"Total files scanned: {len(all_scanned_files)}\n")
+        progress_text.insert(tk.END, f"Files to process: {len(files_to_process)}\n")
+        progress_text.insert(tk.END, f"Duplicates skipped: {total_duplicates}\n")
+        progress_text.insert(tk.END, f"  - Exact match (DB): {len(exact_duplicates_db)}\n")
+        progress_text.insert(tk.END, f"  - Exact match (scan): {len(exact_duplicates_scan)}\n")
+        progress_text.insert(tk.END, f"  - Name collision (DB): {len(name_collisions_db)}\n")
+        progress_text.insert(tk.END, f"  - Name collision (scan): {len(name_collisions_scan)}\n")
         progress_text.insert(tk.END, f"Added: {added}\n")
         progress_text.insert(tk.END, f"Updated: {updated}\n")
         progress_text.insert(tk.END, f"Errors: {errors}\n")
@@ -975,25 +1269,99 @@ class GCodeDatabaseGUI:
 
         self.root.update()
 
-        # Get all existing filenames from database (just the filename, not full path)
+        # Get all existing files from database (filename and content hash)
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute("SELECT file_path FROM programs WHERE file_path IS NOT NULL")
-        existing_filenames = {os.path.basename(row[0]).lower() for row in cursor.fetchall()}
+        existing_files_data = {}  # {filename_lower: [file_paths]}
+
+        for row in cursor.fetchall():
+            file_path = row[0]
+            if file_path and os.path.exists(file_path):
+                basename = os.path.basename(file_path).lower()
+                if basename not in existing_files_data:
+                    existing_files_data[basename] = []
+                existing_files_data[basename].append(file_path)
 
         # Scan for gcode files (with or without extension)
         gcode_files = []
+        name_collisions = []  # Files with same name but need content check
+
         for root, dirs, files in os.walk(folder):
             for file in files:
                 # Match any file containing o##### pattern (4+ digits)
                 if re.search(r'[oO]\d{4,}', file):
-                    # Only add if filename not already in database
-                    if file.lower() not in existing_filenames:
-                        gcode_files.append(os.path.join(root, file))
+                    filepath = os.path.join(root, file)
+                    basename_lower = file.lower()
 
-        progress_label.config(text=f"Found {len(gcode_files)} new files. Processing...")
-        progress_text.insert(tk.END, f"Skipped {len(existing_filenames)} files already in database.\n")
-        progress_text.insert(tk.END, f"Found {len(gcode_files)} new files to add.\n\n")
+                    # Check if filename exists in database
+                    if basename_lower in existing_files_data:
+                        # Need to check content to see if it's exact duplicate
+                        name_collisions.append((filepath, existing_files_data[basename_lower]))
+                    else:
+                        # New filename, safe to add
+                        gcode_files.append(filepath)
+
+        # Check name collisions for exact duplicates vs different content
+        exact_duplicates = []
+        different_content = []
+
+        for new_file, existing_paths in name_collisions:
+            # Read new file content
+            try:
+                with open(new_file, 'r', encoding='utf-8', errors='ignore') as f:
+                    new_content = f.read()
+
+                # Compare with existing file(s)
+                is_exact_match = False
+                for existing_path in existing_paths:
+                    try:
+                        with open(existing_path, 'r', encoding='utf-8', errors='ignore') as f:
+                            existing_content = f.read()
+
+                        if new_content == existing_content:
+                            is_exact_match = True
+                            break
+                    except:
+                        continue
+
+                if is_exact_match:
+                    exact_duplicates.append(new_file)
+                else:
+                    different_content.append((new_file, existing_paths[0]))
+            except:
+                # If can't read, treat as different content (to be safe)
+                different_content.append((new_file, existing_paths[0]))
+
+        progress_label.config(text=f"Analyzing files...")
+        progress_text.insert(tk.END, f"Total files scanned: {len(gcode_files) + len(name_collisions)}\n")
+        progress_text.insert(tk.END, f"New files (unique names): {len(gcode_files)}\n")
+        progress_text.insert(tk.END, f"Exact duplicates (ignored): {len(exact_duplicates)}\n")
+        progress_text.insert(tk.END, f"Name collisions (different content): {len(different_content)}\n\n")
+
+        # Show exact duplicates being skipped
+        if exact_duplicates:
+            progress_text.insert(tk.END, f"=== SKIPPING EXACT DUPLICATES ===\n")
+            for dup_file in exact_duplicates[:10]:
+                progress_text.insert(tk.END, f"  SKIP: {os.path.basename(dup_file)} (exact match already in database)\n")
+            if len(exact_duplicates) > 10:
+                progress_text.insert(tk.END, f"  ... and {len(exact_duplicates) - 10} more\n")
+            progress_text.insert(tk.END, f"\n")
+
+        # Warn about name collisions
+        if different_content:
+            progress_text.insert(tk.END, f"⚠️  WARNING - NAME COLLISIONS DETECTED ===\n")
+            progress_text.insert(tk.END, f"The following files have the same name as files in the database\n")
+            progress_text.insert(tk.END, f"but DIFFERENT CONTENT. You must rename them before adding!\n\n")
+            for new_file, existing_file in different_content[:10]:
+                progress_text.insert(tk.END, f"  ⚠️  {os.path.basename(new_file)}\n")
+                progress_text.insert(tk.END, f"     New: {new_file}\n")
+                progress_text.insert(tk.END, f"     Existing: {existing_file}\n\n")
+            if len(different_content) > 10:
+                progress_text.insert(tk.END, f"  ... and {len(different_content) - 10} more\n")
+            progress_text.insert(tk.END, f"\nPlease rename these files and scan again.\n\n")
+
+        progress_text.insert(tk.END, f"Processing {len(gcode_files)} new files...\n\n")
         progress_text.see(tk.END)
         self.root.update()
 
@@ -1070,11 +1438,13 @@ class GCodeDatabaseGUI:
                             program_number, title, spacer_type, outer_diameter, thickness, thickness_display,
                             center_bore, hub_height, hub_diameter,
                             counter_bore_diameter, counter_bore_depth,
-                            material, last_modified, file_path,
+                            paired_program, material, notes, date_created, last_modified, file_path,
                             detection_confidence, detection_method,
                             validation_status, validation_issues,
-                            validation_warnings, bore_warnings, dimensional_issues
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            validation_warnings, bore_warnings, dimensional_issues,
+                            cb_from_gcode, ob_from_gcode, lathe,
+                            duplicate_type, parent_file, duplicate_group
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''', (
                         record.program_number,
                         record.title,
@@ -1087,7 +1457,10 @@ class GCodeDatabaseGUI:
                         record.hub_diameter,
                         record.counter_bore_diameter,
                         record.counter_bore_depth,
+                        record.paired_program,
                         record.material,
+                        record.notes,
+                        datetime.now().isoformat(),
                         datetime.now().isoformat(),
                         filepath,
                         record.detection_confidence,
@@ -1096,7 +1469,13 @@ class GCodeDatabaseGUI:
                         record.validation_issues,
                         record.validation_warnings,
                         record.bore_warnings,
-                        record.dimensional_issues
+                        record.dimensional_issues,
+                        record.cb_from_gcode,
+                        record.ob_from_gcode,
+                        record.lathe,
+                        None,  # duplicate_type
+                        None,  # parent_file
+                        None   # duplicate_group
                     ))
                     added += 1
                     progress_text.insert(tk.END, f"  ADDED: {record.program_number}\n")
@@ -2349,8 +2728,531 @@ class GCodeDatabaseGUI:
                              font=("Arial", 10, "bold"))
         close_btn.pack(pady=10)
 
+    def delete_duplicates(self):
+        """Delete all duplicate files (REPEAT status) keeping only parent files"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        # Count duplicates to be deleted
+        cursor.execute("""
+            SELECT COUNT(*) FROM programs
+            WHERE validation_status = 'REPEAT'
+        """)
+        dup_count = cursor.fetchone()[0]
+
+        if dup_count == 0:
+            conn.close()
+            messagebox.showinfo("No Duplicates",
+                "No duplicate files found.\n\n"
+                "Use 'Find Repeats' first to identify duplicates.")
+            return
+
+        # Get details about what will be deleted
+        cursor.execute("""
+            SELECT program_number, duplicate_type, parent_file
+            FROM programs
+            WHERE validation_status = 'REPEAT'
+            ORDER BY duplicate_type, parent_file
+        """)
+        duplicates = cursor.fetchall()
+        conn.close()
+
+        # Confirmation dialog
+        result = messagebox.askyesno(
+            "Delete All Duplicates",
+            f"This will DELETE {dup_count} duplicate record(s) from the DATABASE.\n\n"
+            f"✓ Parent files (best versions) will be KEPT\n"
+            f"✗ Child files (duplicates) will be DELETED\n\n"
+            f"⚠️  The actual files on disk will NOT be deleted.\n"
+            f"⚠️  Only database records will be removed.\n\n"
+            f"Do you want to continue?",
+            icon='warning'
+        )
+
+        if not result:
+            return
+
+        # Second confirmation - type "DELETE DUPLICATES"
+        confirm_window = tk.Toplevel(self.root)
+        confirm_window.title("Final Confirmation")
+        confirm_window.geometry("500x250")
+        confirm_window.configure(bg=self.bg_color)
+        confirm_window.transient(self.root)
+        confirm_window.grab_set()
+
+        tk.Label(confirm_window,
+                text=f"⚠️  You are about to delete {dup_count} duplicate records",
+                bg=self.bg_color, fg=self.fg_color,
+                font=("Arial", 12, "bold")).pack(pady=10)
+
+        tk.Label(confirm_window,
+                text='Type "DELETE DUPLICATES" to confirm:',
+                bg=self.bg_color, fg=self.fg_color,
+                font=("Arial", 10)).pack(pady=10)
+
+        confirm_entry = tk.Entry(confirm_window, bg=self.input_bg, fg=self.fg_color,
+                                font=("Arial", 12), width=25)
+        confirm_entry.pack(pady=10)
+        confirm_entry.focus()
+
+        confirmed = [False]
+
+        def check_confirmation():
+            if confirm_entry.get() == "DELETE DUPLICATES":
+                confirmed[0] = True
+                confirm_window.destroy()
+            else:
+                messagebox.showerror("Invalid", 'You must type "DELETE DUPLICATES" exactly to confirm.')
+
+        def cancel_delete():
+            confirm_window.destroy()
+
+        btn_frame = tk.Frame(confirm_window, bg=self.bg_color)
+        btn_frame.pack(pady=10)
+
+        tk.Button(btn_frame, text="Confirm", command=check_confirmation,
+                 bg=self.button_bg, fg=self.fg_color,
+                 font=("Arial", 10, "bold"), width=10).pack(side=tk.LEFT, padx=5)
+
+        tk.Button(btn_frame, text="Cancel", command=cancel_delete,
+                 bg=self.button_bg, fg=self.fg_color,
+                 font=("Arial", 10, "bold"), width=10).pack(side=tk.LEFT, padx=5)
+
+        # Bind Enter key to confirm
+        confirm_entry.bind('<Return>', lambda e: check_confirmation())
+
+        # Wait for window to close
+        self.root.wait_window(confirm_window)
+
+        if not confirmed[0]:
+            return
+
+        # Create database backup before deleting
+        if not self.backup_database():
+            messagebox.showerror("Backup Failed",
+                "Database backup failed. Delete operation canceled for safety.\n\n"
+                "Please check the error and try again.")
+            return
+
+        # Show progress window
+        progress_window = tk.Toplevel(self.root)
+        progress_window.title("Deleting Duplicates")
+        progress_window.geometry("700x500")
+        progress_window.configure(bg=self.bg_color)
+
+        tk.Label(progress_window,
+                text="Deleting duplicate records...",
+                bg=self.bg_color, fg=self.fg_color,
+                font=("Arial", 12, "bold")).pack(pady=10)
+
+        progress_text = scrolledtext.ScrolledText(progress_window,
+                                                  bg=self.input_bg, fg=self.fg_color,
+                                                  font=("Courier", 9),
+                                                  wrap=tk.WORD)
+        progress_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # Group duplicates by type for reporting
+        by_type = {}
+        for prog_num, dup_type, parent in duplicates:
+            if dup_type not in by_type:
+                by_type[dup_type] = []
+            by_type[dup_type].append((prog_num, parent))
+
+        # Show what's being deleted
+        progress_text.insert(tk.END, f"Deleting {dup_count} duplicate records:\n\n")
+
+        for dup_type, items in by_type.items():
+            progress_text.insert(tk.END, f"--- {dup_type or 'Unknown Type'} ({len(items)} records) ---\n")
+            for prog_num, parent in items[:10]:  # Show first 10
+                progress_text.insert(tk.END, f"  DELETE: {prog_num} (parent: {parent or 'N/A'})\n")
+            if len(items) > 10:
+                progress_text.insert(tk.END, f"  ... and {len(items) - 10} more\n")
+            progress_text.insert(tk.END, "\n")
+            self.root.update()
+
+        # Delete from database
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                DELETE FROM programs
+                WHERE validation_status = 'REPEAT'
+            """)
+
+            deleted_count = cursor.rowcount
+            conn.commit()
+            conn.close()
+
+            progress_text.insert(tk.END, f"{'='*60}\n")
+            progress_text.insert(tk.END, f"✓ Successfully deleted {deleted_count} duplicate record(s)\n")
+            progress_text.insert(tk.END, f"✓ Parent files have been preserved\n")
+            progress_text.insert(tk.END, f"⚠️  Files on disk were NOT deleted\n")
+
+            # Refresh the display
+            self.refresh_filter_values()
+            self.refresh_results()
+
+        except Exception as e:
+            progress_text.insert(tk.END, f"\n\n❌ ERROR: {str(e)}\n")
+            messagebox.showerror("Error", f"An error occurred:\n{str(e)}")
+
+        # Add close button
+        close_btn = tk.Button(progress_window, text="Close",
+                             command=progress_window.destroy,
+                             bg=self.button_bg, fg=self.fg_color,
+                             font=("Arial", 10, "bold"))
+        close_btn.pack(pady=10)
+
         # Refresh the display
         self.refresh_results()
+
+    def compare_files(self):
+        """Compare selected files side-by-side with difference highlighting"""
+        # Get selected items from treeview
+        selected_items = self.tree.selection()
+
+        if len(selected_items) < 2:
+            messagebox.showwarning("Selection Required",
+                "Please select 2 or more files to compare.\n\n"
+                "Hold Ctrl and click to select multiple files.")
+            return
+
+        if len(selected_items) > 4:
+            result = messagebox.askyesno("Many Files Selected",
+                f"You selected {len(selected_items)} files.\n\n"
+                f"Comparing many files may be difficult to view.\n\n"
+                f"Continue anyway?")
+            if not result:
+                return
+
+        # Extract program numbers
+        program_numbers = []
+        for item in selected_items:
+            values = self.tree.item(item)['values']
+            if values:
+                program_numbers.append(values[0])
+
+        # Get file details from database
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        placeholders = ','.join('?' * len(program_numbers))
+        cursor.execute(f'''
+            SELECT program_number, title, file_path, spacer_type, outer_diameter, thickness,
+                   center_bore, hub_height, hub_diameter, counter_bore_diameter,
+                   counter_bore_depth, validation_status, detection_confidence,
+                   duplicate_type, parent_file, last_modified, date_created
+            FROM programs
+            WHERE program_number IN ({placeholders})
+        ''', program_numbers)
+
+        files_data = cursor.fetchall()
+        conn.close()
+
+        if len(files_data) < 2:
+            messagebox.showerror("Error", "Could not retrieve file information from database.")
+            return
+
+        # Open comparison window
+        FileComparisonWindow(self.root, files_data, self.bg_color, self.fg_color,
+                           self.input_bg, self.button_bg, self.refresh_results, self)
+
+    def rename_duplicate_files(self):
+        """Rename physical files with duplicate filenames and update database - FILTERED VIEW ONLY"""
+        # Get currently displayed items (respects filters)
+        displayed_items = self.tree.get_children()
+
+        if not displayed_items:
+            messagebox.showwarning("No Files",
+                "No files in current view.\n\n"
+                "Apply filters to show the files you want to rename.")
+            return
+
+        # Get program numbers from filtered view
+        filtered_program_numbers = []
+        for item in displayed_items:
+            values = self.tree.item(item)['values']
+            if values:
+                filtered_program_numbers.append(values[0])
+
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        # Find files with duplicate filenames - ONLY IN FILTERED VIEW
+        placeholders = ','.join('?' * len(filtered_program_numbers))
+        cursor.execute(f"""
+            SELECT program_number, file_path, duplicate_type, parent_file, duplicate_group,
+                   validation_status
+            FROM programs
+            WHERE file_path IS NOT NULL
+              AND program_number IN ({placeholders})
+            ORDER BY file_path
+        """, filtered_program_numbers)
+        all_files = cursor.fetchall()
+
+        # Group files by filename (case-insensitive)
+        filename_groups = {}
+        for prog_num, file_path, dup_type, parent, dup_group, val_status in all_files:
+            if not file_path or not os.path.exists(file_path):
+                continue
+
+            basename = os.path.basename(file_path).lower()
+            if basename not in filename_groups:
+                filename_groups[basename] = []
+            filename_groups[basename].append((prog_num, file_path, dup_type, parent, dup_group, val_status))
+
+        # Find files that need renaming (duplicates)
+        duplicates_to_rename = []
+        for basename, files in filename_groups.items():
+            if len(files) > 1:
+                # Sort to determine parent (keep oldest with best validation)
+                def sort_key(f):
+                    val_priority = {'PASS': 0, 'WARNING': 1, 'DIMENSIONAL': 2, 'BORE_WARNING': 3, 'CRITICAL': 4, 'REPEAT': 5}
+                    return val_priority.get(f[5], 9)
+
+                sorted_files = sorted(files, key=sort_key)
+                parent_file = sorted_files[0]
+                child_files = sorted_files[1:]
+
+                for child in child_files:
+                    duplicates_to_rename.append({
+                        'prog_num': child[0],
+                        'old_path': child[1],
+                        'parent_prog': parent_file[0],
+                        'basename': basename
+                    })
+
+        conn.close()
+
+        if not duplicates_to_rename:
+            messagebox.showinfo("No Duplicates",
+                "No duplicate filenames found.\n\n"
+                "All files have unique names.")
+            return
+
+        # Show mode selection: Preview or Execute
+        mode_choice = [None]
+
+        mode_window = tk.Toplevel(self.root)
+        mode_window.title("Rename Duplicate Files")
+        mode_window.geometry("500x200")
+        mode_window.configure(bg=self.bg_color)
+        mode_window.transient(self.root)
+        mode_window.grab_set()
+
+        tk.Label(mode_window,
+                text=f"Found {len(duplicates_to_rename)} file(s) with duplicate names",
+                bg=self.bg_color, fg=self.fg_color,
+                font=("Arial", 12, "bold")).pack(pady=15)
+
+        tk.Label(mode_window,
+                text="This will assign new O-numbers (o59000+) to duplicate files.",
+                bg=self.bg_color, fg=self.fg_color,
+                font=("Arial", 10)).pack(pady=5)
+
+        tk.Label(mode_window,
+                text="Updates: physical file, internal O-number, and database.",
+                bg=self.bg_color, fg=self.fg_color,
+                font=("Arial", 10)).pack(pady=5)
+
+        tk.Label(mode_window,
+                text="Choose mode:",
+                bg=self.bg_color, fg=self.fg_color,
+                font=("Arial", 10)).pack(pady=5)
+
+        def preview_mode():
+            mode_choice[0] = "preview"
+            mode_window.destroy()
+
+        def execute_mode():
+            mode_choice[0] = "execute"
+            mode_window.destroy()
+
+        def cancel_mode():
+            mode_window.destroy()
+
+        btn_frame = tk.Frame(mode_window, bg=self.bg_color)
+        btn_frame.pack(pady=15)
+
+        tk.Button(btn_frame, text="🔍 Preview (Dry Run)",
+                 command=preview_mode,
+                 bg=self.button_bg, fg=self.fg_color,
+                 font=("Arial", 10, "bold"), width=20).pack(side=tk.LEFT, padx=5)
+
+        tk.Button(btn_frame, text="▶️ Execute (Rename Files)",
+                 command=execute_mode,
+                 bg=self.accent_color, fg=self.fg_color,
+                 font=("Arial", 10, "bold"), width=20).pack(side=tk.LEFT, padx=5)
+
+        tk.Button(btn_frame, text="❌ Cancel",
+                 command=cancel_mode,
+                 bg=self.button_bg, fg=self.fg_color,
+                 font=("Arial", 10), width=10).pack(side=tk.LEFT, padx=5)
+
+        self.root.wait_window(mode_window)
+
+        if mode_choice[0] is None:
+            return
+
+        dry_run = (mode_choice[0] == "preview")
+
+        # Create backup if executing
+        if not dry_run:
+            if not self.backup_database():
+                messagebox.showerror("Backup Failed",
+                    "Database backup failed. Rename operation canceled for safety.")
+                return
+
+        # Show progress window
+        progress_window = tk.Toplevel(self.root)
+        if dry_run:
+            progress_window.title("Rename Preview (Dry Run)")
+        else:
+            progress_window.title("Assigning New O-Numbers to Duplicates")
+        progress_window.geometry("900x600")
+        progress_window.configure(bg=self.bg_color)
+
+        tk.Label(progress_window,
+                text="Preview - Files that WOULD be assigned new O-numbers:" if dry_run else "Assigning new O-numbers...",
+                bg=self.bg_color, fg=self.fg_color,
+                font=("Arial", 12, "bold")).pack(pady=10)
+
+        progress_text = scrolledtext.ScrolledText(progress_window,
+                                                  bg=self.input_bg, fg=self.fg_color,
+                                                  font=("Courier", 9),
+                                                  wrap=tk.WORD)
+        progress_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        if dry_run:
+            progress_text.insert(tk.END, f"=== DRY RUN MODE - NO CHANGES WILL BE MADE ===\n\n")
+
+        progress_text.insert(tk.END, f"Found {len(duplicates_to_rename)} duplicate file(s) in filtered view.\n")
+        progress_text.insert(tk.END, f"Assigning new O-numbers starting from o59000...\n\n")
+
+        renamed_count = 0
+        errors = 0
+
+        # Get all existing program numbers to find available O-numbers
+        conn_temp = sqlite3.connect(self.db_path)
+        cursor_temp = conn_temp.cursor()
+        cursor_temp.execute("SELECT program_number FROM programs")
+        existing_program_numbers = set()
+        for row in cursor_temp.fetchall():
+            prog = row[0]
+            # Extract numeric part
+            match = re.search(r'o?(\d+)', prog, re.IGNORECASE)
+            if match:
+                existing_program_numbers.add(int(match.group(1)))
+        conn_temp.close()
+
+        # Find available O-numbers starting from 59000 (high range to avoid conflicts)
+        def find_next_available_onumber(start=59000):
+            """Find the next available O-number"""
+            current = start
+            while current in existing_program_numbers:
+                current += 1
+            existing_program_numbers.add(current)  # Reserve it
+            return current
+
+        # Track used names to avoid collisions
+        used_names = set()
+
+        for idx, dup_info in enumerate(duplicates_to_rename, 1):
+            prog_num = dup_info['prog_num']
+            old_path = dup_info['old_path']
+            parent_prog = dup_info['parent_prog']
+
+            # Get available O-number
+            new_onumber = find_next_available_onumber()
+            new_prog_num = f"o{new_onumber}"
+
+            # Generate new filename
+            old_dir = os.path.dirname(old_path)
+            old_basename = os.path.basename(old_path)
+            name_without_ext, ext = os.path.splitext(old_basename)
+
+            # New filename with proper O-number
+            new_basename = f"o{new_onumber}{ext}"
+            new_path = os.path.join(old_dir, new_basename)
+
+            # Safety check - ensure new path doesn't exist
+            if os.path.exists(new_path):
+                progress_text.insert(tk.END, f"[{idx}] ⚠️  SKIP: {new_basename} already exists\n\n")
+                continue
+
+            used_names.add(new_basename.lower())
+
+            try:
+                if dry_run:
+                    progress_text.insert(tk.END, f"[{idx}] WOULD RENAME:\n")
+                    progress_text.insert(tk.END, f"    Old File: {old_basename}\n")
+                    progress_text.insert(tk.END, f"    New File: {new_basename}\n")
+                    progress_text.insert(tk.END, f"    Old Program: {prog_num} (parent: {parent_prog})\n")
+                    progress_text.insert(tk.END, f"    New Program: {new_prog_num}\n\n")
+                    renamed_count += 1
+                else:
+                    # Actually rename the physical file
+                    os.rename(old_path, new_path)
+
+                    # Update internal G-code program number
+                    if not self.update_gcode_program_number(new_path, new_prog_num):
+                        progress_text.insert(tk.END, f"    ⚠️  Warning: Could not update internal O-number\n")
+
+                    # Update database with new path AND new program number
+                    conn = sqlite3.connect(self.db_path)
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        UPDATE programs
+                        SET file_path = ?,
+                            program_number = ?
+                        WHERE program_number = ?
+                    """, (new_path, new_prog_num, prog_num))
+                    conn.commit()
+                    conn.close()
+
+                    progress_text.insert(tk.END, f"[{idx}] ✓ RENAMED:\n")
+                    progress_text.insert(tk.END, f"    Old File: {old_basename}\n")
+                    progress_text.insert(tk.END, f"    New File: {new_basename}\n")
+                    progress_text.insert(tk.END, f"    Old Program: {prog_num}\n")
+                    progress_text.insert(tk.END, f"    New Program: {new_prog_num}\n\n")
+                    renamed_count += 1
+
+                progress_text.see(tk.END)
+                self.root.update()
+
+            except Exception as e:
+                progress_text.insert(tk.END, f"[{idx}] ❌ ERROR: {prog_num}\n")
+                progress_text.insert(tk.END, f"    {str(e)}\n\n")
+                errors += 1
+                progress_text.see(tk.END)
+                self.root.update()
+
+        # Summary
+        progress_text.insert(tk.END, f"\n{'='*70}\n")
+        if dry_run:
+            progress_text.insert(tk.END, f"PREVIEW COMPLETE - No actual changes were made.\n")
+            progress_text.insert(tk.END, f"Would assign new O-numbers to: {renamed_count} file(s)\n")
+            progress_text.insert(tk.END, f"\nClick 'Execute' to apply these changes.\n")
+        else:
+            progress_text.insert(tk.END, f"OPERATION COMPLETE!\n")
+            progress_text.insert(tk.END, f"Successfully assigned new O-numbers to: {renamed_count} file(s)\n")
+            progress_text.insert(tk.END, f"Errors: {errors}\n")
+            progress_text.insert(tk.END, f"\nAll files now have unique O-numbers (o59000+)\n")
+            progress_text.insert(tk.END, f"Physical files renamed, internal O-numbers updated, database updated.\n")
+
+            # Refresh display
+            self.refresh_filter_values()
+            self.refresh_results()
+
+        progress_text.see(tk.END)
+
+        # Close button
+        close_btn = tk.Button(progress_window, text="Close",
+                             command=progress_window.destroy,
+                             bg=self.button_bg, fg=self.fg_color,
+                             font=("Arial", 10, "bold"))
+        close_btn.pack(pady=10)
 
     def organize_files_by_od(self):
         """Copy all database files to organized folder structure by OD"""
@@ -2481,6 +3383,59 @@ class GCodeDatabaseGUI:
             messagebox.showwarning("No Results", "No files in current view to copy.\n\nPlease search/filter first.")
             return
 
+        # Ask user: Preview or Execute?
+        preview_window = tk.Toplevel(self.root)
+        preview_window.title("Copy Mode")
+        preview_window.geometry("400x180")
+        preview_window.configure(bg=self.bg_color)
+
+        tk.Label(preview_window,
+                text=f"Ready to copy {len(displayed_items)} files",
+                bg=self.bg_color, fg=self.fg_color,
+                font=("Arial", 12, "bold")).pack(pady=15)
+
+        tk.Label(preview_window,
+                text="Choose operation mode:",
+                bg=self.bg_color, fg=self.fg_color,
+                font=("Arial", 10)).pack(pady=5)
+
+        mode_choice = [None]  # Use list to modify in nested function
+
+        def preview_mode():
+            mode_choice[0] = "preview"
+            preview_window.destroy()
+
+        def execute_mode():
+            mode_choice[0] = "execute"
+            preview_window.destroy()
+
+        btn_frame = tk.Frame(preview_window, bg=self.bg_color)
+        btn_frame.pack(pady=15)
+
+        tk.Button(btn_frame, text="🔍 Preview (Dry Run)", command=preview_mode,
+                 bg=self.button_bg, fg=self.fg_color,
+                 font=("Arial", 10, "bold"), width=18, height=2).pack(side=tk.LEFT, padx=5)
+
+        tk.Button(btn_frame, text="▶️ Execute (Copy Files)", command=execute_mode,
+                 bg=self.accent_color, fg=self.fg_color,
+                 font=("Arial", 10, "bold"), width=18, height=2).pack(side=tk.LEFT, padx=5)
+
+        # Wait for user choice
+        self.root.wait_window(preview_window)
+
+        if not mode_choice[0]:
+            return  # User closed window
+
+        dry_run = (mode_choice[0] == "preview")
+
+        # Create database backup before executing (not for preview)
+        if not dry_run:
+            if not self.backup_database():
+                messagebox.showerror("Backup Failed",
+                    "Database backup failed. Operation canceled for safety.\n\n"
+                    "Please check the error and try again.")
+                return
+
         # Ask user for destination folder
         dest_folder = filedialog.askdirectory(title="Select Destination Folder for Filtered Files")
         if not dest_folder:
@@ -2488,11 +3443,13 @@ class GCodeDatabaseGUI:
 
         # Show progress window
         progress_window = tk.Toplevel(self.root)
-        progress_window.title("Copying Filtered View...")
+        title_text = "Preview: Copy Filtered View" if dry_run else "Copying Filtered View..."
+        progress_window.title(title_text)
         progress_window.geometry("700x500")
         progress_window.configure(bg=self.bg_color)
 
-        progress_label = tk.Label(progress_window, text="Copying files...",
+        label_text = "Preview Mode (No files will be copied)" if dry_run else "Copying files..."
+        progress_label = tk.Label(progress_window, text=label_text,
                                  bg=self.bg_color, fg=self.fg_color,
                                  font=("Arial", 12))
         progress_label.pack(pady=20)
@@ -2559,8 +3516,14 @@ class GCodeDatabaseGUI:
             self.root.update()
 
             # Check if file exists
-            if not file_path or not os.path.exists(file_path):
-                progress_text.insert(tk.END, f"SKIP: {prog_num} - file not found\n")
+            if not file_path:
+                progress_text.insert(tk.END, f"⚠️  SKIP: {prog_num} - no file path in database\n")
+                progress_text.see(tk.END)
+                skipped += 1
+                continue
+
+            if not os.path.exists(file_path):
+                progress_text.insert(tk.END, f"⚠️  SKIP: {prog_num} - file not found at: {file_path}\n")
                 progress_text.see(tk.END)
                 skipped += 1
                 continue
@@ -2600,23 +3563,46 @@ class GCodeDatabaseGUI:
             dest_path = os.path.join(od_folder_path, new_filename)
 
             try:
-                shutil.copy2(file_path, dest_path)
-                progress_text.insert(tk.END, f"COPY: {prog_num} -> {folder_name}/{new_filename}\n")
-                progress_text.see(tk.END)
-                copied += 1
+                if dry_run:
+                    # Preview mode - just show what would happen
+                    progress_text.insert(tk.END, f"WOULD COPY: {prog_num} -> {folder_name}/{new_filename}\n")
+                    progress_text.see(tk.END)
+                    copied += 1
+                else:
+                    # Actually copy the file
+                    shutil.copy2(file_path, dest_path)
+                    progress_text.insert(tk.END, f"COPIED: {prog_num} -> {folder_name}/{new_filename}\n")
+                    progress_text.see(tk.END)
+                    copied += 1
             except Exception as e:
                 progress_text.insert(tk.END, f"ERROR: {prog_num} - {str(e)[:100]}\n")
                 progress_text.see(tk.END)
                 errors += 1
 
         # Show results
-        progress_label.config(text="Complete!")
-        progress_text.insert(tk.END, f"\n{'='*70}\n")
-        progress_text.insert(tk.END, f"Total files: {len(files_to_copy)}\n")
-        progress_text.insert(tk.END, f"Copied: {copied}\n")
-        progress_text.insert(tk.END, f"Auto-renamed (collisions): {renamed}\n")
-        progress_text.insert(tk.END, f"Skipped: {skipped}\n")
-        progress_text.insert(tk.END, f"Errors: {errors}\n")
+        if dry_run:
+            progress_label.config(text="Preview Complete (No files copied)")
+            progress_text.insert(tk.END, f"\n{'='*70}\n")
+            progress_text.insert(tk.END, f"PREVIEW MODE - No files were actually copied\n")
+            progress_text.insert(tk.END, f"Total files: {len(files_to_copy)}\n")
+            progress_text.insert(tk.END, f"Would copy: {copied}\n")
+            progress_text.insert(tk.END, f"Would auto-rename (collisions): {renamed}\n")
+            progress_text.insert(tk.END, f"Would skip: {skipped}\n")
+            progress_text.insert(tk.END, f"Potential errors: {errors}\n")
+        else:
+            progress_label.config(text="Complete!")
+            progress_text.insert(tk.END, f"\n{'='*70}\n")
+            progress_text.insert(tk.END, f"Total files: {len(files_to_copy)}\n")
+            progress_text.insert(tk.END, f"Copied: {copied}\n")
+            progress_text.insert(tk.END, f"Auto-renamed (collisions): {renamed}\n")
+            progress_text.insert(tk.END, f"Skipped: {skipped}\n")
+            progress_text.insert(tk.END, f"Errors: {errors}\n")
+
+        if skipped > 0:
+            progress_text.insert(tk.END, f"\n⚠️  NOTE: {skipped} file(s) were skipped because the file paths in the database\n")
+            progress_text.insert(tk.END, f"    are invalid or the files no longer exist at those locations.\n")
+            progress_text.insert(tk.END, f"    You may need to use 'Scan Folder' to update the database with current file locations.\n")
+
         progress_text.see(tk.END)
 
         close_btn = tk.Button(progress_window, text="Close",
@@ -2633,108 +3619,215 @@ class GCodeDatabaseGUI:
             messagebox.showwarning("No Results", "No files in current view to delete.\n\nPlease search/filter first.")
             return
 
-        # Extract program numbers
+        # Extract program numbers and details
         program_numbers = []
+        program_details = []  # For preview
         for item in displayed_items:
             values = self.tree.item(item)['values']
             if values:
                 program_numbers.append(values[0])  # First column is Program #
+                # Store prog_num, filename, OD for preview
+                prog_num = values[0]
+                filename = os.path.basename(values[1]) if len(values) > 1 and values[1] else "Unknown"
+                od = values[6] if len(values) > 6 else "N/A"
+                program_details.append((prog_num, filename, od))
 
         count = len(program_numbers)
 
-        # Confirmation dialog with count
-        result = messagebox.askyesno(
-            "Confirm Delete from Database",
-            f"This will DELETE {count} record(s) from the DATABASE.\n\n"
-            f"⚠️  The actual files on disk will NOT be deleted.\n"
-            f"⚠️  Only database records will be removed.\n\n"
-            f"Are you sure you want to continue?",
-            icon='warning'
-        )
+        # Ask user: Preview or Execute?
+        mode_choice = [None]  # Use list to modify in nested function
 
-        if not result:
-            return
+        mode_window = tk.Toplevel(self.root)
+        mode_window.title("Delete Mode Selection")
+        mode_window.geometry("450x180")
+        mode_window.configure(bg=self.bg_color)
+        mode_window.transient(self.root)
+        mode_window.grab_set()
 
-        # Double confirmation - ask user to type DELETE
-        confirm_window = tk.Toplevel(self.root)
-        confirm_window.title("Final Confirmation")
-        confirm_window.geometry("400x200")
-        confirm_window.configure(bg=self.bg_color)
+        tk.Label(mode_window,
+                text=f"Delete {count} record(s) from database",
+                bg=self.bg_color, fg=self.fg_color,
+                font=("Arial", 12, "bold")).pack(pady=15)
 
-        tk.Label(confirm_window,
-                text=f"You are about to delete {count} records",
+        tk.Label(mode_window,
+                text="Choose mode:",
+                bg=self.bg_color, fg=self.fg_color,
+                font=("Arial", 10)).pack(pady=5)
+
+        def preview_mode():
+            mode_choice[0] = "preview"
+            mode_window.destroy()
+
+        def execute_mode():
+            mode_choice[0] = "execute"
+            mode_window.destroy()
+
+        def cancel_mode():
+            mode_window.destroy()
+
+        btn_frame = tk.Frame(mode_window, bg=self.bg_color)
+        btn_frame.pack(pady=15)
+
+        tk.Button(btn_frame, text="🔍 Preview (Dry Run)",
+                 command=preview_mode,
+                 bg=self.button_bg, fg=self.fg_color,
+                 font=("Arial", 10, "bold"), width=20).pack(side=tk.LEFT, padx=5)
+
+        tk.Button(btn_frame, text="▶️ Execute (Delete Records)",
+                 command=execute_mode,
+                 bg=self.button_bg, fg=self.fg_color,
+                 font=("Arial", 10, "bold"), width=20).pack(side=tk.LEFT, padx=5)
+
+        tk.Button(btn_frame, text="❌ Cancel",
+                 command=cancel_mode,
+                 bg=self.button_bg, fg=self.fg_color,
+                 font=("Arial", 10), width=10).pack(side=tk.LEFT, padx=5)
+
+        # Wait for user choice
+        self.root.wait_window(mode_window)
+
+        if mode_choice[0] is None:
+            return  # User canceled
+
+        dry_run = (mode_choice[0] == "preview")
+
+        # If executing (not preview), require "DELETE" confirmation
+        if not dry_run:
+            confirm_window = tk.Toplevel(self.root)
+            confirm_window.title("Final Confirmation")
+            confirm_window.geometry("400x200")
+            confirm_window.configure(bg=self.bg_color)
+            confirm_window.transient(self.root)
+            confirm_window.grab_set()
+
+            tk.Label(confirm_window,
+                    text=f"You are about to delete {count} records",
+                    bg=self.bg_color, fg=self.fg_color,
+                    font=("Arial", 12, "bold")).pack(pady=10)
+
+            tk.Label(confirm_window,
+                    text='Type "DELETE" to confirm:',
+                    bg=self.bg_color, fg=self.fg_color,
+                    font=("Arial", 10)).pack(pady=10)
+
+            confirm_entry = tk.Entry(confirm_window, bg=self.input_bg, fg=self.fg_color,
+                                    font=("Arial", 12), width=20)
+            confirm_entry.pack(pady=10)
+            confirm_entry.focus()
+
+            confirmed = [False]  # Use list to modify in nested function
+
+            def check_confirmation():
+                if confirm_entry.get() == "DELETE":
+                    confirmed[0] = True
+                    confirm_window.destroy()
+                else:
+                    messagebox.showerror("Invalid", 'You must type "DELETE" exactly to confirm.')
+
+            def cancel_delete():
+                confirm_window.destroy()
+
+            btn_frame = tk.Frame(confirm_window, bg=self.bg_color)
+            btn_frame.pack(pady=10)
+
+            tk.Button(btn_frame, text="Confirm", command=check_confirmation,
+                     bg=self.button_bg, fg=self.fg_color,
+                     font=("Arial", 10, "bold"), width=10).pack(side=tk.LEFT, padx=5)
+
+            tk.Button(btn_frame, text="Cancel", command=cancel_delete,
+                     bg=self.button_bg, fg=self.fg_color,
+                     font=("Arial", 10, "bold"), width=10).pack(side=tk.LEFT, padx=5)
+
+            # Bind Enter key to confirm
+            confirm_entry.bind('<Return>', lambda e: check_confirmation())
+
+            # Wait for window to close
+            self.root.wait_window(confirm_window)
+
+            if not confirmed[0]:
+                return
+
+            # Create database backup before executing delete
+            if not self.backup_database():
+                messagebox.showerror("Backup Failed",
+                    "Database backup failed. Delete operation canceled for safety.\n\n"
+                    "Please check the error and try again.")
+                return
+
+        # Show progress window
+        progress_window = tk.Toplevel(self.root)
+        if dry_run:
+            progress_window.title("Delete Preview (Dry Run)")
+        else:
+            progress_window.title("Deleting Records")
+        progress_window.geometry("700x500")
+        progress_window.configure(bg=self.bg_color)
+
+        tk.Label(progress_window,
+                text="Preview - Records that WOULD be deleted:" if dry_run else "Deleting database records...",
                 bg=self.bg_color, fg=self.fg_color,
                 font=("Arial", 12, "bold")).pack(pady=10)
 
-        tk.Label(confirm_window,
-                text='Type "DELETE" to confirm:',
-                bg=self.bg_color, fg=self.fg_color,
-                font=("Arial", 10)).pack(pady=10)
+        progress_text = scrolledtext.ScrolledText(progress_window,
+                                                  bg=self.input_bg, fg=self.fg_color,
+                                                  font=("Courier", 9),
+                                                  wrap=tk.WORD)
+        progress_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        confirm_entry = tk.Entry(confirm_window, bg=self.input_bg, fg=self.fg_color,
-                                font=("Arial", 12), width=20)
-        confirm_entry.pack(pady=10)
-        confirm_entry.focus()
-
-        confirmed = [False]  # Use list to modify in nested function
-
-        def check_confirmation():
-            if confirm_entry.get() == "DELETE":
-                confirmed[0] = True
-                confirm_window.destroy()
-            else:
-                messagebox.showerror("Invalid", 'You must type "DELETE" exactly to confirm.')
-
-        def cancel_delete():
-            confirm_window.destroy()
-
-        btn_frame = tk.Frame(confirm_window, bg=self.bg_color)
-        btn_frame.pack(pady=10)
-
-        tk.Button(btn_frame, text="Confirm", command=check_confirmation,
-                 bg=self.button_bg, fg=self.fg_color,
-                 font=("Arial", 10, "bold"), width=10).pack(side=tk.LEFT, padx=5)
-
-        tk.Button(btn_frame, text="Cancel", command=cancel_delete,
-                 bg=self.button_bg, fg=self.fg_color,
-                 font=("Arial", 10, "bold"), width=10).pack(side=tk.LEFT, padx=5)
-
-        # Bind Enter key to confirm
-        confirm_entry.bind('<Return>', lambda e: check_confirmation())
-
-        # Wait for window to close
-        self.root.wait_window(confirm_window)
-
-        if not confirmed[0]:
-            return
-
-        # Delete from database
+        # Process deletions
+        deleted_count = 0
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
+            if dry_run:
+                # Preview mode - just show what would be deleted
+                progress_text.insert(tk.END, f"=== DRY RUN MODE - NO CHANGES WILL BE MADE ===\n\n")
+                progress_text.insert(tk.END, f"The following {count} record(s) WOULD be deleted from the database:\n\n")
 
-            placeholders = ','.join('?' * len(program_numbers))
-            cursor.execute(f'''
-                DELETE FROM programs
-                WHERE program_number IN ({placeholders})
-            ''', program_numbers)
+                for prog_num, filename, od in program_details:
+                    progress_text.insert(tk.END, f"WOULD DELETE: {prog_num} - {filename} (OD: {od})\n")
+                    self.root.update()
 
-            deleted_count = cursor.rowcount
-            conn.commit()
-            conn.close()
+                deleted_count = count  # For summary message
+                progress_text.insert(tk.END, f"\n{'='*60}\n")
+                progress_text.insert(tk.END, f"Preview complete. {count} record(s) WOULD be deleted.\n")
+                progress_text.insert(tk.END, f"No actual changes were made to the database.\n")
+            else:
+                # Execute mode - actually delete from database
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
 
-            # Refresh the display
-            self.refresh_filter_values()
-            self.refresh_results()
+                placeholders = ','.join('?' * len(program_numbers))
+                cursor.execute(f'''
+                    DELETE FROM programs
+                    WHERE program_number IN ({placeholders})
+                ''', program_numbers)
 
-            messagebox.showinfo(
-                "Delete Complete",
-                f"Successfully deleted {deleted_count} record(s) from the database.\n\n"
-                f"The files on disk were NOT deleted."
-            )
+                deleted_count = cursor.rowcount
+                conn.commit()
+                conn.close()
+
+                # Show deleted records
+                for prog_num, filename, od in program_details:
+                    progress_text.insert(tk.END, f"DELETED: {prog_num} - {filename} (OD: {od})\n")
+                    self.root.update()
+
+                progress_text.insert(tk.END, f"\n{'='*60}\n")
+                progress_text.insert(tk.END, f"Successfully deleted {deleted_count} record(s) from the database.\n")
+                progress_text.insert(tk.END, f"⚠️  The files on disk were NOT deleted.\n")
+
+                # Refresh the display
+                self.refresh_filter_values()
+                self.refresh_results()
 
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to delete records:\n{str(e)}")
+            progress_text.insert(tk.END, f"\n\n❌ ERROR: {str(e)}\n")
+            messagebox.showerror("Error", f"An error occurred:\n{str(e)}")
+
+        # Add close button
+        close_btn = tk.Button(progress_window, text="Close",
+                             command=progress_window.destroy,
+                             bg=self.button_bg, fg=self.fg_color,
+                             font=("Arial", 10, "bold"))
+        close_btn.pack(pady=10)
 
     def show_context_menu(self, event):
         """Show right-click context menu"""
@@ -2755,8 +3848,8 @@ class GCodeDatabaseGUI:
     def show_legend(self):
         """Show validation status legend and help"""
         legend_window = tk.Toplevel(self.root)
-        legend_window.title("Validation Status Legend - Help")
-        legend_window.geometry("700x800")
+        legend_window.title("G-Code Database Manager - Help & Workflow Guide")
+        legend_window.geometry("900x900")
         legend_window.configure(bg=self.bg_color)
 
         # Create scrolled text widget
@@ -2766,15 +3859,307 @@ class GCodeDatabaseGUI:
 
         # Legend content
         legend_content = """
-═══════════════════════════════════════════════════════════════════
-                    VALIDATION STATUS LEGEND
-═══════════════════════════════════════════════════════════════════
+═══════════════════════════════════════════════════════════════════════════════
+                      G-CODE DATABASE MANAGER - HELP GUIDE
+═══════════════════════════════════════════════════════════════════════════════
 
-The G-Code Database Manager uses a 5-color validation system to
-categorize issues by severity. This helps you prioritize which
-programs need attention first.
+TABLE OF CONTENTS:
+  1. Production-Ready Workflow (Recommended Steps)
+  2. Function Descriptions (What Each Button Does)
+  3. Duplicate Handling Strategies
+  4. Validation Status Legend
+  5. Filtering Tips
 
-═══════════════════════════════════════════════════════════════════
+═══════════════════════════════════════════════════════════════════════════════
+                    1. PRODUCTION-READY WORKFLOW (START HERE!)
+═══════════════════════════════════════════════════════════════════════════════
+
+GOAL: Clean catalog with NO duplicate names, NO _dup suffixes, all unique files
+
+STEP 1: INITIAL SCAN
+───────────────────────────────────────────────────────────────────────────────
+📂 Scan Folder
+  • Click "📂 Scan Folder" button (Data tab)
+  • Select your main G-code directory
+  • This scans ALL files recursively and adds them to database
+  • Automatically detects and SKIPS exact duplicates
+  • Warns about name collisions (same name, different content)
+
+What Happens:
+  ✓ Exact duplicates (same name + content) → Automatically skipped
+  ✓ New unique files → Added to database
+  ✓ Existing files → Updated if changed
+  ⚠️  Name collisions → Warned (you must rename manually before scan)
+
+STEP 2: DETECT DUPLICATES
+───────────────────────────────────────────────────────────────────────────────
+🔍 Find Repeats
+  • Click "🔍 Find Repeats" button (Tools tab)
+  • Analyzes ALL files in database for duplicates
+  • Classifies duplicates into categories
+
+What Happens:
+  • SOLID duplicates: Exact same content, different names
+  • NAME_COLLISION: Same name, different content
+  • CONTENT_DUP: Same content as parent file
+  • Parent/child relationships established
+
+STEP 3: REVIEW DUPLICATES
+───────────────────────────────────────────────────────────────────────────────
+⚖️ Compare Files
+  • Hold Ctrl and click multiple files in the list
+  • Click "⚖️ Compare Files" button (Tools tab)
+  • View files side-by-side with metadata and G-code preview
+  • Decide which to keep, rename, or delete
+
+Decision Process:
+  1. If EXACT SAME content but different names:
+     → Keep the one with better name (more descriptive)
+     → Delete the others from database (file stays on disk)
+
+  2. If SAME NAME but DIFFERENT content:
+     → Keep both files BUT rename one
+     → Use the rename function to give it a unique name
+
+  3. If similar but slightly different:
+     → Compare the G-code to see actual differences
+     → Keep the correct/latest version
+     → Delete or rename the outdated version
+
+STEP 4: AUTO-ASSIGN NEW O-NUMBERS TO DUPLICATES
+───────────────────────────────────────────────────────────────────────────────
+📝 Rename Duplicates
+  • Filter view first (e.g., Duplicate Type = NAME_COLLISION)
+  • Click "📝 Rename Duplicates" button (Tools tab)
+  • Finds files with duplicate filenames IN FILTERED VIEW ONLY
+  • Assigns new available O-numbers (o59000+)
+  • NO _dup suffix - assigns proper clean O-numbers
+  • Creates backup before making changes
+  • Updates: physical file, internal O-number, database
+
+⚠️  IMPORTANT: Works on FILTERED VIEW ONLY!
+  • Filter for the duplicates you want to rename
+  • Parent file keeps original name
+  • Child files get new O-numbers (o59000, o59001, etc.)
+  • All changes are automatic - no manual renaming needed
+
+Preview Mode:
+  • Shows exactly what O-numbers will be assigned
+  • Review the plan before executing
+  • Click Execute to apply changes
+
+STEP 5: DELETE UNWANTED DUPLICATES
+───────────────────────────────────────────────────────────────────────────────
+🗑️ Delete Filtered View
+  • Use filters to show only duplicates
+  • Apply filters: Duplicate Type = SOLID, CONTENT_DUP, etc.
+  • Click "🗑️ Delete Filtered View" (Tools tab)
+  • Deletes from DATABASE ONLY (files stay on disk for safety)
+
+Safety Features:
+  • Preview mode shows what will be deleted
+  • Database backup created automatically
+  • Physical files are NOT deleted (safer)
+
+STEP 6: VERIFY PRODUCTION-READY STATE
+───────────────────────────────────────────────────────────────────────────────
+✅ Final Checks:
+  1. Run Find Repeats again
+     → Should find ZERO duplicates
+
+  2. Filter by Validation Status = PASS
+     → These are production-ready files
+
+  3. Check total file count
+     → All files should have unique O-numbers
+
+  4. Export to CSV for documentation
+     → Click "📊 Export CSV" (Reports tab)
+
+═══════════════════════════════════════════════════════════════════════════════
+                    2. FUNCTION DESCRIPTIONS (WHAT EACH BUTTON DOES)
+═══════════════════════════════════════════════════════════════════════════════
+
+DATA TAB - File Import/Management
+───────────────────────────────────────────────────────────────────────────────
+📂 Scan Folder
+  • Recursively scans a directory for G-code files
+  • Parses dimensions, P-codes, and metadata
+  • Adds new files, updates existing files
+  • Auto-detects exact duplicates (skips them)
+  • Warns about name collisions (same name, different content)
+  • Shows live progress with file counts
+
+🆕 Scan New Only
+  • Scans directory but ONLY adds NEW files
+  • Skips files already in database
+  • Faster for adding new batches
+  • Still detects duplicates and name collisions
+  • Use after initial full scan
+
+➕ Add Entry
+  • Manually add a single program
+  • Fill in all fields manually
+  • Use when you need precise control
+  • Links to physical file on disk
+
+✏️ Edit Entry
+  • Double-click any row OR click this button
+  • Modify any field in database
+  • Changes save to database
+  • Does NOT modify physical file
+
+TOOLS TAB - Duplicate Management
+───────────────────────────────────────────────────────────────────────────────
+🔍 Find Repeats
+  • Analyzes ALL files for duplicates
+  • Compares file content (not just names)
+  • Creates parent/child relationships
+  • Classifies duplicates: SOLID, NAME_COLLISION, CONTENT_DUP
+  • Populates duplicate_type column
+  • Required before using duplicate filters
+
+⚖️ Compare Files
+  • Select 2+ files (Ctrl+Click)
+  • Shows side-by-side comparison
+  • Displays metadata and G-code content
+  • Highlights differences
+  • Actions: Keep, Rename, Delete
+  • Updates internal O-number when renaming
+
+📝 Rename Duplicates
+  • Works on FILTERED VIEW ONLY (not all files)
+  • Finds files with same filename in current view
+  • Assigns proper available O-numbers (o59000+)
+  • NO _dup suffix - assigns clean O-numbers
+  • Renames physical files
+  • Updates internal O-number in G-code file
+  • Updates database program_number
+  • Preview mode: See changes before applying
+  • Execute mode: Actually renames files
+  • Creates automatic backup
+
+📋 Copy Filtered View
+  • Copies currently filtered files to new folder
+  • Preserves directory structure
+  • Only copies files matching active filters
+  • Use to extract specific file groups
+  • Physical file copy operation
+
+🗑️ Delete Filtered View
+  • Deletes currently filtered files from DATABASE
+  • Does NOT delete physical files (safer)
+  • Preview mode available
+  • Creates backup before deletion
+  • Use to clean up duplicate entries
+
+REPORTS TAB - Export/Analysis
+───────────────────────────────────────────────────────────────────────────────
+📊 Export CSV
+  • Exports current filtered view to CSV
+  • Includes all columns
+  • Use for Excel analysis, documentation
+  • Respects active filters
+
+📄 Export Unused Numbers
+  • Finds gaps in program number sequence
+  • Exports available O-numbers
+  • Helps when creating new programs
+  • Useful for number assignment
+
+🗂️ Organize by OD
+  • Groups files by Outer Diameter
+  • Creates folders for each OD size
+  • Copies files to organized structure
+  • Preview mode available
+
+❓ Help/Legend
+  • Opens this help guide
+  • Workflow documentation
+  • Function descriptions
+  • Color-coded validation system
+
+═══════════════════════════════════════════════════════════════════════════════
+                    3. DUPLICATE HANDLING STRATEGIES
+═══════════════════════════════════════════════════════════════════════════════
+
+SCENARIO A: Same Name, Same Content (Exact Duplicates)
+───────────────────────────────────────────────────────────────────────────────
+Example: O57001.nc in two different folders, identical content
+
+What to do:
+  1. Scan Folder → Auto-skips exact duplicates
+  2. Find Repeats → Marks as SOLID duplicate
+  3. Compare Files → Verify they're identical
+  4. Delete one from database (keep the one in primary location)
+
+Result: Only ONE file in database, no confusion
+
+SCENARIO B: Same Name, Different Content (Name Collision)
+───────────────────────────────────────────────────────────────────────────────
+Example: O57001.nc exists twice but programs are different
+
+THIS IS THE CRITICAL SCENARIO - REQUIRES MANUAL DECISION!
+
+What to do:
+  1. Find Repeats → Marks as NAME_COLLISION
+  2. Compare Files → View both side-by-side
+  3. Decide which is correct:
+
+     Option A - Keep BOTH (they're both valid):
+       • Select one file in Compare window
+       • Click Rename action
+       • Give it a new unique O-number (e.g., O57001A or O59999)
+       • System updates filename AND internal O-number
+       • Now you have O57001.nc and O59999.nc (both unique)
+
+     Option B - Keep ONE (one is wrong/outdated):
+       • Select the wrong one
+       • Click Delete action
+       • Removes from database (file stays on disk for safety)
+       • Correct file remains as O57001.nc
+
+⚠️  NEVER let two different programs share the same O-number!
+
+SCENARIO C: Different Names, Same Content (SOLID Duplicate)
+───────────────────────────────────────────────────────────────────────────────
+Example: O57001.nc and O57001_backup.nc are identical
+
+What to do:
+  1. Find Repeats → Marks as SOLID duplicate
+  2. Compare Files → Confirm they're identical
+  3. Delete the backup from database
+  4. Keep the one with the cleaner name
+
+Result: Single entry with best filename
+
+SCENARIO D: Using Rename Duplicates for Automatic Assignment
+───────────────────────────────────────────────────────────────────────────────
+Example: You have multiple files named O57001.nc in different folders
+
+Automatic workflow:
+  1. Filter: Duplicate Type = NAME_COLLISION
+  2. Click "📝 Rename Duplicates" (Tools tab)
+  3. Preview mode shows the new O-numbers to be assigned
+  4. Execute: Child files automatically renamed to o59000, o59001, etc.
+  5. System updates:
+     • Physical filename (O57001.nc → o59000.nc)
+     • Internal O-number (O57001 → O59000)
+     • Database program_number
+
+Result: All files have unique O-numbers (NO _dup suffix!)
+  • Parent keeps original: O57001.nc
+  • Child 1: o59000.nc
+  • Child 2: o59001.nc
+  • All are production-ready with proper O-numbers
+
+═══════════════════════════════════════════════════════════════════════════════
+                    4. VALIDATION STATUS LEGEND
+═══════════════════════════════════════════════════════════════════════════════
+
+The database uses a 5-color validation system to categorize issues by severity.
+
+═══════════════════════════════════════════════════════════════════════════════
 
 🔴 RED - CRITICAL (Highest Priority)
 ═══════════════════════════════════════════════════════════════════
@@ -2875,10 +4260,6 @@ What It Means:
 
 Action Required: ✅ None - Good to go!
 
-═══════════════════════════════════════════════════════════════════
-                        PRIORITY MATRIX
-═══════════════════════════════════════════════════════════════════
-
 Color    Status         Severity    Production Impact    Action
 ------   ------------   ---------   ------------------   ---------
 🔴 RED    CRITICAL       CRITICAL    Part failure/crash   IMMEDIATE
@@ -2887,10 +4268,8 @@ Color    Status         Severity    Production Impact    Action
 🟡 YELLOW WARNING        LOW         Minor issues         When ready
 🟢 GREEN  PASS           NONE        None                 N/A
 
-═══════════════════════════════════════════════════════════════════
-                     TOLERANCE REFERENCE
-═══════════════════════════════════════════════════════════════════
-
+TOLERANCE REFERENCE
+───────────────────────────────────────────────────────────────────────────────
 CB (Center Bore):
   • Acceptable:  title_cb to (title_cb + 0.1mm)
   • Orange:      ±0.1 to ±0.2mm or ±0.3mm
@@ -2911,55 +4290,77 @@ OD (Outer Diameter):
   • Yellow:      ±0.05 to ±0.1"
   • Red:         > ±0.1"
 
-═══════════════════════════════════════════════════════════════════
-                    DAILY WORKFLOW EXAMPLE
-═══════════════════════════════════════════════════════════════════
+═══════════════════════════════════════════════════════════════════════════════
+                    5. FILTERING TIPS
+═══════════════════════════════════════════════════════════════════════════════
 
-1. Morning Scan:
-   • Scan Folder → Select production directory
-   • Database updates with validation results
-
-2. Prioritize by Color:
-   • 🔴 RED files:    Fix immediately, don't run
-   • 🟠 ORANGE files: Check carefully during setup
-   • 🟣 PURPLE files: Verify P-codes before running
-   • 🟡 YELLOW files: Note for later review
-   • 🟢 GREEN files:  Run normally
-
-3. Fix Process:
-   • Double-click file → View Details
-   • See exact error (e.g., "CB TOO SMALL -4.96mm")
-   • Open G-code in editor
-   • Fix dimension
-   • Save file
-   • Re-scan folder (status updates automatically)
-
-═══════════════════════════════════════════════════════════════════
-                      FILTERING TIPS
-═══════════════════════════════════════════════════════════════════
-
-Multi-Select Filters:
-  • Click Type/Material/Status dropdowns
+Multi-Select Filters
+───────────────────────────────────────────────────────────────────────────────
+  • Click Type/Material/Status/Duplicate Type dropdowns
   • Check multiple boxes to filter
   • Shows "3 selected" when multiple items chosen
-  • Click "Apply" to filter results
+  • Click "Apply Filters" button to filter results
+  • Click "Reset Filters" to clear all filters
 
-Focus on Issues:
-  • Status filter: Select CRITICAL + BORE_WARNING + DIMENSIONAL
-  • Leave WARNING and PASS unchecked
-  • See only files needing attention
+Common Filter Combinations
+───────────────────────────────────────────────────────────────────────────────
+Focus on Issues Only:
+  • Status: Select CRITICAL + BORE_WARNING + DIMENSIONAL
+  • Result: See only files needing attention
 
 Production-Ready Files:
-  • Status filter: Select only PASS
-  • Shows files ready to run
+  • Status: Select only PASS
+  • Duplicate Type: Leave empty or uncheck all
+  • Result: Clean, validated files ready to run
 
-═══════════════════════════════════════════════════════════════════
+View All Duplicates:
+  • Duplicate Type: Select SOLID + NAME_COLLISION + CONTENT_DUP
+  • Result: See all duplicate files for cleanup
 
-For more information, see:
-  • COLOR_CODED_VALIDATION_SYSTEM.md
-  • MULTI_SELECT_FILTERS.md
+View Only SOLID Duplicates (same content, different names):
+  • Duplicate Type: Select only SOLID
+  • Result: Files you can safely delete (keep one copy)
 
-═══════════════════════════════════════════════════════════════════
+View Name Collisions (CRITICAL - different content, same name):
+  • Duplicate Type: Select only NAME_COLLISION
+  • Result: Files that MUST be manually reviewed and renamed
+
+View by Material:
+  • Material: Select specific materials (e.g., 1018, 4140)
+  • Result: See files for specific material types
+
+View by Outer Diameter:
+  • OD Range: Enter min/max values
+  • Result: See files within specific size range
+
+═══════════════════════════════════════════════════════════════════════════════
+                    QUICK REFERENCE - RECOMMENDED WORKFLOW
+═══════════════════════════════════════════════════════════════════════════════
+
+INITIAL SETUP (First Time):
+  1. Scan Folder → Load all files
+  2. Find Repeats → Detect duplicates
+  3. Review & Compare → Use Compare Files
+  4. Clean Up → Rename or Delete duplicates
+  5. Verify → Check for _dup files and duplicates
+
+DAILY PRODUCTION USE:
+  1. Scan New Only → Add new files
+  2. Filter by Status → Focus on PASS files
+  3. Export CSV → Document production files
+  4. Organize by OD → Group files for easy access
+
+TROUBLESHOOTING:
+  • If Copy Filtered not working → Run Find Repeats first
+  • If duplicates showing → Use Rename Duplicates or Compare Files
+  • If Rename Duplicates does nothing → Check that view is filtered
+  • If validation errors → Fix G-code and re-scan
+
+═══════════════════════════════════════════════════════════════════════════════
+
+For more documentation, see project README files in the application directory.
+
+═══════════════════════════════════════════════════════════════════════════════
 """
 
         text.insert("1.0", legend_content)
@@ -3183,11 +4584,16 @@ class EditEntryWindow:
                      datetime.now().isoformat(), file_path, program_number))
             else:  # Insert
                 cursor.execute('''
-                    INSERT INTO programs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (program_number, spacer_type, outer_diameter, thickness,
+                    INSERT INTO programs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (program_number, None,  # title
+                     spacer_type, outer_diameter, thickness, None,  # thickness_display
                      center_bore, hub_height, hub_diameter, cb_diameter, cb_depth,
                      paired_program, material, notes, datetime.now().isoformat(),
-                     datetime.now().isoformat(), file_path, None, None, None, None, None, None, None))
+                     datetime.now().isoformat(), file_path,
+                     None, None, None, None, None,  # detection_confidence, detection_method, validation_status, validation_issues, validation_warnings
+                     None, None,  # bore_warnings, dimensional_issues
+                     None, None, None,  # cb_from_gcode, ob_from_gcode, lathe
+                     None, None, None))  # duplicate_type, parent_file, duplicate_group
             
             conn.commit()
             messagebox.showinfo("Success", "Entry saved successfully")
@@ -3329,6 +4735,392 @@ class DetailsWindow:
                              bg=self.parent.button_bg, fg=self.parent.fg_color,
                              font=("Arial", 10, "bold"), width=15)
         btn_close.pack(pady=10)
+
+
+class FileComparisonWindow:
+    """Window to compare multiple files side-by-side"""
+    def __init__(self, parent, files_data, bg_color, fg_color, input_bg, button_bg, refresh_callback, manager=None):
+        self.parent = parent
+        self.files_data = files_data
+        self.bg_color = bg_color
+        self.fg_color = fg_color
+        self.input_bg = input_bg
+        self.button_bg = button_bg
+        self.refresh_callback = refresh_callback
+        self.manager = manager  # Reference to GCodeDatabaseManager instance
+
+        # Create lookup dictionary: {program_number: (all file data)}
+        self.files_lookup = {file_info[0]: file_info for file_info in files_data}
+
+        # Create window
+        self.window = tk.Toplevel(parent)
+        self.window.title(f"Compare {len(files_data)} Files")
+        self.window.geometry("1400x900")
+        self.window.configure(bg=bg_color)
+
+        # Track actions for each file
+        self.file_actions = {}  # {program_number: 'keep'/'delete'/'rename'}
+
+        self.setup_ui()
+
+    def setup_ui(self):
+        """Setup the comparison UI"""
+        # Title
+        title_label = tk.Label(self.window,
+                              text=f"File Comparison - {len(self.files_data)} Files Selected",
+                              bg=self.bg_color, fg=self.fg_color,
+                              font=("Arial", 14, "bold"))
+        title_label.pack(pady=10)
+
+        # Main comparison area with scrollbar
+        main_frame = tk.Frame(self.window, bg=self.bg_color)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+
+        # Canvas with scrollbar for horizontal scrolling
+        canvas = tk.Canvas(main_frame, bg=self.bg_color)
+        h_scrollbar = tk.Scrollbar(main_frame, orient=tk.HORIZONTAL, command=canvas.xview)
+        v_scrollbar = tk.Scrollbar(main_frame, orient=tk.VERTICAL, command=canvas.yview)
+
+        scrollable_frame = tk.Frame(canvas, bg=self.bg_color)
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(xscrollcommand=h_scrollbar.set, yscrollcommand=v_scrollbar.set)
+
+        # Pack scrollbars and canvas
+        v_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        h_scrollbar.pack(side=tk.BOTTOM, fill=tk.X)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # Create side-by-side panels for each file
+        panels_frame = tk.Frame(scrollable_frame, bg=self.bg_color)
+        panels_frame.pack(fill=tk.BOTH, expand=True)
+
+        # Load file contents
+        file_contents = {}
+        for file_info in self.files_data:
+            prog_num = file_info[0]
+            file_path = file_info[2]
+
+            if file_path and os.path.exists(file_path):
+                try:
+                    with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                        file_contents[prog_num] = f.read()
+                except:
+                    file_contents[prog_num] = "[Error reading file]"
+            else:
+                file_contents[prog_num] = "[File not found]"
+
+        # Create a panel for each file
+        for idx, file_info in enumerate(self.files_data):
+            self.create_file_panel(panels_frame, file_info, file_contents, idx)
+
+        # Bottom action buttons
+        bottom_frame = tk.Frame(self.window, bg=self.bg_color)
+        bottom_frame.pack(fill=tk.X, padx=10, pady=10)
+
+        tk.Button(bottom_frame, text="Apply Actions & Close",
+                 command=self.apply_actions,
+                 bg=self.button_bg, fg=self.fg_color,
+                 font=("Arial", 11, "bold"), width=20).pack(side=tk.LEFT, padx=5)
+
+        tk.Button(bottom_frame, text="Cancel",
+                 command=self.window.destroy,
+                 bg=self.button_bg, fg=self.fg_color,
+                 font=("Arial", 11), width=15).pack(side=tk.LEFT, padx=5)
+
+        # Summary label
+        self.summary_label = tk.Label(bottom_frame,
+                                     text="Select actions for each file",
+                                     bg=self.bg_color, fg=self.fg_color,
+                                     font=("Arial", 10))
+        self.summary_label.pack(side=tk.RIGHT, padx=10)
+
+    def create_file_panel(self, parent, file_info, file_contents, index):
+        """Create a panel for one file"""
+        prog_num, title, file_path, spacer_type, od, thickness = file_info[:6]
+        cb, hub_h, hub_d, cb_d, cb_dep, val_status, confidence = file_info[6:13]
+        dup_type, parent_file, modified, created = file_info[13:17]
+
+        # Panel container
+        panel = tk.Frame(parent, bg=self.input_bg, relief=tk.RAISED, borderwidth=2)
+        panel.grid(row=0, column=index, padx=5, pady=5, sticky="nsew")
+
+        # Make columns expand equally
+        parent.grid_columnconfigure(index, weight=1, uniform="col")
+
+        # Header with file number and status
+        header_bg = self.get_status_color(val_status)
+        header = tk.Frame(panel, bg=header_bg)
+        header.pack(fill=tk.X, pady=(0, 5))
+
+        tk.Label(header, text=f"File {index + 1}: {prog_num}",
+                bg=header_bg, fg="white",
+                font=("Arial", 12, "bold")).pack(pady=5)
+
+        if val_status:
+            tk.Label(header, text=f"Status: {val_status}",
+                    bg=header_bg, fg="white",
+                    font=("Arial", 9)).pack()
+
+        # Metadata section
+        meta_frame = tk.Frame(panel, bg=self.input_bg)
+        meta_frame.pack(fill=tk.X, padx=5, pady=5)
+
+        metadata = [
+            ("Title", title or "N/A"),
+            ("Type", spacer_type or "N/A"),
+            ("OD", f"{od:.3f}\"" if od else "N/A"),
+            ("Thickness", f"{thickness:.3f}\"" if thickness else "N/A"),
+            ("Center Bore", f"{cb:.3f}\"" if cb else "N/A"),
+            ("Confidence", confidence or "N/A"),
+        ]
+
+        if dup_type:
+            metadata.append(("Dup Type", dup_type))
+        if parent_file:
+            metadata.append(("Parent", parent_file))
+
+        for label, value in metadata:
+            row = tk.Frame(meta_frame, bg=self.input_bg)
+            row.pack(fill=tk.X, pady=1)
+            tk.Label(row, text=f"{label}:", bg=self.input_bg, fg=self.fg_color,
+                    font=("Arial", 9, "bold"), width=12, anchor='w').pack(side=tk.LEFT)
+            tk.Label(row, text=value, bg=self.input_bg, fg=self.fg_color,
+                    font=("Arial", 9), anchor='w').pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        # File content preview with syntax highlighting
+        tk.Label(panel, text="G-Code Preview:", bg=self.input_bg, fg=self.fg_color,
+                font=("Arial", 10, "bold")).pack(pady=(10, 5))
+
+        content_frame = tk.Frame(panel, bg=self.input_bg)
+        content_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        content_text = scrolledtext.ScrolledText(content_frame,
+                                                bg="#1e1e1e", fg="#d4d4d4",
+                                                font=("Courier New", 8),
+                                                height=20, wrap=tk.NONE)
+        content_text.pack(fill=tk.BOTH, expand=True)
+
+        # Insert content with basic syntax highlighting
+        content = file_contents.get(prog_num, "[No content]")
+        self.insert_with_highlighting(content_text, content)
+        content_text.config(state=tk.DISABLED)
+
+        # Highlight differences if multiple files
+        if len(self.files_data) > 1 and index > 0:
+            self.highlight_differences(content_text, content, file_contents[self.files_data[0][0]])
+
+        # Action buttons
+        action_frame = tk.Frame(panel, bg=self.input_bg)
+        action_frame.pack(fill=tk.X, padx=5, pady=10)
+
+        tk.Label(action_frame, text="Action:", bg=self.input_bg, fg=self.fg_color,
+                font=("Arial", 10, "bold")).pack(side=tk.LEFT, padx=5)
+
+        action_var = tk.StringVar(value="keep")
+        self.file_actions[prog_num] = action_var
+
+        tk.Radiobutton(action_frame, text="✓ Keep", variable=action_var, value="keep",
+                      bg=self.input_bg, fg=self.fg_color, selectcolor=self.button_bg,
+                      font=("Arial", 9), command=self.update_summary).pack(side=tk.LEFT, padx=3)
+
+        tk.Radiobutton(action_frame, text="✏️ Rename", variable=action_var, value="rename",
+                      bg=self.input_bg, fg=self.fg_color, selectcolor=self.button_bg,
+                      font=("Arial", 9), command=self.update_summary).pack(side=tk.LEFT, padx=3)
+
+        tk.Radiobutton(action_frame, text="🗑️ Delete", variable=action_var, value="delete",
+                      bg=self.input_bg, fg=self.fg_color, selectcolor=self.button_bg,
+                      font=("Arial", 9), command=self.update_summary).pack(side=tk.LEFT, padx=3)
+
+    def get_status_color(self, status):
+        """Get color based on validation status"""
+        colors = {
+            'CRITICAL': '#d32f2f',
+            'DIMENSIONAL': '#7b1fa2',
+            'BORE_WARNING': '#f57c00',
+            'WARNING': '#fbc02d',
+            'PASS': '#388e3c',
+            'REPEAT': '#757575'
+        }
+        return colors.get(status, '#455a64')
+
+    def insert_with_highlighting(self, text_widget, content):
+        """Insert content with basic G-code syntax highlighting"""
+        text_widget.tag_configure("gcode", foreground="#569cd6")  # Blue for G/M codes
+        text_widget.tag_configure("comment", foreground="#6a9955")  # Green for comments
+        text_widget.tag_configure("number", foreground="#b5cea8")  # Light green for numbers
+
+        lines = content.split('\n')
+        for line in lines:
+            if '(' in line:
+                # Line has comments
+                before_comment = line.split('(')[0]
+                comment_part = '(' + '('.join(line.split('(')[1:])
+                text_widget.insert(tk.END, before_comment)
+                text_widget.insert(tk.END, comment_part, "comment")
+                text_widget.insert(tk.END, "\n")
+            elif line.strip().startswith('G') or line.strip().startswith('M'):
+                text_widget.insert(tk.END, line, "gcode")
+                text_widget.insert(tk.END, "\n")
+            else:
+                text_widget.insert(tk.END, line + "\n")
+
+    def highlight_differences(self, text_widget, content1, content2):
+        """Highlight differences between two file contents"""
+        text_widget.tag_configure("diff", background="#4d2600")  # Brown background for differences
+
+        lines1 = content1.split('\n')
+        lines2 = content2.split('\n')
+
+        import difflib
+        diff = difflib.unified_diff(lines2, lines1, lineterm='')
+        diff_lines = set()
+
+        for line in diff:
+            if line.startswith('@@'):
+                # Parse line numbers from unified diff format
+                import re
+                match = re.search(r'\+(\d+)', line)
+                if match:
+                    diff_lines.add(int(match.group(1)) - 1)
+
+        # Highlight different lines (basic implementation)
+        # For now, just mark if files are different
+        if content1 != content2:
+            text_widget.tag_configure("diff_marker", foreground="#ff9800")
+            text_widget.insert("1.0", "⚠ Differences detected\n", "diff_marker")
+
+    def update_summary(self):
+        """Update the summary label with current action counts"""
+        keep_count = sum(1 for var in self.file_actions.values() if var.get() == "keep")
+        rename_count = sum(1 for var in self.file_actions.values() if var.get() == "rename")
+        delete_count = sum(1 for var in self.file_actions.values() if var.get() == "delete")
+
+        summary = f"Keep: {keep_count} | Rename: {rename_count} | Delete: {delete_count}"
+        self.summary_label.config(text=summary)
+
+    def apply_actions(self):
+        """Apply the selected actions to files"""
+        actions_to_apply = {prog: var.get() for prog, var in self.file_actions.items()}
+
+        # Validate at least one file is kept
+        if not any(action == "keep" for action in actions_to_apply.values()):
+            messagebox.showerror("Invalid Action",
+                "You must keep at least one file.\n\n"
+                "Please select 'Keep' for at least one file.")
+            return
+
+        # Confirm actions
+        delete_count = sum(1 for action in actions_to_apply.values() if action == "delete")
+        rename_count = sum(1 for action in actions_to_apply.values() if action == "rename")
+
+        msg = f"Apply the following actions?\n\n"
+        msg += f"Delete: {delete_count} file(s)\n"
+        msg += f"Rename: {rename_count} file(s)\n\n"
+        msg += f"⚠️  Files will be deleted from DATABASE only (not disk)"
+
+        result = messagebox.askyesno("Confirm Actions", msg)
+        if not result:
+            return
+
+        # Apply actions
+        conn = sqlite3.connect("gcode_database.db")
+        cursor = conn.cursor()
+
+        deleted = 0
+        renamed = 0
+
+        for prog_num, action in actions_to_apply.items():
+            if action == "delete":
+                cursor.execute("DELETE FROM programs WHERE program_number = ?", (prog_num,))
+                deleted += 1
+            elif action == "rename":
+                # Prompt for new name
+                new_name = self.prompt_rename(prog_num)
+                if new_name and new_name != prog_num:
+                    # Get file_path for this program
+                    file_info = self.files_lookup.get(prog_num)
+                    if file_info and len(file_info) > 2:
+                        file_path = file_info[2]  # file_path is at index 2
+
+                        # Update internal G-code program number if we have manager access
+                        if self.manager and file_path and os.path.exists(file_path):
+                            if not self.manager.update_gcode_program_number(file_path, new_name):
+                                print(f"Warning: Could not update internal O-number in {file_path}")
+
+                    # Update database
+                    cursor.execute("""
+                        UPDATE programs
+                        SET program_number = ?
+                        WHERE program_number = ?
+                    """, (new_name, prog_num))
+                    renamed += 1
+
+        conn.commit()
+        conn.close()
+
+        # Show results
+        messagebox.showinfo("Actions Applied",
+            f"Successfully applied actions:\n\n"
+            f"Deleted: {deleted} file(s)\n"
+            f"Renamed: {renamed} file(s)")
+
+        # Refresh parent and close
+        if self.refresh_callback:
+            self.refresh_callback()
+        self.window.destroy()
+
+    def prompt_rename(self, old_name):
+        """Prompt user for new filename"""
+        dialog = tk.Toplevel(self.window)
+        dialog.title(f"Rename {old_name}")
+        dialog.geometry("400x150")
+        dialog.configure(bg=self.bg_color)
+        dialog.transient(self.window)
+        dialog.grab_set()
+
+        tk.Label(dialog, text=f"Rename {old_name} to:",
+                bg=self.bg_color, fg=self.fg_color,
+                font=("Arial", 11)).pack(pady=15)
+
+        entry = tk.Entry(dialog, bg=self.input_bg, fg=self.fg_color,
+                        font=("Arial", 11), width=30)
+        entry.insert(0, old_name)
+        entry.pack(pady=10)
+        entry.focus()
+        entry.select_range(0, tk.END)
+
+        result = [old_name]
+
+        def confirm():
+            new_name = entry.get().strip()
+            if new_name:
+                result[0] = new_name
+            dialog.destroy()
+
+        def cancel():
+            dialog.destroy()
+
+        btn_frame = tk.Frame(dialog, bg=self.bg_color)
+        btn_frame.pack(pady=10)
+
+        tk.Button(btn_frame, text="OK", command=confirm,
+                 bg=self.button_bg, fg=self.fg_color,
+                 font=("Arial", 10), width=10).pack(side=tk.LEFT, padx=5)
+
+        tk.Button(btn_frame, text="Cancel", command=cancel,
+                 bg=self.button_bg, fg=self.fg_color,
+                 font=("Arial", 10), width=10).pack(side=tk.LEFT, padx=5)
+
+        entry.bind('<Return>', lambda e: confirm())
+        entry.bind('<Escape>', lambda e: cancel())
+
+        self.window.wait_window(dialog)
+        return result[0]
 
 
 def main():
