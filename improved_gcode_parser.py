@@ -788,6 +788,18 @@ class ImprovedGCodeParser:
                 first_val = float(cb_ob_match.group(1))
                 second_val = float(cb_ob_match.group(2))
 
+                # Check if first value is in inches (for large rounds like "6.25/220MM")
+                # Pattern: OD >= 10", first < 10, second has MM but first doesn't
+                # Example: "13.0 6.25/220MM" -> 6.25" CB / 220mm OB
+                matched_pattern = cb_ob_match.group(0)
+                first_has_mm = 'MM' in matched_pattern.split('/')[0].upper() if '/' in matched_pattern else False
+                second_has_mm = 'MM' in matched_pattern.upper()
+
+                if (result.outer_diameter and result.outer_diameter >= 10.0 and
+                    first_val < 10 and not first_has_mm and second_has_mm):
+                    # First value is likely in inches - convert to mm
+                    first_val = first_val * 25.4
+
                 # Determine which is CB and which is OB/Counterbore
                 if result.spacer_type == 'step':
                     # For STEP: first is counterbore (larger), second is CB (smaller)
@@ -1686,9 +1698,10 @@ class ImprovedGCodeParser:
             diff = calculated_thickness - title_thickness
 
             # Two-operation drilling gets ±0.20" tolerance (OP2 drills extra to punch through)
+            # Standard drilling gets ±0.12" tolerance (drills may go slightly deeper for safety)
             is_two_operation = result.drill_depth and result.drill_depth > 4.2
-            critical_tolerance = 0.20 if is_two_operation else 0.03
-            warning_tolerance = 0.16 if is_two_operation else 0.015  # 0.16" to account for floating point
+            critical_tolerance = 0.20 if is_two_operation else 0.12
+            warning_tolerance = 0.16 if is_two_operation else 0.08
 
             if abs(diff) > critical_tolerance:  # Beyond tolerance is critical
                 # Check if this might be a mislabeled title
