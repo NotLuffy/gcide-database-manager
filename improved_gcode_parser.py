@@ -1558,14 +1558,12 @@ class ImprovedGCodeParser:
                 op1_depth = max(large_op1_drills)  # Usually 4.15"
                 op2_depth = max(op2_drills)  # Remaining depth
 
-                # Total depth = OP1 + (OP2 - clearance)
-                # OP2 includes extra clearance (typically 0.15"), so subtract it
-                # But if OP2 < 0.5", assume it already accounts for clearance
-                if op2_depth < 0.5:
-                    total_depth = op1_depth + op2_depth
-                else:
-                    # Larger OP2 depth, assume standard clearance included
-                    total_depth = op1_depth + op2_depth - 0.15
+                # Total depth = OP1 + OP2 (direct sum)
+                # The clearance (0.15") is accounted for separately in thickness calculation
+                # Examples:
+                #   o10038: 4.15 + 0.25 = 4.40" (3.0" thick + 1.25" hub + 0.15" clearance)
+                #   o10045: 4.15 + 0.50 = 4.65" (3.0" thick + 1.5" hub + 0.15" clearance)
+                total_depth = op1_depth + op2_depth
 
                 return total_depth
 
