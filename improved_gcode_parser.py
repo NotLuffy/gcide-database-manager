@@ -837,7 +837,8 @@ class ImprovedGCodeParser:
             # Try to extract from title
             # Pattern 1: "number HC number" format where first=thickness, second=hub height
             # Example: "1.0 HC 1.5" means 1.0" thick + 1.5" hub height
-            dual_hc_match = re.search(r'(\d*\.?\d+)\s+HC\s+(\d*\.?\d+)', title, re.IGNORECASE)
+            # Also handles trailing decimals: "2. HC 1.5" = 2.0" thick + 1.5" hub
+            dual_hc_match = re.search(r'(\d+\.?\d*)\s+HC\s+(\d+\.?\d*)', title, re.IGNORECASE)
             if dual_hc_match:
                 try:
                     first_val = float(dual_hc_match.group(1))
@@ -857,8 +858,8 @@ class ImprovedGCodeParser:
             # Pattern 2: Single value patterns "HC 0.5" or "0.5 HC" (no thickness before/after)
             if not result.hub_height:
                 hub_patterns = [
-                    r'HC\s+(\d*\.?\d+)',  # HC 0.5
-                    r'(\d*\.?\d+)\s+HC',  # 0.5 HC (only if not part of dual pattern)
+                    r'HC\s+(\d+\.?\d*)',  # HC 0.5 or HC 1.
+                    r'(\d+\.?\d*)\s+HC',  # 0.5 HC or 1. HC (only if not part of dual pattern)
                 ]
                 for pattern in hub_patterns:
                     hub_match = re.search(pattern, title, re.IGNORECASE)
