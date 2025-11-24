@@ -555,9 +555,17 @@ class GCodeDatabaseGUI:
                  bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
                  width=14, height=2).pack(side=tk.LEFT, padx=3)
 
-        tk.Label(db_group, text="(Future: Backup, Restore, etc.)",
-                bg=self.bg_color, fg=self.fg_color,
-                font=("Arial", 9, "italic")).pack(side=tk.LEFT, padx=10)
+        tk.Button(db_group, text="💾 Save Profile", command=self.save_database_profile,
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
+                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+
+        tk.Button(db_group, text="📂 Load Profile", command=self.load_database_profile,
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
+                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+
+        tk.Button(db_group, text="📋 Manage Profiles", command=self.manage_database_profiles,
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
+                 width=14, height=2).pack(side=tk.LEFT, padx=3)
 
     def create_filter_section(self, parent):
         """Create filter controls"""
@@ -1826,6 +1834,402 @@ class GCodeDatabaseGUI:
 
         except Exception as e:
             messagebox.showerror("Error", f"Failed to clear database:\n{str(e)}")
+
+    def save_database_profile(self):
+        """Save current database as a named profile"""
+        import shutil
+        from datetime import datetime
+
+        # Create profiles directory if it doesn't exist
+        profiles_dir = os.path.join(os.path.dirname(self.db_path), "database_profiles")
+        os.makedirs(profiles_dir, exist_ok=True)
+
+        # Prompt for profile name
+        profile_window = tk.Toplevel(self.root)
+        profile_window.title("Save Database Profile")
+        profile_window.geometry("450x200")
+        profile_window.configure(bg=self.bg_color)
+        profile_window.transient(self.root)
+        profile_window.grab_set()
+
+        tk.Label(profile_window,
+                text="Save current database state as a profile",
+                bg=self.bg_color, fg=self.fg_color,
+                font=("Arial", 12, "bold")).pack(pady=15)
+
+        tk.Label(profile_window,
+                text="Profile Name:",
+                bg=self.bg_color, fg=self.fg_color,
+                font=("Arial", 10)).pack(pady=5)
+
+        # Suggest default name with timestamp
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
+        default_name = f"Profile_{timestamp}"
+
+        entry = tk.Entry(profile_window, bg=self.input_bg, fg=self.fg_color,
+                        font=("Arial", 11), width=40)
+        entry.insert(0, default_name)
+        entry.pack(pady=10)
+        entry.focus()
+        entry.select_range(0, tk.END)
+
+        result = [None]
+
+        def save():
+            profile_name = entry.get().strip()
+            if not profile_name:
+                messagebox.showwarning("Invalid Name", "Please enter a profile name.")
+                return
+
+            # Remove any invalid filename characters
+            profile_name = "".join(c for c in profile_name if c.isalnum() or c in (' ', '-', '_'))
+
+            profile_path = os.path.join(profiles_dir, f"{profile_name}.db")
+
+            # Check if profile already exists
+            if os.path.exists(profile_path):
+                overwrite = messagebox.askyesno(
+                    "Profile Exists",
+                    f"Profile '{profile_name}' already exists.\n\nOverwrite?"
+                )
+                if not overwrite:
+                    return
+
+            try:
+                # Copy current database to profile
+                shutil.copy2(self.db_path, profile_path)
+
+                # Get record count
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                cursor.execute("SELECT COUNT(*) FROM programs")
+                count = cursor.fetchone()[0]
+                conn.close()
+
+                result[0] = profile_name
+                messagebox.showinfo(
+                    "Profile Saved",
+                    f"Database profile '{profile_name}' saved successfully!\n\n"
+                    f"Records: {count}\n"
+                    f"Location: {profile_path}"
+                )
+                profile_window.destroy()
+
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to save profile:\n{str(e)}")
+
+        def cancel():
+            profile_window.destroy()
+
+        btn_frame = tk.Frame(profile_window, bg=self.bg_color)
+        btn_frame.pack(pady=10)
+
+        tk.Button(btn_frame, text="💾 Save", command=save,
+                 bg=self.accent_color, fg=self.fg_color,
+                 font=("Arial", 10, "bold"), width=12).pack(side=tk.LEFT, padx=5)
+
+        tk.Button(btn_frame, text="❌ Cancel", command=cancel,
+                 bg=self.button_bg, fg=self.fg_color,
+                 font=("Arial", 10, "bold"), width=12).pack(side=tk.LEFT, padx=5)
+
+        self.root.wait_window(profile_window)
+
+    def load_database_profile(self):
+        """Load a saved database profile"""
+        import shutil
+
+        profiles_dir = os.path.join(os.path.dirname(self.db_path), "database_profiles")
+
+        # Check if profiles directory exists
+        if not os.path.exists(profiles_dir):
+            messagebox.showinfo(
+                "No Profiles",
+                "No saved profiles found.\n\n"
+                "Use 'Save Profile' to create your first database profile."
+            )
+            return
+
+        # Get list of profile files
+        profile_files = [f for f in os.listdir(profiles_dir) if f.endswith('.db')]
+
+        if not profile_files:
+            messagebox.showinfo(
+                "No Profiles",
+                "No saved profiles found.\n\n"
+                "Use 'Save Profile' to create your first database profile."
+            )
+            return
+
+        # Create selection window
+        select_window = tk.Toplevel(self.root)
+        select_window.title("Load Database Profile")
+        select_window.geometry("600x500")
+        select_window.configure(bg=self.bg_color)
+        select_window.transient(self.root)
+        select_window.grab_set()
+
+        tk.Label(select_window,
+                text="Select a profile to load",
+                bg=self.bg_color, fg=self.fg_color,
+                font=("Arial", 12, "bold")).pack(pady=15)
+
+        # Listbox with profile info
+        list_frame = tk.Frame(select_window, bg=self.bg_color)
+        list_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+
+        scrollbar = tk.Scrollbar(list_frame)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        listbox = tk.Listbox(list_frame, bg=self.input_bg, fg=self.fg_color,
+                            font=("Courier", 10), yscrollcommand=scrollbar.set,
+                            selectmode=tk.SINGLE)
+        listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.config(command=listbox.yview)
+
+        # Populate listbox with profile info
+        profile_data = []
+        for profile_file in sorted(profile_files, reverse=True):
+            profile_path = os.path.join(profiles_dir, profile_file)
+            profile_name = profile_file[:-3]  # Remove .db extension
+
+            # Get file stats
+            stat = os.stat(profile_path)
+            size_mb = stat.st_size / (1024 * 1024)
+            modified = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M")
+
+            # Get record count
+            try:
+                conn = sqlite3.connect(profile_path)
+                cursor = conn.cursor()
+                cursor.execute("SELECT COUNT(*) FROM programs")
+                count = cursor.fetchone()[0]
+                conn.close()
+            except:
+                count = "?"
+
+            display = f"{profile_name:<35} | {count:>6} records | {modified} | {size_mb:.1f} MB"
+            listbox.insert(tk.END, display)
+            profile_data.append((profile_name, profile_path, count))
+
+        def load_selected():
+            selection = listbox.curselection()
+            if not selection:
+                messagebox.showwarning("No Selection", "Please select a profile to load.")
+                return
+
+            idx = selection[0]
+            profile_name, profile_path, count = profile_data[idx]
+
+            # Confirm load
+            result = messagebox.askyesno(
+                "Confirm Load Profile",
+                f"Load profile '{profile_name}'?\n\n"
+                f"This will replace your current database with:\n"
+                f"  • {count} records\n"
+                f"  • From: {os.path.basename(profile_path)}\n\n"
+                f"⚠️  Your current database will be backed up first.",
+                icon='warning'
+            )
+
+            if not result:
+                return
+
+            try:
+                # Backup current database
+                backup_name = f"before_load_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
+                backup_path = os.path.join(os.path.dirname(self.db_path), "backups", backup_name)
+                os.makedirs(os.path.dirname(backup_path), exist_ok=True)
+                shutil.copy2(self.db_path, backup_path)
+
+                # Load profile
+                shutil.copy2(profile_path, self.db_path)
+
+                # Refresh display
+                self.refresh_filter_values()
+                self.refresh_results()
+
+                messagebox.showinfo(
+                    "Profile Loaded",
+                    f"Successfully loaded profile '{profile_name}'!\n\n"
+                    f"Records loaded: {count}\n"
+                    f"Previous database backed up to:\n{backup_name}"
+                )
+
+                select_window.destroy()
+
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to load profile:\n{str(e)}")
+
+        def cancel():
+            select_window.destroy()
+
+        btn_frame = tk.Frame(select_window, bg=self.bg_color)
+        btn_frame.pack(pady=15)
+
+        tk.Button(btn_frame, text="📂 Load Selected", command=load_selected,
+                 bg=self.accent_color, fg=self.fg_color,
+                 font=("Arial", 10, "bold"), width=15).pack(side=tk.LEFT, padx=5)
+
+        tk.Button(btn_frame, text="❌ Cancel", command=cancel,
+                 bg=self.button_bg, fg=self.fg_color,
+                 font=("Arial", 10, "bold"), width=15).pack(side=tk.LEFT, padx=5)
+
+    def manage_database_profiles(self):
+        """Manage saved database profiles - view, delete, rename"""
+        import shutil
+        from datetime import datetime
+
+        profiles_dir = os.path.join(os.path.dirname(self.db_path), "database_profiles")
+
+        # Check if profiles directory exists
+        if not os.path.exists(profiles_dir):
+            os.makedirs(profiles_dir, exist_ok=True)
+
+        # Create management window
+        manage_window = tk.Toplevel(self.root)
+        manage_window.title("Manage Database Profiles")
+        manage_window.geometry("800x600")
+        manage_window.configure(bg=self.bg_color)
+
+        tk.Label(manage_window,
+                text="Database Profile Manager",
+                bg=self.bg_color, fg=self.fg_color,
+                font=("Arial", 14, "bold")).pack(pady=15)
+
+        # Treeview for profile list
+        tree_frame = tk.Frame(manage_window, bg=self.bg_color)
+        tree_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+
+        columns = ('name', 'records', 'date', 'size')
+        tree = ttk.Treeview(tree_frame, columns=columns, show='headings', height=15)
+
+        tree.heading('name', text='Profile Name')
+        tree.heading('records', text='Records')
+        tree.heading('date', text='Date Modified')
+        tree.heading('size', text='Size (MB)')
+
+        tree.column('name', width=300)
+        tree.column('records', width=100)
+        tree.column('date', width=200)
+        tree.column('size', width=100)
+
+        scrollbar = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=tree.yview)
+        tree.configure(yscroll=scrollbar.set)
+
+        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        def refresh_profile_list():
+            # Clear existing items
+            for item in tree.get_children():
+                tree.delete(item)
+
+            # Get profile files
+            profile_files = [f for f in os.listdir(profiles_dir) if f.endswith('.db')]
+
+            if not profile_files:
+                tree.insert('', tk.END, values=("No profiles found - use 'Save Profile' to create one", "", "", ""))
+                return
+
+            for profile_file in sorted(profile_files, reverse=True):
+                profile_path = os.path.join(profiles_dir, profile_file)
+                profile_name = profile_file[:-3]
+
+                # Get stats
+                stat = os.stat(profile_path)
+                size_mb = f"{stat.st_size / (1024 * 1024):.2f}"
+                modified = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+
+                # Get record count
+                try:
+                    conn = sqlite3.connect(profile_path)
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT COUNT(*) FROM programs")
+                    count = cursor.fetchone()[0]
+                    conn.close()
+                except:
+                    count = "Error"
+
+                tree.insert('', tk.END, values=(profile_name, count, modified, size_mb))
+
+        def delete_profile():
+            selection = tree.selection()
+            if not selection:
+                messagebox.showwarning("No Selection", "Please select a profile to delete.")
+                return
+
+            item = selection[0]
+            profile_name = tree.item(item)['values'][0]
+
+            if profile_name == "No profiles found - use 'Save Profile' to create one":
+                return
+
+            result = messagebox.askyesno(
+                "Confirm Delete",
+                f"Delete profile '{profile_name}'?\n\n"
+                f"This cannot be undone!",
+                icon='warning'
+            )
+
+            if result:
+                try:
+                    profile_path = os.path.join(profiles_dir, f"{profile_name}.db")
+                    os.remove(profile_path)
+                    refresh_profile_list()
+                    messagebox.showinfo("Deleted", f"Profile '{profile_name}' deleted successfully.")
+                except Exception as e:
+                    messagebox.showerror("Error", f"Failed to delete profile:\n{str(e)}")
+
+        def export_profile():
+            selection = tree.selection()
+            if not selection:
+                messagebox.showwarning("No Selection", "Please select a profile to export.")
+                return
+
+            item = selection[0]
+            profile_name = tree.item(item)['values'][0]
+
+            if profile_name == "No profiles found - use 'Save Profile' to create one":
+                return
+
+            # Ask where to save
+            export_path = filedialog.asksaveasfilename(
+                defaultextension=".db",
+                initialfile=f"{profile_name}.db",
+                filetypes=[("Database files", "*.db"), ("All files", "*.*")],
+                title="Export Profile"
+            )
+
+            if export_path:
+                try:
+                    profile_path = os.path.join(profiles_dir, f"{profile_name}.db")
+                    shutil.copy2(profile_path, export_path)
+                    messagebox.showinfo("Exported", f"Profile exported to:\n{export_path}")
+                except Exception as e:
+                    messagebox.showerror("Error", f"Failed to export profile:\n{str(e)}")
+
+        # Initial load
+        refresh_profile_list()
+
+        # Button frame
+        btn_frame = tk.Frame(manage_window, bg=self.bg_color)
+        btn_frame.pack(pady=15)
+
+        tk.Button(btn_frame, text="🗑️ Delete", command=delete_profile,
+                 bg=self.button_bg, fg=self.fg_color,
+                 font=("Arial", 10, "bold"), width=12).pack(side=tk.LEFT, padx=5)
+
+        tk.Button(btn_frame, text="📤 Export", command=export_profile,
+                 bg=self.button_bg, fg=self.fg_color,
+                 font=("Arial", 10, "bold"), width=12).pack(side=tk.LEFT, padx=5)
+
+        tk.Button(btn_frame, text="🔄 Refresh", command=refresh_profile_list,
+                 bg=self.button_bg, fg=self.fg_color,
+                 font=("Arial", 10, "bold"), width=12).pack(side=tk.LEFT, padx=5)
+
+        tk.Button(btn_frame, text="❌ Close", command=manage_window.destroy,
+                 bg=self.button_bg, fg=self.fg_color,
+                 font=("Arial", 10, "bold"), width=12).pack(side=tk.LEFT, padx=5)
 
     def fix_duplicates(self):
         """Fix duplicate program numbers by assigning new unique o##### values based on OD"""
