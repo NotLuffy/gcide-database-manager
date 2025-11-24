@@ -1114,6 +1114,7 @@ class GCodeDatabaseGUI:
         added = 0
         updated = 0
         errors = 0
+        duplicates_within_processing = 0  # Track duplicates found during processing
 
         # Track which program numbers we've seen during processing
         seen_in_scan = {}  # program_number -> filepath
@@ -1147,7 +1148,7 @@ class GCodeDatabaseGUI:
                         record.program_number = f"{original_prog_num}({suffix})"
                         progress_text.insert(tk.END, f"  DUPLICATE: {original_prog_num} -> saved as {record.program_number}\n")
                         progress_text.see(tk.END)
-                        duplicates += 1
+                        duplicates_within_processing += 1
 
                     # Track this file with its (possibly modified) program number
                     seen_in_scan[record.program_number] = filepath
@@ -1227,6 +1228,8 @@ class GCodeDatabaseGUI:
         progress_text.insert(tk.END, f"Added: {added}\n")
         progress_text.insert(tk.END, f"Updated: {updated}\n")
         progress_text.insert(tk.END, f"Errors: {errors}\n")
+        if duplicates_within_processing > 0:
+            progress_text.insert(tk.END, f"Program number conflicts (saved with suffix): {duplicates_within_processing}\n")
         progress_text.insert(tk.END, f"Unique programs: {len(seen_in_scan)}\n")
         progress_text.see(tk.END)
         
@@ -1427,7 +1430,7 @@ class GCodeDatabaseGUI:
                         record.program_number = f"{original_prog_num}({suffix})"
                         progress_text.insert(tk.END, f"  DUPLICATE: {original_prog_num} -> saved as {record.program_number}\n")
                         progress_text.see(tk.END)
-                        duplicates += 1
+                        duplicates_within_processing += 1
 
                     # Track this file with its (possibly modified) program number
                     seen_in_scan[record.program_number] = filepath
@@ -1515,28 +1518,78 @@ class GCodeDatabaseGUI:
         self.refresh_results()
 
     def fix_program_numbers(self):
-        """Rename files and internal program numbers to unused numbers based on OD ranges"""
-        folder = filedialog.askdirectory(title="Select Folder with G-Code Files to Rename",
-                                        initialdir=self.config.get("last_folder", ""))
+        """Rename files and internal program numbers to unused numbers based on OD ranges - FILTERED VIEW ONLY"""
+        # Get currently displayed items (respects filters)
+        displayed_items = self.tree.get_children()
 
-        if not folder:
+        if not displayed_items:
+            messagebox.showwarning("No Files",
+                "No files in current view.\n\n"
+                "Apply filters to show the files you want to renumber.")
+            return
+
+        # Get program numbers and file info from filtered view
+        filtered_files = []
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        for item in displayed_items:
+            values = self.tree.item(item)['values']
+            if values:
+                prog_num = values[0]
+                # Get file path and OD from database
+                cursor.execute("""
+                    SELECT program_number, file_path, outer_diameter
+                    FROM programs
+                    WHERE program_number = ?
+                """, (prog_num,))
+                row = cursor.fetchone()
+                if row and row[1]:  # Has file_path
+                    filtered_files.append(row)
+
+        conn.close()
+
+        if not filtered_files:
+            messagebox.showwarning("No Files with Paths",
+                "No files in filtered view have physical file paths.\n\n"
+                "Only files with linked physical files can be renumbered.")
+            return
+
+        # Confirm operation
+        msg = f"Fix program numbers for {len(filtered_files)} file(s) in filtered view?\n\n"
+        msg += "This will:\n"
+        msg += "• Assign new O-numbers based on OD ranges\n"
+        msg += "• Update physical filenames\n"
+        msg += "• Update internal O-numbers in G-code files\n"
+        msg += "• Update database program_number\n\n"
+        msg += "Database backup will be created automatically."
+
+        result = messagebox.askyesno("Confirm Fix Program Numbers", msg)
+        if not result:
+            return
+
+        # Create backup
+        if not self.backup_database():
+            messagebox.showerror("Backup Failed",
+                "Database backup failed. Operation canceled for safety.")
             return
 
         # Show progress window
         progress_window = tk.Toplevel(self.root)
-        progress_window.title("Fixing Program Numbers...")
-        progress_window.geometry("500x400")
+        progress_window.title("Fixing Program Numbers (Filtered View)")
+        progress_window.geometry("700x600")
         progress_window.configure(bg=self.bg_color)
 
-        progress_label = tk.Label(progress_window, text="Scanning for files...",
+        progress_label = tk.Label(progress_window, text="Processing filtered files...",
                                  bg=self.bg_color, fg=self.fg_color,
                                  font=("Arial", 12))
         progress_label.pack(pady=20)
 
         progress_text = scrolledtext.ScrolledText(progress_window,
                                                  bg=self.input_bg, fg=self.fg_color,
-                                                 width=60, height=15)
-        progress_text.pack(padx=10, pady=10)
+                                                 font=("Courier", 9),
+                                                 wrap=tk.WORD)
+        progress_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
         self.root.update()
 
@@ -1553,57 +1606,56 @@ class GCodeDatabaseGUI:
                 existing_numbers.add(int(match.group(1)))
         conn.close()
 
-        # OD ranges for program numbers
+        progress_text.insert(tk.END, f"Processing {len(filtered_files)} file(s) from filtered view...\n\n")
+
+        # OD ranges for program numbers (PRIMARY RANGES - EXPANDED)
         od_ranges = {
-            5.75: (57000, 57999),
-            6.00: (60000, 60999),
-            6.25: (62000, 62999),
-            6.50: (65000, 65999),
-            7.00: (70000, 70999),
-            7.50: (75000, 75999),
-            8.00: (80000, 80999),
-            8.50: (85000, 85999),
-            9.50: (95000, 95999),
-            10.25: (10250, 10349),
-            10.50: (10500, 10599),
-            13.00: (13000, 13099)
+            5.75: (57000, 59999),   # 3000 numbers
+            6.00: (60000, 61999),   # 2000 numbers
+            6.25: (62000, 64999),   # 3000 numbers
+            6.50: (65000, 69999),   # 5000 numbers
+            7.00: (70000, 74999),   # 5000 numbers
+            7.50: (75000, 79999),   # 5000 numbers
+            8.00: (80000, 84999),   # 5000 numbers
+            8.50: (85000, 89999),   # 5000 numbers
+            9.50: (90000, 99999),   # 10000 numbers
+            10.25: (10000, 10499),  # 500 numbers
+            10.50: (10500, 12999),  # 2500 numbers
+            13.00: (13000, 13999)   # 1000 numbers
         }
 
-        # Find G-code files
-        gcode_files = []
-        for root_dir, dirs, files in os.walk(folder):
-            for file in files:
-                # Match any file containing o##### pattern (4+ digits)
-                if re.search(r'[oO]\d{4,}', file):
-                    gcode_files.append(os.path.join(root_dir, file))
+        # Reserved ranges (DO NOT USE for production files)
+        reserved_ranges = [
+            (0, 1000)  # Machine needed files (00000-01000)
+        ]
 
-        progress_text.insert(tk.END, f"Found {len(gcode_files)} files.\n")
-        progress_text.insert(tk.END, f"Parsing files to determine OD...\n\n")
-        progress_text.see(tk.END)
-        self.root.update()
-
+        # Process files from filtered view
         renamed = 0
         skipped = 0
         errors = 0
-        total_files = len(gcode_files)
+        total_files = len(filtered_files)
 
-        for file_idx, filepath in enumerate(gcode_files, 1):
+        for file_idx, file_info in enumerate(filtered_files, 1):
+            old_prog_num, filepath, od = file_info
             filename = os.path.basename(filepath)
 
             progress_label.config(text=f"Processing {file_idx}/{total_files}: {filename}")
+            progress_text.insert(tk.END, f"[{file_idx}/{total_files}] {old_prog_num} (OD: {od:.2f}\")\n")
+            progress_text.see(tk.END)
             self.root.update()
 
             try:
-                # Parse file to get OD
-                result = self.parse_gcode_file(filepath)
-
-                if not result or not result.outer_diameter:
-                    progress_text.insert(tk.END, f"SKIP: {filename} - no OD detected\n")
-                    progress_text.see(tk.END)
+                # Check if file exists
+                if not os.path.exists(filepath):
+                    progress_text.insert(tk.END, f"  SKIP: File not found at {filepath}\n\n")
                     skipped += 1
                     continue
 
-                od = result.outer_diameter
+                # Check if OD is valid
+                if not od or od <= 0:
+                    progress_text.insert(tk.END, f"  SKIP: No valid OD in database\n\n")
+                    skipped += 1
+                    continue
 
                 # Find appropriate OD range
                 closest_od = min(od_ranges.keys(), key=lambda x: abs(x - od))
@@ -1615,7 +1667,7 @@ class GCodeDatabaseGUI:
 
                 start_range, end_range = od_ranges[closest_od]
 
-                # Find next available number in range
+                # Find next available number in PRIMARY range
                 new_prog_num = None
                 for num in range(start_range, end_range + 1):
                     if num not in existing_numbers:
@@ -1623,13 +1675,35 @@ class GCodeDatabaseGUI:
                         existing_numbers.add(num)  # Mark as used
                         break
 
+                # FALLBACK: If primary range is full, use ANY available number (00000-99999)
                 if not new_prog_num:
-                    progress_text.insert(tk.END, f"ERROR: {filename} - no available numbers in {closest_od}\" range\n")
+                    progress_text.insert(tk.END, f"⚠️  PRIMARY range full for {closest_od}\" - searching fallback...\n")
+                    progress_text.see(tk.END)
+
+                    # Helper function to check if number is in reserved range
+                    def is_reserved(num):
+                        for reserved_start, reserved_end in reserved_ranges:
+                            if reserved_start <= num <= reserved_end:
+                                return True
+                        return False
+
+                    # Search entire range 1-99999 (skip reserved 0-1000)
+                    for num in range(1001, 100000):
+                        if num not in existing_numbers and not is_reserved(num):
+                            new_prog_num = num
+                            existing_numbers.add(num)  # Mark as used
+                            progress_text.insert(tk.END, f"   ✓ Using fallback number: o{num:05d}\n")
+                            progress_text.see(tk.END)
+                            break
+
+                if not new_prog_num:
+                    progress_text.insert(tk.END, f"ERROR: {filename} - NO available numbers in entire range (00000-99999)!\n")
                     progress_text.see(tk.END)
                     errors += 1
                     continue
 
-                new_prog_str = f"O{new_prog_num}"
+                # Format with leading zeros (always 5 digits: O01057, not O1057)
+                new_prog_str = f"O{new_prog_num:05d}"
 
                 # Read file content
                 with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
@@ -1651,30 +1725,51 @@ class GCodeDatabaseGUI:
                 with open(filepath, 'w', encoding='utf-8') as f:
                     f.writelines(lines)
 
-                # Rename file
+                # Rename file (always 5 digits with leading zeros)
                 file_ext = os.path.splitext(filename)[1]
-                new_filename = f"o{new_prog_num}{file_ext}" if file_ext else f"o{new_prog_num}"
+                new_filename = f"o{new_prog_num:05d}{file_ext}" if file_ext else f"o{new_prog_num:05d}"
                 new_filepath = os.path.join(os.path.dirname(filepath), new_filename)
 
                 os.rename(filepath, new_filepath)
 
-                progress_text.insert(tk.END, f"RENAME: {filename} -> {new_filename} (OD: {closest_od}\")\n")
+                # Update database with new program number and file path
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                cursor.execute("""
+                    UPDATE programs
+                    SET program_number = ?,
+                        file_path = ?
+                    WHERE program_number = ?
+                """, (new_prog_str.lower(), new_filepath, old_prog_num))
+                conn.commit()
+                conn.close()
+
+                progress_text.insert(tk.END, f"  ✓ {old_prog_num} → {new_prog_str.lower()} (OD: {closest_od}\")\n")
+                progress_text.insert(tk.END, f"    File: {new_filename}\n\n")
                 progress_text.see(tk.END)
                 renamed += 1
 
             except Exception as e:
-                progress_text.insert(tk.END, f"ERROR: {filename} - {str(e)[:100]}\n")
+                progress_text.insert(tk.END, f"  ❌ ERROR: {str(e)[:100]}\n\n")
                 progress_text.see(tk.END)
                 errors += 1
 
         # Show results
         progress_label.config(text="Complete!")
         progress_text.insert(tk.END, f"\n{'='*50}\n")
-        progress_text.insert(tk.END, f"Total files: {total_files}\n")
-        progress_text.insert(tk.END, f"Renamed: {renamed}\n")
+        progress_text.insert(tk.END, f"FIX PROGRAM NUMBERS - SUMMARY\n")
+        progress_text.insert(tk.END, f"{'='*50}\n")
+        progress_text.insert(tk.END, f"Files in filtered view: {total_files}\n")
+        progress_text.insert(tk.END, f"Successfully renumbered: {renamed}\n")
         progress_text.insert(tk.END, f"Skipped: {skipped}\n")
-        progress_text.insert(tk.END, f"Errors: {errors}\n")
+        progress_text.insert(tk.END, f"Errors: {errors}\n\n")
+        progress_text.insert(tk.END, f"All renumbered files now have OD-based O-numbers.\n")
+        progress_text.insert(tk.END, f"Database and physical files updated.\n")
         progress_text.see(tk.END)
+
+        # Refresh the view to show new program numbers
+        self.refresh_filter_values()
+        self.refresh_results()
 
         close_btn = tk.Button(progress_window, text="Close",
                              command=progress_window.destroy,
@@ -3128,7 +3223,7 @@ class GCodeDatabaseGUI:
             progress_text.insert(tk.END, f"=== DRY RUN MODE - NO CHANGES WILL BE MADE ===\n\n")
 
         progress_text.insert(tk.END, f"Found {len(duplicates_to_rename)} duplicate file(s) in filtered view.\n")
-        progress_text.insert(tk.END, f"Assigning new O-numbers starting from o59000...\n\n")
+        progress_text.insert(tk.END, f"Assigning available O-numbers (avoiding reserved 00000-01000)...\n\n")
 
         renamed_count = 0
         errors = 0
@@ -3146,14 +3241,28 @@ class GCodeDatabaseGUI:
                 existing_program_numbers.add(int(match.group(1)))
         conn_temp.close()
 
-        # Find available O-numbers starting from 59000 (high range to avoid conflicts)
-        def find_next_available_onumber(start=59000):
-            """Find the next available O-number"""
+        # Reserved ranges (DO NOT USE for production files)
+        reserved_ranges = [
+            (0, 1000)  # Machine needed files (00000-01000)
+        ]
+
+        # Helper function to check if number is in reserved range
+        def is_reserved(num):
+            for reserved_start, reserved_end in reserved_ranges:
+                if reserved_start <= num <= reserved_end:
+                    return True
+            return False
+
+        # Find available O-numbers starting from 1001 (avoiding reserved 0-1000)
+        def find_next_available_onumber(start=1001):
+            """Find the next available O-number, skipping reserved ranges"""
             current = start
-            while current in existing_program_numbers:
+            while current < 100000:
+                if current not in existing_program_numbers and not is_reserved(current):
+                    existing_program_numbers.add(current)  # Reserve it
+                    return current
                 current += 1
-            existing_program_numbers.add(current)  # Reserve it
-            return current
+            return None  # No available numbers found
 
         # Track used names to avoid collisions
         used_names = set()
@@ -3165,15 +3274,23 @@ class GCodeDatabaseGUI:
 
             # Get available O-number
             new_onumber = find_next_available_onumber()
-            new_prog_num = f"o{new_onumber}"
+
+            # Check if we ran out of numbers
+            if new_onumber is None:
+                progress_text.insert(tk.END, f"[{idx}] ❌ ERROR: No available O-numbers in entire range (00000-99999)!\n\n")
+                errors += 1
+                continue
+
+            # Format with leading zeros (always 5 digits: o01057, not o1057)
+            new_prog_num = f"o{new_onumber:05d}"
 
             # Generate new filename
             old_dir = os.path.dirname(old_path)
             old_basename = os.path.basename(old_path)
             name_without_ext, ext = os.path.splitext(old_basename)
 
-            # New filename with proper O-number
-            new_basename = f"o{new_onumber}{ext}"
+            # New filename with proper O-number (5 digits with leading zeros)
+            new_basename = f"o{new_onumber:05d}{ext}"
             new_path = os.path.join(old_dir, new_basename)
 
             # Safety check - ensure new path doesn't exist
