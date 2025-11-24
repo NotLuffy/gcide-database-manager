@@ -536,6 +536,10 @@ class GCodeDatabaseGUI:
                  bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
                  width=14, height=2).pack(side=tk.LEFT, padx=3)
 
+        tk.Button(reports_group, text="📊 Statistics", command=self.show_statistics,
+                 bg="#1976D2", fg=self.fg_color, font=("Arial", 9, "bold"),
+                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+
         tk.Button(reports_group, text="❓ Help & Workflow", command=self.show_legend,
                  bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
                  width=14, height=2).pack(side=tk.LEFT, padx=3)
@@ -4562,6 +4566,342 @@ class GCodeDatabaseGUI:
             menu.add_command(label="Delete Entry", command=self.delete_entry)
 
             menu.post(event.x_root, event.y_root)
+
+    def show_statistics(self):
+        """Show comprehensive database statistics with filtering support"""
+        stats_window = tk.Toplevel(self.root)
+        stats_window.title("Database Statistics")
+        stats_window.geometry("1200x800")
+        stats_window.configure(bg=self.bg_color)
+
+        # Create notebook for different stat views
+        notebook = ttk.Notebook(stats_window)
+        notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # Get current filters to show filtered vs total stats
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        # Build filter query
+        filter_query = "SELECT COUNT(*) FROM programs WHERE 1=1"
+        filter_params = []
+
+        # Apply current filters
+        if hasattr(self, 'filter_od_min') and self.filter_od_min.get():
+            filter_query += " AND outer_diameter >= ?"
+            filter_params.append(float(self.filter_od_min.get()))
+        if hasattr(self, 'filter_od_max') and self.filter_od_max.get():
+            filter_query += " AND outer_diameter <= ?"
+            filter_params.append(float(self.filter_od_max.get()))
+        if hasattr(self, 'filter_thickness_min') and self.filter_thickness_min.get():
+            filter_query += " AND thickness >= ?"
+            filter_params.append(float(self.filter_thickness_min.get()))
+        if hasattr(self, 'filter_thickness_max') and self.filter_thickness_max.get():
+            filter_query += " AND thickness <= ?"
+            filter_params.append(float(self.filter_thickness_max.get()))
+        if hasattr(self, 'filter_cb_min') and self.filter_cb_min.get():
+            filter_query += " AND center_bore >= ?"
+            filter_params.append(float(self.filter_cb_min.get()))
+        if hasattr(self, 'filter_cb_max') and self.filter_cb_max.get():
+            filter_query += " AND center_bore <= ?"
+            filter_params.append(float(self.filter_cb_max.get()))
+
+        # Check if any filters are active
+        filters_active = len(filter_params) > 0
+
+        # TAB 1: Overall Statistics
+        tab_overall = tk.Frame(notebook, bg=self.bg_color)
+        notebook.add(tab_overall, text='📊 Overall')
+
+        overall_text = scrolledtext.ScrolledText(tab_overall, bg=self.input_bg, fg=self.fg_color,
+                                                 font=("Courier", 10), wrap=tk.NONE, padx=10, pady=10)
+        overall_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        # Get total count
+        cursor.execute("SELECT COUNT(*) FROM programs")
+        total_count = cursor.fetchone()[0]
+
+        # Get filtered count
+        cursor.execute(filter_query, filter_params)
+        filtered_count = cursor.fetchone()[0]
+
+        overall_text.insert(tk.END, "="*100 + "\n")
+        overall_text.insert(tk.END, "DATABASE STATISTICS - OVERALL SUMMARY\n")
+        overall_text.insert(tk.END, "="*100 + "\n\n")
+
+        if filters_active:
+            overall_text.insert(tk.END, f"Total Programs in Database: {total_count:,}\n")
+            overall_text.insert(tk.END, f"Filtered View: {filtered_count:,} ({filtered_count/total_count*100:.1f}%)\n\n")
+            overall_text.insert(tk.END, "NOTE: Statistics below show FILTERED data only\n")
+            overall_text.insert(tk.END, "="*100 + "\n\n")
+        else:
+            overall_text.insert(tk.END, f"Total Programs: {total_count:,}\n")
+            overall_text.insert(tk.END, "="*100 + "\n\n")
+
+        # Validation Status Breakdown
+        if filter_params:
+            status_query = filter_query.replace("SELECT COUNT(*)", "SELECT validation_status, COUNT(*)") + " GROUP BY validation_status ORDER BY validation_status"
+        else:
+            status_query = "SELECT validation_status, COUNT(*) FROM programs GROUP BY validation_status ORDER BY validation_status"
+
+        cursor.execute(status_query, filter_params)
+        status_results = cursor.fetchall()
+
+        overall_text.insert(tk.END, "VALIDATION STATUS BREAKDOWN:\n")
+        overall_text.insert(tk.END, "-"*100 + "\n")
+        overall_text.insert(tk.END, f"{'Status':<20} {'Count':>10} {'Percentage':>12}\n")
+        overall_text.insert(tk.END, "-"*100 + "\n")
+
+        status_total = sum(r[1] for r in status_results)
+        for status, count in status_results:
+            percentage = (count / status_total * 100) if status_total > 0 else 0
+            overall_text.insert(tk.END, f"{status or 'NULL':<20} {count:>10,} {percentage:>11.1f}%\n")
+
+        overall_text.insert(tk.END, "-"*100 + "\n")
+        overall_text.insert(tk.END, f"{'TOTAL':<20} {status_total:>10,} {100.0:>11.1f}%\n\n\n")
+
+        # Spacer Type Breakdown
+        if filter_params:
+            type_query = filter_query.replace("SELECT COUNT(*)", "SELECT spacer_type, COUNT(*)") + " GROUP BY spacer_type ORDER BY COUNT(*) DESC"
+        else:
+            type_query = "SELECT spacer_type, COUNT(*) FROM programs GROUP BY spacer_type ORDER BY COUNT(*) DESC"
+
+        cursor.execute(type_query, filter_params)
+        type_results = cursor.fetchall()
+
+        overall_text.insert(tk.END, "SPACER TYPE BREAKDOWN:\n")
+        overall_text.insert(tk.END, "-"*100 + "\n")
+        overall_text.insert(tk.END, f"{'Type':<25} {'Count':>10} {'Percentage':>12}\n")
+        overall_text.insert(tk.END, "-"*100 + "\n")
+
+        type_total = sum(r[1] for r in type_results)
+        for stype, count in type_results:
+            percentage = (count / type_total * 100) if type_total > 0 else 0
+            overall_text.insert(tk.END, f"{stype or 'NULL':<25} {count:>10,} {percentage:>11.1f}%\n")
+
+        overall_text.insert(tk.END, "-"*100 + "\n")
+        overall_text.insert(tk.END, f"{'TOTAL':<25} {type_total:>10,} {100.0:>11.1f}%\n\n\n")
+
+        # Material Breakdown
+        if filter_params:
+            material_query = filter_query.replace("SELECT COUNT(*)", "SELECT material, COUNT(*)") + " GROUP BY material ORDER BY COUNT(*) DESC"
+        else:
+            material_query = "SELECT material, COUNT(*) FROM programs GROUP BY material ORDER BY COUNT(*) DESC"
+
+        cursor.execute(material_query, filter_params)
+        material_results = cursor.fetchall()
+
+        overall_text.insert(tk.END, "MATERIAL BREAKDOWN:\n")
+        overall_text.insert(tk.END, "-"*100 + "\n")
+        overall_text.insert(tk.END, f"{'Material':<25} {'Count':>10} {'Percentage':>12}\n")
+        overall_text.insert(tk.END, "-"*100 + "\n")
+
+        material_total = sum(r[1] for r in material_results)
+        for material, count in material_results:
+            percentage = (count / material_total * 100) if material_total > 0 else 0
+            overall_text.insert(tk.END, f"{material or 'NULL':<25} {count:>10,} {percentage:>11.1f}%\n")
+
+        overall_text.insert(tk.END, "-"*100 + "\n")
+        overall_text.insert(tk.END, f"{'TOTAL':<25} {material_total:>10,} {100.0:>11.1f}%\n")
+
+        overall_text.config(state=tk.DISABLED)
+
+        # TAB 2: By OD Size
+        tab_od = tk.Frame(notebook, bg=self.bg_color)
+        notebook.add(tab_od, text='📏 By OD Size')
+
+        od_text = scrolledtext.ScrolledText(tab_od, bg=self.input_bg, fg=self.fg_color,
+                                           font=("Courier", 9), wrap=tk.NONE, padx=10, pady=10)
+        od_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        # Define OD ranges
+        od_ranges = [
+            (5.50, 6.00, '5.75"'),
+            (6.00, 6.25, '6.00"'),
+            (6.25, 6.50, '6.25"'),
+            (6.50, 7.00, '6.50"'),
+            (7.00, 7.50, '7.00"'),
+            (7.50, 8.00, '7.50"'),
+            (8.00, 8.50, '8.00"'),
+            (8.50, 9.00, '8.50"'),
+            (9.00, 10.00, '9.50"'),
+            (10.00, 10.50, '10.25"'),
+            (10.50, 11.00, '10.50"'),
+            (11.00, 12.00, '11.00"'),
+            (12.00, 13.50, '13.00"'),
+        ]
+
+        od_text.insert(tk.END, "="*140 + "\n")
+        od_text.insert(tk.END, "STATISTICS BY OD SIZE\n")
+        od_text.insert(tk.END, "="*140 + "\n\n")
+
+        if filters_active:
+            od_text.insert(tk.END, "NOTE: Showing FILTERED data only\n\n")
+
+        od_text.insert(tk.END, f"{'OD Size':<10} {'Total':>8} {'PASS':>8} {'CRITICAL':>10} {'DIMENSIONAL':>13} {'WARNING':>9} {'BORE_WARN':>11} {'% PASS':>9}\n")
+        od_text.insert(tk.END, "-"*140 + "\n")
+
+        grand_total = 0
+        grand_pass = 0
+        grand_critical = 0
+        grand_dimensional = 0
+        grand_warning = 0
+        grand_bore = 0
+
+        for min_od, max_od, label in od_ranges:
+            # Build query with OD range and optional filters
+            od_filter_query = filter_query + " AND outer_diameter >= ? AND outer_diameter < ?"
+            od_params = filter_params + [min_od, max_od]
+
+            cursor.execute(od_filter_query, od_params)
+            range_total = cursor.fetchone()[0]
+
+            if range_total == 0:
+                continue
+
+            # Get status breakdown for this range
+            status_query = od_filter_query.replace("SELECT COUNT(*)", "SELECT validation_status, COUNT(*)") + " GROUP BY validation_status"
+            cursor.execute(status_query, od_params)
+            status_breakdown = dict(cursor.fetchall())
+
+            pass_count = status_breakdown.get('PASS', 0)
+            critical_count = status_breakdown.get('CRITICAL', 0)
+            dimensional_count = status_breakdown.get('DIMENSIONAL', 0)
+            warning_count = status_breakdown.get('WARNING', 0)
+            bore_count = status_breakdown.get('BORE_WARNING', 0)
+            pass_pct = (pass_count / range_total * 100) if range_total > 0 else 0
+
+            od_text.insert(tk.END, f"{label:<10} {range_total:>8,} {pass_count:>8,} {critical_count:>10,} {dimensional_count:>13,} {warning_count:>9,} {bore_count:>11,} {pass_pct:>8.1f}%\n")
+
+            grand_total += range_total
+            grand_pass += pass_count
+            grand_critical += critical_count
+            grand_dimensional += dimensional_count
+            grand_warning += warning_count
+            grand_bore += bore_count
+
+        od_text.insert(tk.END, "-"*140 + "\n")
+        grand_pass_pct = (grand_pass / grand_total * 100) if grand_total > 0 else 0
+        od_text.insert(tk.END, f"{'TOTAL':<10} {grand_total:>8,} {grand_pass:>8,} {grand_critical:>10,} {grand_dimensional:>13,} {grand_warning:>9,} {grand_bore:>11,} {grand_pass_pct:>8.1f}%\n")
+
+        od_text.config(state=tk.DISABLED)
+
+        # TAB 3: Status by OD (matrix view)
+        tab_matrix = tk.Frame(notebook, bg=self.bg_color)
+        notebook.add(tab_matrix, text='🔢 Status Matrix')
+
+        matrix_text = scrolledtext.ScrolledText(tab_matrix, bg=self.input_bg, fg=self.fg_color,
+                                               font=("Courier", 9), wrap=tk.NONE, padx=10, pady=10)
+        matrix_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        matrix_text.insert(tk.END, "="*140 + "\n")
+        matrix_text.insert(tk.END, "VALIDATION STATUS BY OD SIZE - DETAILED MATRIX\n")
+        matrix_text.insert(tk.END, "="*140 + "\n\n")
+
+        if filters_active:
+            matrix_text.insert(tk.END, "NOTE: Showing FILTERED data only\n\n")
+
+        # Get all validation statuses
+        status_list = ['PASS', 'CRITICAL', 'DIMENSIONAL', 'WARNING', 'BORE_WARNING']
+
+        # Create matrix
+        for status in status_list:
+            matrix_text.insert(tk.END, f"\n{'='*140}\n")
+            matrix_text.insert(tk.END, f"{status} BY OD SIZE:\n")
+            matrix_text.insert(tk.END, f"{'='*140}\n")
+            matrix_text.insert(tk.END, f"{'OD Size':<12} {'Count':>10} {'% of Size':>12} {'% of Status':>14}\n")
+            matrix_text.insert(tk.END, "-"*140 + "\n")
+
+            # Get total for this status
+            status_filter_query = filter_query + " AND validation_status = ?"
+            cursor.execute(status_filter_query, filter_params + [status])
+            status_total = cursor.fetchone()[0]
+
+            if status_total == 0:
+                matrix_text.insert(tk.END, f"No programs with {status} status\n")
+                continue
+
+            status_subtotal = 0
+            for min_od, max_od, label in od_ranges:
+                od_status_query = filter_query + " AND outer_diameter >= ? AND outer_diameter < ? AND validation_status = ?"
+                cursor.execute(od_status_query, filter_params + [min_od, max_od, status])
+                count = cursor.fetchone()[0]
+
+                if count == 0:
+                    continue
+
+                # Get total for this OD size
+                od_total_query = filter_query + " AND outer_diameter >= ? AND outer_diameter < ?"
+                cursor.execute(od_total_query, filter_params + [min_od, max_od])
+                od_total = cursor.fetchone()[0]
+
+                pct_of_size = (count / od_total * 100) if od_total > 0 else 0
+                pct_of_status = (count / status_total * 100) if status_total > 0 else 0
+
+                matrix_text.insert(tk.END, f"{label:<12} {count:>10,} {pct_of_size:>11.1f}% {pct_of_status:>13.1f}%\n")
+                status_subtotal += count
+
+            matrix_text.insert(tk.END, "-"*140 + "\n")
+            matrix_text.insert(tk.END, f"{'TOTAL':<12} {status_subtotal:>10,} {'':>11} {100.0:>13.1f}%\n")
+
+        matrix_text.config(state=tk.DISABLED)
+
+        # TAB 4: Top Error Types
+        tab_errors = tk.Frame(notebook, bg=self.bg_color)
+        notebook.add(tab_errors, text='⚠️ Error Types')
+
+        error_text = scrolledtext.ScrolledText(tab_errors, bg=self.input_bg, fg=self.fg_color,
+                                              font=("Courier", 9), wrap=tk.NONE, padx=10, pady=10)
+        error_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        error_text.insert(tk.END, "="*100 + "\n")
+        error_text.insert(tk.END, "TOP ERROR TYPES\n")
+        error_text.insert(tk.END, "="*100 + "\n\n")
+
+        if filters_active:
+            error_text.insert(tk.END, "NOTE: Showing FILTERED data only\n\n")
+
+        # Count different error types from validation_issues
+        issues_query = filter_query.replace("SELECT COUNT(*)", "SELECT validation_issues") + " AND validation_issues IS NOT NULL"
+        cursor.execute(issues_query, filter_params)
+        all_issues = cursor.fetchall()
+
+        # Parse and count error types
+        error_counts = {}
+        for (issues_str,) in all_issues:
+            if not issues_str:
+                continue
+            # Split by pipe delimiter
+            issues = [i.strip() for i in issues_str.split('|') if i.strip()]
+            for issue in issues:
+                # Extract error type (first part before colon)
+                error_type = issue.split(':')[0].strip() if ':' in issue else issue.strip()
+                error_counts[error_type] = error_counts.get(error_type, 0) + 1
+
+        # Sort by count
+        sorted_errors = sorted(error_counts.items(), key=lambda x: x[1], reverse=True)
+
+        error_text.insert(tk.END, f"{'Error Type':<60} {'Count':>10} {'Percentage':>12}\n")
+        error_text.insert(tk.END, "-"*100 + "\n")
+
+        total_errors = sum(error_counts.values())
+        for error_type, count in sorted_errors[:20]:  # Top 20 errors
+            percentage = (count / total_errors * 100) if total_errors > 0 else 0
+            error_text.insert(tk.END, f"{error_type:<60} {count:>10,} {percentage:>11.1f}%\n")
+
+        error_text.insert(tk.END, "-"*100 + "\n")
+        error_text.insert(tk.END, f"{'TOTAL ERRORS':<60} {total_errors:>10,} {100.0:>11.1f}%\n\n")
+
+        error_text.insert(tk.END, f"\nTotal programs with errors: {len(all_issues):,}\n")
+
+        error_text.config(state=tk.DISABLED)
+
+        conn.close()
+
+        # Add close button
+        close_btn = tk.Button(stats_window, text="Close", command=stats_window.destroy,
+                             bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold"))
+        close_btn.pack(pady=10)
 
     def show_legend(self):
         """Show validation status legend and help"""
