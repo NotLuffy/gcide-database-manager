@@ -294,8 +294,8 @@ class ImprovedGCodeParser:
             'notes': []
         }
 
-        # Run keyword detection
-        keyword_type, keyword_conf = self._detect_by_keywords(title)
+        # Run keyword detection (scan title AND all comments in file)
+        keyword_type, keyword_conf = self._detect_by_keywords(title, lines)
 
         # Run pattern detection
         pattern_type, pattern_conf = self._detect_by_pattern(lines, title)
@@ -395,62 +395,110 @@ class ImprovedGCodeParser:
 
         return result
 
-    def _detect_by_keywords(self, title: str) -> Tuple[Optional[str], str]:
+    def _detect_by_keywords(self, title: str, lines: List[str] = None) -> Tuple[Optional[str], str]:
         """
-        Detect spacer type from title keywords
+        Detect spacer type from title keywords AND comments throughout the file
         Returns: (type, confidence)
 
         Hub_Spacer_Gen formats:
         - Standard: "6.5IN DIA 77MM 1.50"
         - Hub-Centric: "6.5IN DIA 77/93.1MM 1.50 HC 0.5"
         - STEP: "6.5IN DIA 106.1/74M B/C 1.50" or "STEP" or "DEEP"
+        - 2PC: "2PC LUG" or "2PC STUD" (can be in comments)
         """
-        if not title:
+        # Collect all text to search (title + all comments in file)
+        search_texts = []
+        if title:
+            search_texts.append(title)
+
+        # Extract all comments from G-code file
+        if lines:
+            for line in lines[:100]:  # Scan first 100 lines for comments
+                # G-code comments are in parentheses or after semicolon
+                # Example: (2PC STUD) or ; 2PC LUG
+                if '(' in line:
+                    # Extract text between parentheses
+                    comment_match = re.findall(r'\(([^)]+)\)', line)
+                    search_texts.extend(comment_match)
+                if ';' in line:
+                    # Extract text after semicolon
+                    comment_text = line.split(';', 1)[1].strip()
+                    if comment_text:
+                        search_texts.append(comment_text)
+
+        if not search_texts:
             return None, 'NONE'
 
-        title_upper = title.upper()
+        # Combine all search text
+        combined_text = ' '.join(search_texts)
+        combined_upper = combined_text.upper()
+
+        # Track detection source for better confidence
+        title_upper = title.upper() if title else ''
+        found_in_title = False
+        found_in_comments = False
 
         # STEP indicators (highest priority)
-        if any(word in title_upper for word in ['STEP', 'DEEP', 'B/C']):
-            return 'step', 'HIGH'
+        step_keywords = ['STEP', 'DEEP', 'B/C']
+        if any(word in combined_upper for word in step_keywords):
+            found_in_title = any(word in title_upper for word in step_keywords)
+            found_in_comments = not found_in_title and any(word in combined_upper for word in step_keywords)
+            confidence = 'HIGH' if found_in_title else 'MEDIUM'
+            return 'step', confidence
 
         # Steel Ring indicators
         # Patterns: "STEEL S-1", "HCS-1", "STEEL HCS-2", "STEEL HCS-1"
-        if re.search(r'STEEL\s+S-\d|HCS-\d|STEEL\s+HCS-\d', title_upper):
-            return 'steel_ring', 'HIGH'
-
-        # HC keyword
-        if 'HC' in title_upper:
-            # Check for CB/OB pattern (XX/YY format)
-            if re.search(r'\d+\.?\d*\s*/\s*\d+\.?\d*', title):
-                return 'hub_centric', 'HIGH'
-            else:
-                return 'hub_centric', 'MEDIUM'
+        if re.search(r'STEEL\s+S-\d|HCS-\d|STEEL\s+HCS-\d', combined_upper):
+            found_in_title = re.search(r'STEEL\s+S-\d|HCS-\d|STEEL\s+HCS-\d', title_upper) is not None
+            confidence = 'HIGH' if found_in_title else 'MEDIUM'
+            return 'steel_ring', confidence
 
         # 2-piece indicators (check before other patterns that might match parts of 2PC titles)
         # 2PC = 2-piece spacer, comes in LUG or STUD variants
-        if '2PC' in title_upper:
-            if 'LUG' in title_upper:
-                return '2PC LUG', 'HIGH'
-            elif 'STUD' in title_upper:
-                return '2PC STUD', 'HIGH'
+        if '2PC' in combined_upper:
+            found_in_title = '2PC' in title_upper
+
+            if 'LUG' in combined_upper:
+                confidence = 'HIGH' if (found_in_title and 'LUG' in title_upper) else 'MEDIUM'
+                return '2PC LUG', confidence
+            elif 'STUD' in combined_upper:
+                confidence = 'HIGH' if (found_in_title and 'STUD' in title_upper) else 'MEDIUM'
+                return '2PC STUD', confidence
             else:
                 # 2PC without specifying LUG or STUD
-                return '2PC UNSURE', 'MEDIUM'
+                confidence = 'MEDIUM' if found_in_title else 'LOW'
+                return '2PC UNSURE', confidence
+
+        # Thin hub centric indicator
+        if 'THIN' in combined_upper and 'HC' in combined_upper:
+            found_in_title = 'THIN' in title_upper
+            confidence = 'HIGH' if found_in_title else 'MEDIUM'
+            return 'thin_hub_centric', confidence
+
+        # HC keyword
+        if 'HC' in combined_upper:
+            found_in_title = 'HC' in title_upper
+            # Check for CB/OB pattern (XX/YY format)
+            if re.search(r'\d+\.?\d*\s*/\s*\d+\.?\d*', combined_text):
+                confidence = 'HIGH' if found_in_title else 'MEDIUM'
+                return 'hub_centric', confidence
+            else:
+                confidence = 'MEDIUM' if found_in_title else 'LOW'
+                return 'hub_centric', confidence
 
         # Check for CB/OB slash pattern without HC keyword
         # XX/YY MM ID or OD (without HC) = step pattern (shelf/CB format, larger first)
         # XX/YY MM HC = hub_centric pattern (CB/OB format, smaller first)
-        if re.search(r'\d+\.?\d*\s*/\s*\d+\.?\d*\s*MM', title, re.IGNORECASE):
+        if re.search(r'\d+\.?\d*\s*/\s*\d+\.?\d*\s*MM', combined_text, re.IGNORECASE):
             # If has "ID" or "OD" marker but not "HC", it's STEP format (outer/inner)
             # "ID" = specifying inner diameter, "OD" = specifying outer diameter
-            if ('ID' in title_upper or 'OD' in title_upper) and 'HC' not in title_upper:
+            if ('ID' in combined_upper or 'OD' in combined_upper) and 'HC' not in combined_upper:
                 return 'step', 'MEDIUM'
             else:
                 return 'hub_centric', 'MEDIUM'
 
         # Single CB/ID pattern
-        if re.search(r'\d+\.?\d+\s*MM\s+ID', title, re.IGNORECASE):
+        if re.search(r'\d+\.?\d+\s*MM\s+ID', combined_text, re.IGNORECASE):
             return 'standard', 'LOW'
 
         return None, 'NONE'
@@ -786,22 +834,43 @@ class ImprovedGCodeParser:
 
         # Hub height (for hub-centric)
         if result.spacer_type == 'hub_centric':
-            # Try to extract from title (format: "HC 0.5" or "0.5 HC")
-            hub_patterns = [
-                r'HC\s+(\d*\.?\d+)',  # HC 0.5
-                r'(\d*\.?\d+)\s+HC',  # 0.5 HC
-            ]
-            for pattern in hub_patterns:
-                hub_match = re.search(pattern, title, re.IGNORECASE)
-                if hub_match:
-                    try:
-                        hub_val = float(hub_match.group(1))
-                        # Hub height is typically 0.25" to 0.75"
-                        if 0.2 < hub_val < 1.0:
-                            result.hub_height = hub_val
-                            break
-                    except:
-                        pass
+            # Try to extract from title
+            # Pattern 1: "number HC number" format where first=thickness, second=hub height
+            # Example: "1.0 HC 1.5" means 1.0" thick + 1.5" hub height
+            dual_hc_match = re.search(r'(\d*\.?\d+)\s+HC\s+(\d*\.?\d+)', title, re.IGNORECASE)
+            if dual_hc_match:
+                try:
+                    first_val = float(dual_hc_match.group(1))
+                    second_val = float(dual_hc_match.group(2))
+
+                    # First value is thickness (override any previous thickness detection)
+                    if 0.25 <= first_val <= 4.0:
+                        result.thickness = first_val
+                        result.thickness_display = str(first_val)
+
+                    # Second value is hub height (can be up to 2.0" for larger parts)
+                    if 0.2 <= second_val <= 2.0:
+                        result.hub_height = second_val
+                except:
+                    pass
+
+            # Pattern 2: Single value patterns "HC 0.5" or "0.5 HC" (no thickness before/after)
+            if not result.hub_height:
+                hub_patterns = [
+                    r'HC\s+(\d*\.?\d+)',  # HC 0.5
+                    r'(\d*\.?\d+)\s+HC',  # 0.5 HC (only if not part of dual pattern)
+                ]
+                for pattern in hub_patterns:
+                    hub_match = re.search(pattern, title, re.IGNORECASE)
+                    if hub_match:
+                        try:
+                            hub_val = float(hub_match.group(1))
+                            # Hub height can be up to 2.0" for larger parts
+                            if 0.2 <= hub_val <= 2.0:
+                                result.hub_height = hub_val
+                                break
+                        except:
+                            pass
 
             # If not found in title, use standard 0.50" hub height
             if not result.hub_height:
@@ -908,22 +977,30 @@ class ImprovedGCodeParser:
                 if x_match:
                     last_bore_x = float(x_match.group(1))
 
-                if is_chamfer_line and step_depth_candidate is None:
-                    # Look for the next Z-only movement (step depth)
-                    # Only capture the first one found
+                if is_chamfer_line:
+                    # The chamfer X value itself is the CB diameter
+                    # Pattern in o10007: X6.701 Z-0.12 (chamfer) → this X6.701 is the CB
+                    # Pattern in o13009: X8.665 Z-0.15 (chamfer) → this X8.665 is the CB
+                    if x_match:
+                        chamfer_x = float(x_match.group(1))
+                        if 1.5 < chamfer_x < 10.0:  # Extended to 10.0 for large 13" parts
+                            # Add chamfer X as CB candidate
+                            cb_candidates.append(chamfer_x)
+                            cb_found = True  # This is definitive CB
+
+                    # Also look ahead for step depth (Z-only movement after chamfer)
                     for j in range(i+1, min(i+5, len(lines))):
                         next_line = lines[j]
                         next_x = re.search(r'X\s*([\d.]+)', next_line, re.IGNORECASE)
                         next_z = re.search(r'Z\s*-\s*([\d.]+)', next_line, re.IGNORECASE)
 
-                        if next_z and not next_x:
-                            # Z-only movement after chamfer = step depth
+                        # Step depth: Z-only movement right after chamfer
+                        if next_z and not next_x and step_depth_candidate is None:
                             z_val = float(next_z.group(1))
                             if 0.1 < z_val < 5.0:  # Step depth range (up to 5" for thick parts)
                                 step_depth_candidate = z_val
-                            break
                         elif next_x:
-                            # X movement means we're past the step depth section
+                            # Stop when we hit another X value
                             break
 
                 # Check for explicit CB marker comment
@@ -931,8 +1008,8 @@ class ImprovedGCodeParser:
 
                 if x_match:
                     x_val = float(x_match.group(1))
-                    # CB is typically 2.0-4.0 inches in diameter
-                    if 1.5 < x_val < 6.0:
+                    # CB is typically 2.0-9.0 inches in diameter (extended for large 13" parts)
+                    if 1.5 < x_val < 10.0:
                         # Check if there's a Z depth on same or next lines
                         max_z_depth = None
                         initial_z_depth = None  # First Z with this X (for chamfer detection)
@@ -1029,8 +1106,9 @@ class ImprovedGCodeParser:
                     x_match = re.search(r'X\s*([\d.]+)', lines[j], re.IGNORECASE)
                     if x_match:
                         x_val = float(x_match.group(1))
-                        # OD is typically 3.0-12.0 inches (filter out small X values which are CB/OB)
-                        if 3.0 < x_val < 12.0:
+                        # OD is typically 3.0-14.0 inches (filter out small X values which are CB/OB)
+                        # Extended to 14.0 to include 13" rounds
+                        if 3.0 < x_val < 14.0:
                             od_candidates.append(x_val)
 
             # Extract OB and hub height from OP2 progressive facing (hub-centric only)
@@ -1044,16 +1122,23 @@ class ImprovedGCodeParser:
                     if 0.1 < z_val < 2.0:  # Reasonable hub height range
                         op2_z_depths.append((z_val, x_match.group(1) if x_match else None))
 
+                # ENHANCED: Look for "(X IS OB)" keyword comment
+                has_ob_marker = '(X IS OB)' in line_upper or 'X IS OB' in line
+
                 if x_match and result.spacer_type == 'hub_centric':
                     x_val = float(x_match.group(1))
                     z_val = float(z_match.group(1)) if z_match else None
 
+                    # If line has "(X IS OB)" marker, prioritize this value
+                    if has_ob_marker:
+                        ob_candidates.append((x_val, z_val, i, True))  # True = has marker
+
                     # OB (Hub D) is typically 2.2-4.0 inches (filter out OD facing operations > 4.0)
                     # Progressive facing cuts down to the OB, then retracts to smaller X (CB)
                     # Exclude values too large (OD facing) and too small (CB)
-                    if 2.2 < x_val < 4.0:
+                    elif 2.2 < x_val < 4.0:
                         # Store X with its Z depth and line index for chamfer pattern detection
-                        ob_candidates.append((x_val, z_val, i))
+                        ob_candidates.append((x_val, z_val, i, False))  # False = no marker
 
                     # Also collect CB candidates from OP2 chamfer area (for hub-centric parts)
                     # CB chamfer is at shallow Z (< 0.15) and smaller than OB
@@ -1084,68 +1169,100 @@ class ImprovedGCodeParser:
         if step_depth_candidate and result.spacer_type == 'step':
             result.counter_bore_depth = step_depth_candidate
 
-        # Select OB: Look for chamfer pattern - OB is between two chamfers
-        # Pattern: X3.078 (chamfer) -> X2.874 (OB) -> Z up -> X2.774 (CB chamfer)
-        # The OB is the X value that:
-        #   1. Has a chamfer before it (larger X with Z movement)
-        #   2. Is at a deeper Z than the following lines (Z goes up after OB)
-        #   3. Is followed by movements toward CB (smaller X values)
+        # Select OB: Enhanced detection with multiple strategies
+        # Strategy 1: "(X IS OB)" keyword marker (highest priority)
+        # Strategy 2: X value after chamfer, before moving to positive Z
+        # Strategy 3: Chamfer pattern detection
         if ob_candidates:
-            if result.hub_diameter:  # Have title OB spec to use as reference
-                title_ob_inches = result.hub_diameter / 25.4  # Convert title spec to inches
+            # First, check if any candidate has the "(X IS OB)" marker
+            marked_ob = [x for x, z, idx, has_marker in ob_candidates if has_marker]
+            if marked_ob:
+                result.ob_from_gcode = marked_ob[0] * 25.4  # Use first marked value, convert to mm
+            else:
+                # Strategy 2: Look for X value after chamfer and before moving to positive Z
+                # Pattern from O10040:
+                # Line 78: G01 X10.17 Z-0.05 F0.008 (chamfer at OD)
+                # Lines 109-137: Progressive facing at negative Z (Z-0.1 to Z-1.55)
+                # Line 138: G01 X6.688 F0.013 (X IS OB) <- OB at deepest Z
+                # Line 139: Z-0.05  <- Move to shallow Z (before positive)
+                # Line 140: X6.588 Z0.  <- Move to Z0 (positive)
 
-                # Look for chamfer pattern: X value between two Z direction changes
-                ob_with_chamfer_pattern = []
-
-                for j, (x_val, z_val, line_idx) in enumerate(ob_candidates):
+                ob_after_chamfer = []
+                for j, (x_val, z_val, line_idx, has_marker) in enumerate(ob_candidates):
                     if z_val is None:
                         continue
 
-                    # Look at previous and next movements to detect chamfer pattern
-                    has_chamfer_before = False
-                    has_chamfer_after = False
+                    # Look at next 2 lines to see if Z moves toward positive (less negative)
+                    # Z-1.55 -> Z-0.05 -> Z0.0 indicates we found OB before retraction
+                    if j < len(ob_candidates) - 2:
+                        _, next1_z, _, _ = ob_candidates[j+1]
+                        _, next2_z, _, _ = ob_candidates[j+2] if j < len(ob_candidates) - 2 else (None, None, None, None)
 
-                    # Check previous lines for chamfer (larger X, Z movement)
-                    if j > 0:
-                        prev_x, prev_z, _ = ob_candidates[j-1]
-                        if prev_x and prev_x > x_val + 0.1:  # X decreased (faced inward)
-                            has_chamfer_before = True
+                        # Check if Z is moving from deep (negative) toward shallow/positive
+                        if next1_z and next1_z < z_val:  # Next Z is shallower (less negative)
+                            # And if there's a second move that goes even shallower or to positive
+                            if next2_z and next2_z < next1_z:
+                                ob_after_chamfer.append((x_val, z_val))
 
-                    # Check next lines for Z going up (shallower) = chamfer to CB
-                    if j < len(ob_candidates) - 1:
-                        next_x, next_z, _ = ob_candidates[j+1]
-                        if next_z and next_z < z_val:  # Z went up (shallower depth)
-                            has_chamfer_after = True
+                if ob_after_chamfer:
+                    # Use the X value with the deepest Z (most negative) before retraction
+                    deepest_ob = max(ob_after_chamfer, key=lambda pair: pair[1])
+                    result.ob_from_gcode = deepest_ob[0] * 25.4  # Convert to mm
+                elif result.hub_diameter:  # Fallback to title spec matching
+                    title_ob_inches = result.hub_diameter / 25.4  # Convert title spec to inches
 
-                    # If between chamfers, this is likely the OB
-                    if has_chamfer_before and has_chamfer_after:
-                        ob_with_chamfer_pattern.append(x_val)
+                    # Look for chamfer pattern: X value between two Z direction changes
+                    ob_with_chamfer_pattern = []
 
-                    # Also check if this X is very close to title spec (within 0.05")
-                    if abs(x_val - title_ob_inches) < 0.05:
-                        ob_with_chamfer_pattern.append(x_val)
+                    for j, (x_val, z_val, line_idx, has_marker) in enumerate(ob_candidates):
+                        if z_val is None:
+                            continue
 
-                # Select OB from chamfer pattern candidates, or use closest to title
-                if ob_with_chamfer_pattern:
-                    closest_x = min(ob_with_chamfer_pattern, key=lambda x: abs(x - title_ob_inches))
-                    result.ob_from_gcode = closest_x * 25.4  # Convert to mm
+                        # Look at previous and next movements to detect chamfer pattern
+                        has_chamfer_before = False
+                        has_chamfer_after = False
+
+                        # Check previous lines for chamfer (larger X, Z movement)
+                        if j > 0:
+                            prev_x, prev_z, _, _ = ob_candidates[j-1]
+                            if prev_x and prev_x > x_val + 0.1:  # X decreased (faced inward)
+                                has_chamfer_before = True
+
+                        # Check next lines for Z going up (shallower) = chamfer to CB
+                        if j < len(ob_candidates) - 1:
+                            next_x, next_z, _, _ = ob_candidates[j+1]
+                            if next_z and next_z < z_val:  # Z went up (shallower depth)
+                                has_chamfer_after = True
+
+                        # If between chamfers, this is likely the OB
+                        if has_chamfer_before and has_chamfer_after:
+                            ob_with_chamfer_pattern.append(x_val)
+
+                        # Also check if this X is very close to title spec (within 0.05")
+                        if abs(x_val - title_ob_inches) < 0.05:
+                            ob_with_chamfer_pattern.append(x_val)
+
+                    # Select OB from chamfer pattern candidates, or use closest to title
+                    if ob_with_chamfer_pattern:
+                        closest_x = min(ob_with_chamfer_pattern, key=lambda x: abs(x - title_ob_inches))
+                        result.ob_from_gcode = closest_x * 25.4  # Convert to mm
+                    else:
+                        # Fallback: find X closest to title spec from all candidates
+                        all_x_values = [x for x, z, idx, marker in ob_candidates]
+                        closest_x = min(all_x_values, key=lambda x: abs(x - title_ob_inches))
+                        result.ob_from_gcode = closest_x * 25.4
                 else:
-                    # Fallback: find X closest to title spec from all candidates
-                    all_x_values = [x for x, z, idx in ob_candidates]
-                    closest_x = min(all_x_values, key=lambda x: abs(x - title_ob_inches))
-                    result.ob_from_gcode = closest_x * 25.4
-            else:
-                # No title OB available, use largest value > CB
-                all_x_values = [x for x, z, idx in ob_candidates]
-                if cb_candidates:
-                    cb_inches = max(cb_candidates)
-                    valid_ob = [x for x in all_x_values if x > cb_inches + 0.15]
-                    if valid_ob:
-                        result.ob_from_gcode = max(valid_ob) * 25.4
+                    # No title OB available, use largest value > CB
+                    all_x_values = [x for x, z, idx, marker in ob_candidates]
+                    if cb_candidates:
+                        cb_inches = max(cb_candidates)
+                        valid_ob = [x for x in all_x_values if x > cb_inches + 0.15]
+                        if valid_ob:
+                            result.ob_from_gcode = max(valid_ob) * 25.4
+                        else:
+                            result.ob_from_gcode = max(all_x_values) * 25.4
                     else:
                         result.ob_from_gcode = max(all_x_values) * 25.4
-                else:
-                    result.ob_from_gcode = max(all_x_values) * 25.4
 
         # Select OD: maximum from turning operations (already in diameter mode)
         if od_candidates:
@@ -1169,8 +1286,8 @@ class ImprovedGCodeParser:
             if facing_z_values:
                 # Hub height is the deepest Z in the facing sequence
                 calculated_hub_height = max(facing_z_values)
-                # Validate it's reasonable (0.25" to 0.75")
-                if 0.2 < calculated_hub_height < 1.0:
+                # Validate it's reasonable (0.20" to 2.00" for larger parts)
+                if 0.2 <= calculated_hub_height <= 2.0:
                     # Only override if title didn't have hub height
                     if not result.hub_height or result.hub_height == 0.50:
                         result.hub_height = round(calculated_hub_height, 2)
@@ -1178,7 +1295,7 @@ class ImprovedGCodeParser:
         # Multi-method thickness calculation (fallback if not in title)
         if not result.thickness:
             # Method 1: From P-codes (work offset indicates total height) - ALWAYS try this first
-            thickness_from_pcode = self._calculate_thickness_from_pcode(result.pcodes_found, result.spacer_type, result.lathe)
+            thickness_from_pcode = self._calculate_thickness_from_pcode(result.pcodes_found, result.spacer_type, result.lathe, result.hub_height)
             if thickness_from_pcode:
                 result.thickness = thickness_from_pcode
                 # Set display format to inches (from P-code fallback)
@@ -1214,7 +1331,7 @@ class ImprovedGCodeParser:
         if result.spacer_type == 'hub_centric' and not result.hub_diameter and result.ob_from_gcode:
             result.hub_diameter = result.ob_from_gcode
 
-    def _calculate_thickness_from_pcode(self, pcodes: List[int], spacer_type: str, lathe: Optional[str]) -> Optional[float]:
+    def _calculate_thickness_from_pcode(self, pcodes: List[int], spacer_type: str, lathe: Optional[str], hub_height: Optional[float] = None) -> Optional[float]:
         """
         Calculate thickness from P-codes (work offsets) using lathe-specific P-code tables
 
@@ -1243,7 +1360,8 @@ class ImprovedGCodeParser:
                 if pcode in pcode_map_l1:
                     total_height = pcode_map_l1[pcode]
                     if spacer_type == 'hub_centric':
-                        return round(total_height - 0.50, 2)
+                        hub_h = hub_height if hub_height else 0.50
+                        return round(total_height - hub_h, 2)
                     else:
                         return total_height
 
@@ -1252,7 +1370,8 @@ class ImprovedGCodeParser:
                 if pcode in pcode_map_l2_l3:
                     total_height = pcode_map_l2_l3[pcode]
                     if spacer_type == 'hub_centric':
-                        return round(total_height - 0.50, 2)
+                        hub_h = hub_height if hub_height else 0.50
+                        return round(total_height - hub_h, 2)
                     else:
                         return total_height
 
@@ -1265,7 +1384,8 @@ class ImprovedGCodeParser:
 
                 # For hub-centric, subtract hub height to get thickness
                 if spacer_type == 'hub_centric':
-                    return round(total_height - 0.50, 2)  # Standard 0.50" hub
+                    hub_h = hub_height if hub_height else 0.50
+                    return round(total_height - hub_h, 2)
                 else:
                     return total_height
 
@@ -1486,11 +1606,13 @@ class ImprovedGCodeParser:
 
             # Calculate actual thickness from drill depth
             # Standard/STEP: thickness = drill_depth - 0.15"
-            # Hub-Centric: thickness = drill_depth - 0.65" (includes 0.50" hub + 0.15" clearance)
+            # Hub-Centric: thickness = drill_depth - hub_height - 0.15" clearance
             # 2PC with hub: title shows body thickness, but drill includes 0.25" hub
             #               so thickness = drill_depth - 0.40" (0.25" hub + 0.15" clearance)
             if result.spacer_type == 'hub_centric':
-                calculated_thickness = result.drill_depth - 0.65
+                # Use actual hub height from title/G-code (not fixed 0.50")
+                hub_h = result.hub_height if result.hub_height else 0.50
+                calculated_thickness = result.drill_depth - hub_h - 0.15
             elif result.spacer_type in ('2PC LUG', '2PC STUD', '2PC UNSURE'):
                 # 2PC parts: check if it has a hub
                 # If has hub, title shows body thickness, drill includes 0.25" hub
@@ -1528,7 +1650,9 @@ class ImprovedGCodeParser:
                         if pcode in pcode_map:
                             pcode_total_height = pcode_map[pcode]
                             if result.spacer_type == 'hub_centric':
-                                pcode_thickness = pcode_total_height - 0.50
+                                # Use actual hub height from title/G-code, not fixed 0.50"
+                                hub_h = result.hub_height if result.hub_height else 0.50
+                                pcode_thickness = pcode_total_height - hub_h
                             else:
                                 pcode_thickness = pcode_total_height
 
@@ -1555,18 +1679,28 @@ class ImprovedGCodeParser:
             # ±0.01" or less is acceptable - no warning
 
         # OD Validation: Title is SPEC, G-code should match within tolerance
-        # Tolerance: ±0.05" (OD is less critical than bore dimensions)
+        # Tolerance varies by size:
+        # - Small parts (< 10"): ±0.1" tolerance
+        # - Large parts (≥ 10"): ±0.25" tolerance (e.g., 13" rounds can be X12.8 in G-code)
         if result.outer_diameter and result.od_from_gcode:
             title_od = result.outer_diameter  # SPECIFICATION
             gcode_od = result.od_from_gcode  # IMPLEMENTATION
 
             diff = gcode_od - title_od
 
-            if abs(diff) > 0.1:  # More than ±0.1" is an error
+            # Set tolerance based on part size
+            if title_od >= 10.0:
+                error_tolerance = 0.25  # Large parts: ±0.25"
+                warning_tolerance = 0.15  # Warning zone: ±0.15-0.25"
+            else:
+                error_tolerance = 0.1  # Small parts: ±0.1"
+                warning_tolerance = 0.05  # Warning zone: ±0.05-0.1"
+
+            if abs(diff) > error_tolerance:
                 result.validation_issues.append(
                     f'OD MISMATCH: Spec={title_od:.2f}", G-code={gcode_od:.2f}" ({diff:+.3f}") - G-CODE ERROR'
                 )
-            elif abs(diff) > 0.05:  # Warning zone ±0.05-0.1"
+            elif abs(diff) > warning_tolerance:
                 result.validation_warnings.append(
                     f'OD tolerance check: Spec={title_od:.2f}", G-code={gcode_od:.2f}" ({diff:+.3f}")'
                 )

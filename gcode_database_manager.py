@@ -478,6 +478,10 @@ class GCodeDatabaseGUI:
                  bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
                  width=14, height=2).pack(side=tk.LEFT, padx=3)
 
+        tk.Button(files_group, text="🔄 Rescan Database", command=self.rescan_database,
+                 bg="#FF6F00", fg=self.fg_color, font=("Arial", 9, "bold"),
+                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+
         tk.Button(files_group, text="📁 Organize by OD", command=self.organize_files_by_od,
                  bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
                  width=14, height=2).pack(side=tk.LEFT, padx=3)
@@ -490,35 +494,31 @@ class GCodeDatabaseGUI:
                  bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
                  width=14, height=2).pack(side=tk.LEFT, padx=3)
 
-        # Tab 2: Tools
-        tab_tools = tk.Frame(ribbon, bg=self.bg_color)
-        ribbon.add(tab_tools, text='🔧 Tools')
+        # Tab 2: Duplicates
+        tab_duplicates = tk.Frame(ribbon, bg=self.bg_color)
+        ribbon.add(tab_duplicates, text='🔍 Duplicates')
 
-        tools_group = tk.Frame(tab_tools, bg=self.bg_color)
-        tools_group.pack(fill=tk.X, padx=5, pady=5)
+        dup_group = tk.Frame(tab_duplicates, bg=self.bg_color)
+        dup_group.pack(fill=tk.X, padx=5, pady=5)
 
-        tk.Button(tools_group, text="🔧 Fix Program #s", command=self.fix_program_numbers,
+        tk.Button(dup_group, text="🔍 Find Repeats", command=self.find_and_mark_repeats,
                  bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
                  width=14, height=2).pack(side=tk.LEFT, padx=3)
 
-        tk.Button(tools_group, text="🔄 Fix Duplicates", command=self.fix_duplicates,
+        tk.Button(dup_group, text="⚖️ Compare Files", command=self.compare_files,
                  bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
                  width=14, height=2).pack(side=tk.LEFT, padx=3)
 
-        tk.Button(tools_group, text="🔍 Find Repeats", command=self.find_and_mark_repeats,
+        tk.Button(dup_group, text="📝 Rename Duplicates", command=self.rename_duplicate_files,
                  bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
                  width=14, height=2).pack(side=tk.LEFT, padx=3)
 
-        tk.Button(tools_group, text="🗑️ Delete Duplicates", command=self.delete_duplicates,
+        tk.Button(dup_group, text="🔧 Fix Program #s", command=self.fix_program_numbers,
                  bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
                  width=14, height=2).pack(side=tk.LEFT, padx=3)
 
-        tk.Button(tools_group, text="⚖️ Compare Files", command=self.compare_files,
-                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
-                 width=14, height=2).pack(side=tk.LEFT, padx=3)
-
-        tk.Button(tools_group, text="📝 Rename Duplicates", command=self.rename_duplicate_files,
-                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
+        tk.Button(dup_group, text="🗑️ Delete Duplicates", command=self.delete_duplicates,
+                 bg="#D32F2F", fg=self.fg_color, font=("Arial", 9, "bold"),
                  width=14, height=2).pack(side=tk.LEFT, padx=3)
 
         # Tab 3: Reports
@@ -540,18 +540,22 @@ class GCodeDatabaseGUI:
                  bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
                  width=14, height=2).pack(side=tk.LEFT, padx=3)
 
-        # Tab 4: Database
+        # Tab 4: Backup & Database
         tab_database = tk.Frame(ribbon, bg=self.bg_color)
-        ribbon.add(tab_database, text='🗄️ Database')
+        ribbon.add(tab_database, text='💾 Backup')
 
         db_group = tk.Frame(tab_database, bg=self.bg_color)
         db_group.pack(fill=tk.X, padx=5, pady=5)
 
-        tk.Button(db_group, text="🗑️ Clear DB", command=self.clear_database,
+        tk.Button(db_group, text="💾 Backup Now", command=self.create_manual_backup,
+                 bg="#1976D2", fg=self.fg_color, font=("Arial", 9, "bold"),
+                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+
+        tk.Button(db_group, text="📂 Restore Backup", command=self.restore_from_backup,
                  bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
                  width=14, height=2).pack(side=tk.LEFT, padx=3)
 
-        tk.Button(db_group, text="❌ Delete Filtered", command=self.delete_filtered_view,
+        tk.Button(db_group, text="📋 View Backups", command=self.view_backups,
                  bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
                  width=14, height=2).pack(side=tk.LEFT, padx=3)
 
@@ -565,6 +569,21 @@ class GCodeDatabaseGUI:
 
         tk.Button(db_group, text="📋 Manage Profiles", command=self.manage_database_profiles,
                  bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
+                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+
+        # Tab 5: Maintenance
+        tab_maint = tk.Frame(ribbon, bg=self.bg_color)
+        ribbon.add(tab_maint, text='⚙️ Maintenance')
+
+        maint_group = tk.Frame(tab_maint, bg=self.bg_color)
+        maint_group.pack(fill=tk.X, padx=5, pady=5)
+
+        tk.Button(maint_group, text="🗑️ Clear Database", command=self.clear_database,
+                 bg="#D32F2F", fg=self.fg_color, font=("Arial", 9, "bold"),
+                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+
+        tk.Button(maint_group, text="❌ Delete Filtered", command=self.delete_filtered_view,
+                 bg="#D32F2F", fg=self.fg_color, font=("Arial", 9, "bold"),
                  width=14, height=2).pack(side=tk.LEFT, padx=3)
 
     def create_filter_section(self, parent):
@@ -636,7 +655,35 @@ class GCodeDatabaseGUI:
         tk.Label(row2, text="to", bg=self.bg_color, fg=self.fg_color).pack(side=tk.LEFT, padx=2)
         self.filter_cb_max = tk.Entry(row2, bg=self.input_bg, fg=self.fg_color, width=10)
         self.filter_cb_max.pack(side=tk.LEFT, padx=2)
-        
+
+        # Row 2.5 - Additional dimensional filters (Hub Dia, Hub H, Step)
+        row2_5 = tk.Frame(filter_container, bg=self.bg_color)
+        row2_5.pack(fill=tk.X, pady=5)
+
+        # Hub Diameter
+        tk.Label(row2_5, text="Hub Dia:", bg=self.bg_color, fg=self.fg_color).pack(side=tk.LEFT, padx=5)
+        self.filter_hub_dia_min = tk.Entry(row2_5, bg=self.input_bg, fg=self.fg_color, width=10)
+        self.filter_hub_dia_min.pack(side=tk.LEFT, padx=2)
+        tk.Label(row2_5, text="to", bg=self.bg_color, fg=self.fg_color).pack(side=tk.LEFT, padx=2)
+        self.filter_hub_dia_max = tk.Entry(row2_5, bg=self.input_bg, fg=self.fg_color, width=10)
+        self.filter_hub_dia_max.pack(side=tk.LEFT, padx=2)
+
+        # Hub Height
+        tk.Label(row2_5, text="Hub H:", bg=self.bg_color, fg=self.fg_color).pack(side=tk.LEFT, padx=5)
+        self.filter_hub_h_min = tk.Entry(row2_5, bg=self.input_bg, fg=self.fg_color, width=10)
+        self.filter_hub_h_min.pack(side=tk.LEFT, padx=2)
+        tk.Label(row2_5, text="to", bg=self.bg_color, fg=self.fg_color).pack(side=tk.LEFT, padx=2)
+        self.filter_hub_h_max = tk.Entry(row2_5, bg=self.input_bg, fg=self.fg_color, width=10)
+        self.filter_hub_h_max.pack(side=tk.LEFT, padx=2)
+
+        # Step Diameter
+        tk.Label(row2_5, text="Step D:", bg=self.bg_color, fg=self.fg_color).pack(side=tk.LEFT, padx=5)
+        self.filter_step_d_min = tk.Entry(row2_5, bg=self.input_bg, fg=self.fg_color, width=10)
+        self.filter_step_d_min.pack(side=tk.LEFT, padx=2)
+        tk.Label(row2_5, text="to", bg=self.bg_color, fg=self.fg_color).pack(side=tk.LEFT, padx=2)
+        self.filter_step_d_max = tk.Entry(row2_5, bg=self.input_bg, fg=self.fg_color, width=10)
+        self.filter_step_d_max.pack(side=tk.LEFT, padx=2)
+
         # Row 3 - Sort options
         row3 = tk.Frame(filter_container, bg=self.bg_color)
         row3.pack(fill=tk.X, pady=5)
@@ -690,7 +737,12 @@ class GCodeDatabaseGUI:
                               font=("Arial", 10, "bold"), width=12, height=1)
         btn_search.pack(side=tk.LEFT, padx=5)
 
-        btn_clear = tk.Button(row4, text="🔄 Clear Filters", command=self.clear_filters,
+        btn_refresh = tk.Button(row4, text="🔄 Refresh", command=self.refresh_results,
+                               bg="#2E7D32", fg=self.fg_color,
+                               font=("Arial", 10, "bold"), width=12, height=1)
+        btn_refresh.pack(side=tk.LEFT, padx=5)
+
+        btn_clear = tk.Button(row4, text="❌ Clear Filters", command=self.clear_filters,
                              bg=self.button_bg, fg=self.fg_color,
                              font=("Arial", 10, "bold"), width=12, height=1)
         btn_clear.pack(side=tk.LEFT, padx=5)
@@ -1525,15 +1577,200 @@ class GCodeDatabaseGUI:
         self.refresh_filter_values()
         self.refresh_results()
 
+    def rescan_database(self):
+        """Re-parse all files already in database to refresh with latest parser improvements"""
+        # Confirm with user
+        response = messagebox.askyesno(
+            "Rescan Database",
+            "This will re-parse ALL files in the database to refresh their data.\n\n"
+            "This is useful after parser improvements (like the updated hub height detection).\n\n"
+            "Files will be re-analyzed but NOT moved or renamed.\n\n"
+            "Continue?",
+            icon='question'
+        )
+
+        if not response:
+            return
+
+        # Show progress window
+        progress_window = tk.Toplevel(self.root)
+        progress_window.title("Rescanning Database...")
+        progress_window.geometry("700x500")
+        progress_window.configure(bg=self.bg_color)
+
+        progress_label = tk.Label(progress_window, text="Rescanning files...",
+                                 bg=self.bg_color, fg=self.fg_color,
+                                 font=("Arial", 12))
+        progress_label.pack(pady=20)
+
+        progress_text = scrolledtext.ScrolledText(progress_window,
+                                                 bg=self.input_bg, fg=self.fg_color,
+                                                 font=("Courier", 9),
+                                                 width=80, height=20)
+        progress_text.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
+
+        self.root.update()
+
+        # Get all files from database
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT program_number, file_path FROM programs WHERE file_path IS NOT NULL")
+        all_files = cursor.fetchall()
+
+        total_files = len(all_files)
+        progress_text.insert(tk.END, f"Found {total_files} files in database\n")
+        progress_text.insert(tk.END, f"Starting re-scan...\n\n")
+        progress_text.see(tk.END)
+        self.root.update()
+
+        # Import parser
+        from improved_gcode_parser import ImprovedGCodeParser
+        parser = ImprovedGCodeParser()
+
+        updated = 0
+        skipped = 0
+        errors = 0
+
+        for idx, (prog_num, file_path) in enumerate(all_files, 1):
+            filename = os.path.basename(file_path)
+
+            # Update progress
+            if idx % 50 == 0 or idx == total_files:
+                progress_label.config(text=f"Rescanning... {idx}/{total_files} files")
+                self.root.update()
+
+            # Check if file exists
+            if not os.path.exists(file_path):
+                skipped += 1
+                if idx <= 10 or idx % 100 == 0:  # Show first 10 and every 100th
+                    progress_text.insert(tk.END, f"[{idx}/{total_files}] {filename} - SKIP (file not found)\n")
+                    progress_text.see(tk.END)
+                    self.root.update()
+                continue
+
+            # Parse the file
+            try:
+                parse_result = parser.parse_file(file_path)
+
+                if not parse_result:
+                    errors += 1
+                    if idx <= 10 or idx % 100 == 0:
+                        progress_text.insert(tk.END, f"[{idx}/{total_files}] {filename} - ERROR (parse failed)\n")
+                        progress_text.see(tk.END)
+                        self.root.update()
+                    continue
+
+                # Calculate validation status (prioritized by severity)
+                validation_status = "PASS"
+                if parse_result.validation_issues:
+                    validation_status = "CRITICAL"  # RED - Critical errors
+                elif parse_result.bore_warnings:
+                    validation_status = "BORE_WARNING"  # ORANGE - Bore dimension warnings
+                elif parse_result.dimensional_issues:
+                    validation_status = "DIMENSIONAL"  # PURPLE - P-code/thickness mismatches
+                elif parse_result.validation_warnings:
+                    validation_status = "WARNING"  # YELLOW - General warnings
+
+                # Update database with refreshed data
+                # Note: paired_program not updated (not in parser result)
+                cursor.execute("""
+                    UPDATE programs
+                    SET title = ?,
+                        spacer_type = ?,
+                        outer_diameter = ?,
+                        thickness = ?,
+                        thickness_display = ?,
+                        center_bore = ?,
+                        hub_height = ?,
+                        hub_diameter = ?,
+                        counter_bore_diameter = ?,
+                        counter_bore_depth = ?,
+                        material = ?,
+                        detection_confidence = ?,
+                        detection_method = ?,
+                        validation_status = ?,
+                        validation_issues = ?,
+                        validation_warnings = ?,
+                        cb_from_gcode = ?,
+                        ob_from_gcode = ?,
+                        bore_warnings = ?,
+                        dimensional_issues = ?,
+                        lathe = ?
+                    WHERE program_number = ?
+                """, (
+                    parse_result.title,
+                    parse_result.spacer_type,
+                    parse_result.outer_diameter,
+                    parse_result.thickness,
+                    parse_result.thickness_display,
+                    parse_result.center_bore,
+                    parse_result.hub_height,
+                    parse_result.hub_diameter,
+                    parse_result.counter_bore_diameter,
+                    parse_result.counter_bore_depth,
+                    parse_result.material,
+                    parse_result.detection_confidence,
+                    parse_result.detection_method,
+                    validation_status,
+                    '|'.join(parse_result.validation_issues) if parse_result.validation_issues else None,
+                    '|'.join(parse_result.validation_warnings) if parse_result.validation_warnings else None,
+                    parse_result.cb_from_gcode,
+                    parse_result.ob_from_gcode,
+                    '|'.join(parse_result.bore_warnings) if parse_result.bore_warnings else None,
+                    '|'.join(parse_result.dimensional_issues) if parse_result.dimensional_issues else None,
+                    parse_result.lathe,
+                    prog_num
+                ))
+
+                updated += 1
+
+                # Show first 10, then every 100th, and last 10
+                if idx <= 10 or idx % 100 == 0 or idx > total_files - 10:
+                    progress_text.insert(tk.END, f"[{idx}/{total_files}] {filename} - ✓ Updated\n")
+                    progress_text.see(tk.END)
+                    self.root.update()
+
+            except Exception as e:
+                errors += 1
+                if idx <= 10 or idx % 100 == 0:
+                    progress_text.insert(tk.END, f"[{idx}/{total_files}] {filename} - ERROR: {str(e)}\n")
+                    progress_text.see(tk.END)
+                    self.root.update()
+
+        # Commit all changes
+        conn.commit()
+        conn.close()
+
+        # Summary
+        progress_label.config(text="Rescan Complete!")
+        progress_text.insert(tk.END, f"\n{'='*60}\n")
+        progress_text.insert(tk.END, f"RESCAN COMPLETE\n")
+        progress_text.insert(tk.END, f"{'='*60}\n")
+        progress_text.insert(tk.END, f"Total files: {total_files}\n")
+        progress_text.insert(tk.END, f"Updated: {updated}\n")
+        progress_text.insert(tk.END, f"Skipped (not found): {skipped}\n")
+        progress_text.insert(tk.END, f"Errors: {errors}\n")
+        progress_text.see(tk.END)
+
+        # Close button
+        close_btn = tk.Button(progress_window, text="Close",
+                             command=progress_window.destroy,
+                             bg=self.button_bg, fg=self.fg_color,
+                             font=("Arial", 10, "bold"))
+        close_btn.pack(pady=10)
+
+        # Refresh the display
+        self.refresh_results()
+
     def fix_program_numbers(self):
-        """Rename files and internal program numbers to unused numbers based on OD ranges - FILTERED VIEW ONLY"""
+        """Update internal O-numbers to match filenames - FILTERED VIEW ONLY"""
         # Get currently displayed items (respects filters)
         displayed_items = self.tree.get_children()
 
         if not displayed_items:
             messagebox.showwarning("No Files",
                 "No files in current view.\n\n"
-                "Apply filters to show the files you want to renumber.")
+                "Apply filters to show the files you want to fix.")
             return
 
         # Get program numbers and file info from filtered view
@@ -1545,9 +1782,9 @@ class GCodeDatabaseGUI:
             values = self.tree.item(item)['values']
             if values:
                 prog_num = values[0]
-                # Get file path and OD from database
+                # Get file path from database
                 cursor.execute("""
-                    SELECT program_number, file_path, outer_diameter
+                    SELECT program_number, file_path
                     FROM programs
                     WHERE program_number = ?
                 """, (prog_num,))
@@ -1560,16 +1797,17 @@ class GCodeDatabaseGUI:
         if not filtered_files:
             messagebox.showwarning("No Files with Paths",
                 "No files in filtered view have physical file paths.\n\n"
-                "Only files with linked physical files can be renumbered.")
+                "Only files with linked physical files can be fixed.")
             return
 
         # Confirm operation
         msg = f"Fix program numbers for {len(filtered_files)} file(s) in filtered view?\n\n"
         msg += "This will:\n"
-        msg += "• Assign new O-numbers based on OD ranges\n"
-        msg += "• Update physical filenames\n"
-        msg += "• Update internal O-numbers in G-code files\n"
-        msg += "• Update database program_number\n\n"
+        msg += "• Read the O-number from each filename\n"
+        msg += "• Update the internal O-number in the G-code file to match\n"
+        msg += "• Update database program_number to match filename\n\n"
+        msg += "Use this AFTER renaming files with 'Rename Duplicates'\n"
+        msg += "to synchronize internal content with filenames.\n\n"
         msg += "Database backup will be created automatically."
 
         result = messagebox.askyesno("Confirm Fix Program Numbers", msg)
@@ -1601,126 +1839,57 @@ class GCodeDatabaseGUI:
 
         self.root.update()
 
-        # Get all existing program numbers from database
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute("SELECT program_number FROM programs")
-        existing_numbers = set()
-        for row in cursor.fetchall():
-            prog = row[0]
-            # Extract numeric part (handle duplicates like o70000(1))
-            match = re.search(r'[oO]?(\d+)', str(prog))
-            if match:
-                existing_numbers.add(int(match.group(1)))
-        conn.close()
-
         progress_text.insert(tk.END, f"Processing {len(filtered_files)} file(s) from filtered view...\n\n")
 
-        # OD ranges for program numbers (PRIMARY RANGES - EXPANDED)
-        od_ranges = {
-            5.75: (57000, 59999),   # 3000 numbers
-            6.00: (60000, 61999),   # 2000 numbers
-            6.25: (62000, 64999),   # 3000 numbers
-            6.50: (65000, 69999),   # 5000 numbers
-            7.00: (70000, 74999),   # 5000 numbers
-            7.50: (75000, 79999),   # 5000 numbers
-            8.00: (80000, 84999),   # 5000 numbers
-            8.50: (85000, 89999),   # 5000 numbers
-            9.50: (90000, 99999),   # 10000 numbers
-            10.25: (10000, 10499),  # 500 numbers
-            10.50: (10500, 12999),  # 2500 numbers
-            13.00: (13000, 13999)   # 1000 numbers
-        }
-
-        # Reserved ranges (DO NOT USE for production files)
-        reserved_ranges = [
-            (0, 1000)  # Machine needed files (00000-01000)
-        ]
-
         # Process files from filtered view
-        renamed = 0
+        fixed = 0
         skipped = 0
         errors = 0
         total_files = len(filtered_files)
 
+        # Open single database connection for all updates (prevents locking issues)
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
         for file_idx, file_info in enumerate(filtered_files, 1):
-            old_prog_num, filepath, od = file_info
+            old_prog_num, filepath = file_info
             filename = os.path.basename(filepath)
 
             progress_label.config(text=f"Processing {file_idx}/{total_files}: {filename}")
-
-            # Handle None OD in display
-            od_display = f"{od:.2f}" if od else "None"
-            progress_text.insert(tk.END, f"[{file_idx}/{total_files}] {old_prog_num} (OD: {od_display}\")\n")
+            progress_text.insert(tk.END, f"[{file_idx}/{total_files}] {filename}\n")
             progress_text.see(tk.END)
             self.root.update()
 
             try:
                 # Check if file exists
                 if not os.path.exists(filepath):
-                    progress_text.insert(tk.END, f"  SKIP: File not found at {filepath}\n\n")
+                    progress_text.insert(tk.END, f"  SKIP: File not found\n\n")
                     skipped += 1
                     continue
 
-                # Check if OD is valid
-                if not od or od <= 0:
-                    progress_text.insert(tk.END, f"  SKIP: No valid OD in database\n\n")
+                # Extract O-number from filename (e.g., o80556.txt -> O80556)
+                match = re.search(r'[oO](\d+)', filename)
+                if not match:
+                    progress_text.insert(tk.END, f"  SKIP: Cannot extract O-number from filename\n\n")
                     skipped += 1
                     continue
 
-                # Find appropriate OD range
-                closest_od = min(od_ranges.keys(), key=lambda x: abs(x - od))
-                if abs(closest_od - od) > 0.1:  # Not within tolerance
-                    progress_text.insert(tk.END, f"SKIP: {filename} - OD {od:.2f} doesn't match standard sizes\n")
-                    progress_text.see(tk.END)
+                file_onumber = int(match.group(1))
+                new_prog_str = f"O{file_onumber:05d}"  # Always 5 digits with leading zeros
+                new_prog_str_lower = new_prog_str.lower()
+
+                # Check if already correct
+                if old_prog_num.lower() == new_prog_str_lower:
+                    progress_text.insert(tk.END, f"  ✓ Already correct: {new_prog_str_lower}\n\n")
                     skipped += 1
                     continue
-
-                start_range, end_range = od_ranges[closest_od]
-
-                # Find next available number in PRIMARY range
-                new_prog_num = None
-                for num in range(start_range, end_range + 1):
-                    if num not in existing_numbers:
-                        new_prog_num = num
-                        existing_numbers.add(num)  # Mark as used
-                        break
-
-                # FALLBACK: If primary range is full, use ANY available number (00000-99999)
-                if not new_prog_num:
-                    progress_text.insert(tk.END, f"⚠️  PRIMARY range full for {closest_od}\" - searching fallback...\n")
-                    progress_text.see(tk.END)
-
-                    # Helper function to check if number is in reserved range
-                    def is_reserved(num):
-                        for reserved_start, reserved_end in reserved_ranges:
-                            if reserved_start <= num <= reserved_end:
-                                return True
-                        return False
-
-                    # Search entire range 1-99999 (skip reserved 0-1000)
-                    for num in range(1001, 100000):
-                        if num not in existing_numbers and not is_reserved(num):
-                            new_prog_num = num
-                            existing_numbers.add(num)  # Mark as used
-                            progress_text.insert(tk.END, f"   ✓ Using fallback number: o{num:05d}\n")
-                            progress_text.see(tk.END)
-                            break
-
-                if not new_prog_num:
-                    progress_text.insert(tk.END, f"ERROR: {filename} - NO available numbers in entire range (00000-99999)!\n")
-                    progress_text.see(tk.END)
-                    errors += 1
-                    continue
-
-                # Format with leading zeros (always 5 digits: O01057, not O1057)
-                new_prog_str = f"O{new_prog_num:05d}"
 
                 # Read file content
                 with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
                     lines = f.readlines()
 
                 # Update internal program number (first line with O#####)
+                updated = False
                 for i, line in enumerate(lines):
                     stripped = line.strip()
                     match_line = re.match(r'^([oO]\d{4,})\s*(\(.*)?$', stripped)
@@ -1730,51 +1899,26 @@ class GCodeDatabaseGUI:
                             lines[i] = f"{new_prog_str} {title_part}\n"
                         else:
                             lines[i] = f"{new_prog_str}\n"
+                        updated = True
                         break
+
+                if not updated:
+                    progress_text.insert(tk.END, f"  ⚠️  WARNING: No O-number line found in file to update\n")
 
                 # Write updated content
                 with open(filepath, 'w', encoding='utf-8') as f:
                     f.writelines(lines)
 
-                # Rename file (always 5 digits with leading zeros)
-                file_ext = os.path.splitext(filename)[1]
-                new_filename = f"o{new_prog_num:05d}{file_ext}" if file_ext else f"o{new_prog_num:05d}"
-                new_filepath = os.path.join(os.path.dirname(filepath), new_filename)
-
-                # Check if target file already exists
-                if os.path.exists(new_filepath) and new_filepath.lower() != filepath.lower():
-                    progress_text.insert(tk.END, f"  ⚠️  SKIP: Target file already exists: {new_filename}\n\n")
-                    skipped += 1
-                    continue
-
-                # Only rename if different (case-insensitive comparison)
-                if new_filepath.lower() != filepath.lower():
-                    os.rename(filepath, new_filepath)
-                    action = "RENAMED"
-                else:
-                    # File already has correct name, just update database if needed
-                    action = "ALREADY CORRECT"
-
-                # Update database with new program number and file path
-                conn = sqlite3.connect(self.db_path)
-                cursor = conn.cursor()
+                # Update database with new program number
                 cursor.execute("""
                     UPDATE programs
-                    SET program_number = ?,
-                        file_path = ?
+                    SET program_number = ?
                     WHERE program_number = ?
-                """, (new_prog_str.lower(), new_filepath, old_prog_num))
+                """, (new_prog_str_lower, old_prog_num))
                 conn.commit()
-                conn.close()
 
-                if action == "RENAMED":
-                    progress_text.insert(tk.END, f"  ✓ {old_prog_num} → {new_prog_str.lower()} (OD: {closest_od}\")\n")
-                    progress_text.insert(tk.END, f"    File: {new_filename}\n\n")
-                    renamed += 1
-                else:
-                    progress_text.insert(tk.END, f"  ✓ {old_prog_num} already correct (OD: {closest_od}\")\n\n")
-                    renamed += 1
-
+                progress_text.insert(tk.END, f"  ✓ {old_prog_num} → {new_prog_str_lower}\n\n")
+                fixed += 1
                 progress_text.see(tk.END)
 
             except Exception as e:
@@ -1782,17 +1926,20 @@ class GCodeDatabaseGUI:
                 progress_text.see(tk.END)
                 errors += 1
 
+        # Close database connection
+        conn.close()
+
         # Show results
         progress_label.config(text="Complete!")
         progress_text.insert(tk.END, f"\n{'='*50}\n")
         progress_text.insert(tk.END, f"FIX PROGRAM NUMBERS - SUMMARY\n")
         progress_text.insert(tk.END, f"{'='*50}\n")
-        progress_text.insert(tk.END, f"Files in filtered view: {total_files}\n")
-        progress_text.insert(tk.END, f"Successfully renumbered: {renamed}\n")
-        progress_text.insert(tk.END, f"Skipped: {skipped}\n")
+        progress_text.insert(tk.END, f"Files processed: {total_files}\n")
+        progress_text.insert(tk.END, f"Successfully fixed: {fixed}\n")
+        progress_text.insert(tk.END, f"Already correct/Skipped: {skipped}\n")
         progress_text.insert(tk.END, f"Errors: {errors}\n\n")
-        progress_text.insert(tk.END, f"All renumbered files now have OD-based O-numbers.\n")
-        progress_text.insert(tk.END, f"Database and physical files updated.\n")
+        progress_text.insert(tk.END, f"Internal O-numbers now match filenames.\n")
+        progress_text.insert(tk.END, f"Database updated.\n")
         progress_text.see(tk.END)
 
         # Refresh the view to show new program numbers
@@ -2604,6 +2751,30 @@ class GCodeDatabaseGUI:
             query += " AND center_bore <= ?"
             params.append(float(self.filter_cb_max.get()))
 
+        # Hub Diameter range
+        if self.filter_hub_dia_min.get():
+            query += " AND hub_diameter >= ?"
+            params.append(float(self.filter_hub_dia_min.get()))
+        if self.filter_hub_dia_max.get():
+            query += " AND hub_diameter <= ?"
+            params.append(float(self.filter_hub_dia_max.get()))
+
+        # Hub Height range
+        if self.filter_hub_h_min.get():
+            query += " AND hub_height >= ?"
+            params.append(float(self.filter_hub_h_min.get()))
+        if self.filter_hub_h_max.get():
+            query += " AND hub_height <= ?"
+            params.append(float(self.filter_hub_h_max.get()))
+
+        # Step Diameter range
+        if self.filter_step_d_min.get():
+            query += " AND counter_bore_diameter >= ?"
+            params.append(float(self.filter_step_d_min.get()))
+        if self.filter_step_d_max.get():
+            query += " AND counter_bore_diameter <= ?"
+            params.append(float(self.filter_step_d_max.get()))
+
         query += " ORDER BY program_number"
 
         # Note: Duplicates filter is applied after query in the display logic
@@ -2771,6 +2942,12 @@ class GCodeDatabaseGUI:
         self.filter_thickness_max.delete(0, tk.END)
         self.filter_cb_min.delete(0, tk.END)
         self.filter_cb_max.delete(0, tk.END)
+        self.filter_hub_dia_min.delete(0, tk.END)
+        self.filter_hub_dia_max.delete(0, tk.END)
+        self.filter_hub_h_min.delete(0, tk.END)
+        self.filter_hub_h_max.delete(0, tk.END)
+        self.filter_step_d_min.delete(0, tk.END)
+        self.filter_step_d_max.delete(0, tk.END)
         self.filter_duplicates.set(False)
         self.refresh_results()
         
@@ -4921,6 +5098,263 @@ For more documentation, see project README files in the application directory.
                              font=("Arial", 11, "bold"), width=20, height=2)
         btn_close.pack(pady=10)
 
+    def create_manual_backup(self):
+        """Create a manual backup with timestamp"""
+        import shutil
+        from datetime import datetime
+
+        backups_dir = os.path.join(os.path.dirname(self.db_path), "database_backups")
+        os.makedirs(backups_dir, exist_ok=True)
+
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        backup_filename = f"gcode_db_backup_{timestamp}.db"
+        backup_path = os.path.join(backups_dir, backup_filename)
+
+        try:
+            shutil.copy2(self.db_path, backup_path)
+            messagebox.showinfo("Backup Created",
+                f"Database backed up successfully!\n\n"
+                f"Backup saved to:\n{backup_filename}\n\n"
+                f"Location: {backups_dir}")
+        except Exception as e:
+            messagebox.showerror("Backup Failed",
+                f"Failed to create backup:\n{str(e)}")
+
+    def restore_from_backup(self):
+        """Restore database from a backup file"""
+        import shutil
+        from datetime import datetime
+
+        backups_dir = os.path.join(os.path.dirname(self.db_path), "database_backups")
+
+        # Let user select backup file
+        backup_file = filedialog.askopenfilename(
+            title="Select Backup to Restore",
+            initialdir=backups_dir if os.path.exists(backups_dir) else os.path.dirname(self.db_path),
+            filetypes=[("Database files", "*.db"), ("All files", "*.*")]
+        )
+
+        if not backup_file:
+            return
+
+        # Confirm restoration
+        result = messagebox.askyesno(
+            "Confirm Restore",
+            f"Restore database from:\n{os.path.basename(backup_file)}\n\n"
+            f"⚠️ WARNING ⚠️\n"
+            f"This will replace your current database!\n"
+            f"All current data will be lost!\n\n"
+            f"A backup of the current database will be created first.\n\n"
+            f"Continue?",
+            icon='warning'
+        )
+
+        if not result:
+            return
+
+        try:
+            # Create backup of current database first
+            current_backup_dir = os.path.join(os.path.dirname(self.db_path), "database_backups")
+            os.makedirs(current_backup_dir, exist_ok=True)
+            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            current_backup = os.path.join(current_backup_dir, f"before_restore_{timestamp}.db")
+            shutil.copy2(self.db_path, current_backup)
+
+            # Restore from selected backup
+            shutil.copy2(backup_file, self.db_path)
+
+            messagebox.showinfo("Restore Complete",
+                f"Database restored successfully!\n\n"
+                f"Restored from: {os.path.basename(backup_file)}\n\n"
+                f"Previous database saved as:\n{os.path.basename(current_backup)}\n\n"
+                f"Please restart the application to load the restored database.")
+
+        except Exception as e:
+            messagebox.showerror("Restore Failed",
+                f"Failed to restore database:\n{str(e)}")
+
+    def view_backups(self):
+        """View and manage database backups"""
+        import shutil
+        from datetime import datetime
+
+        backups_dir = os.path.join(os.path.dirname(self.db_path), "database_backups")
+        os.makedirs(backups_dir, exist_ok=True)
+
+        # Create window
+        backup_window = tk.Toplevel(self.root)
+        backup_window.title("Database Backups")
+        backup_window.geometry("900x600")
+        backup_window.configure(bg=self.bg_color)
+
+        tk.Label(backup_window,
+                text="Database Backup Manager",
+                bg=self.bg_color, fg=self.fg_color,
+                font=("Arial", 14, "bold")).pack(pady=15)
+
+        # Treeview for backup list
+        tree_frame = tk.Frame(backup_window, bg=self.bg_color)
+        tree_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+
+        columns = ('filename', 'records', 'date', 'size')
+        tree = ttk.Treeview(tree_frame, columns=columns, show='headings', height=15)
+
+        tree.heading('filename', text='Backup File')
+        tree.heading('records', text='Records')
+        tree.heading('date', text='Date Created')
+        tree.heading('size', text='Size (MB)')
+
+        tree.column('filename', width=350)
+        tree.column('records', width=100)
+        tree.column('date', width=200)
+        tree.column('size', width=100)
+
+        scrollbar = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=tree.yview)
+        tree.configure(yscroll=scrollbar.set)
+
+        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        def refresh_backup_list():
+            # Clear existing items
+            for item in tree.get_children():
+                tree.delete(item)
+
+            # Get backup files
+            if not os.path.exists(backups_dir):
+                tree.insert('', tk.END, values=("No backups found", "", "", ""))
+                return
+
+            backup_files = [f for f in os.listdir(backups_dir) if f.endswith('.db')]
+
+            if not backup_files:
+                tree.insert('', tk.END, values=("No backups found - use 'Backup Now' to create one", "", "", ""))
+                return
+
+            for backup_file in sorted(backup_files, reverse=True):
+                backup_path = os.path.join(backups_dir, backup_file)
+
+                # Get stats
+                stat = os.stat(backup_path)
+                size_mb = f"{stat.st_size / (1024 * 1024):.2f}"
+                created = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+
+                # Get record count
+                try:
+                    conn = sqlite3.connect(backup_path)
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT COUNT(*) FROM programs")
+                    count = cursor.fetchone()[0]
+                    conn.close()
+                except:
+                    count = "Error"
+
+                tree.insert('', tk.END, values=(backup_file, count, created, size_mb))
+
+        def delete_backup():
+            selection = tree.selection()
+            if not selection:
+                messagebox.showwarning("No Selection", "Please select a backup to delete.")
+                return
+
+            item = selection[0]
+            filename = tree.item(item)['values'][0]
+
+            if "No backups found" in filename:
+                return
+
+            result = messagebox.askyesno(
+                "Confirm Delete",
+                f"Delete backup '{filename}'?\n\n"
+                f"This cannot be undone!",
+                icon='warning'
+            )
+
+            if result:
+                try:
+                    backup_path = os.path.join(backups_dir, filename)
+                    os.remove(backup_path)
+                    refresh_backup_list()
+                    messagebox.showinfo("Deleted", f"Backup '{filename}' deleted successfully.")
+                except Exception as e:
+                    messagebox.showerror("Error", f"Failed to delete backup:\n{str(e)}")
+
+        def restore_selected():
+            selection = tree.selection()
+            if not selection:
+                messagebox.showwarning("No Selection", "Please select a backup to restore.")
+                return
+
+            item = selection[0]
+            filename = tree.item(item)['values'][0]
+
+            if "No backups found" in filename:
+                return
+
+            backup_path = os.path.join(backups_dir, filename)
+
+            result = messagebox.askyesno(
+                "Confirm Restore",
+                f"Restore database from:\n{filename}\n\n"
+                f"⚠️ WARNING ⚠️\n"
+                f"This will replace your current database!\n\n"
+                f"A backup of current database will be created first.\n\n"
+                f"Continue?",
+                icon='warning'
+            )
+
+            if result:
+                try:
+                    # Backup current database
+                    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+                    current_backup = os.path.join(backups_dir, f"before_restore_{timestamp}.db")
+                    shutil.copy2(self.db_path, current_backup)
+
+                    # Restore
+                    shutil.copy2(backup_path, self.db_path)
+
+                    messagebox.showinfo("Restore Complete",
+                        f"Database restored from {filename}!\n\n"
+                        f"Current database backed up as:\n{os.path.basename(current_backup)}\n\n"
+                        f"Please restart the application.")
+                    backup_window.destroy()
+
+                except Exception as e:
+                    messagebox.showerror("Error", f"Failed to restore:\n{str(e)}")
+
+        # Initial load
+        refresh_backup_list()
+
+        # Info label
+        info_text = f"Backup location: {backups_dir}"
+        tk.Label(backup_window, text=info_text,
+                bg=self.bg_color, fg=self.fg_color,
+                font=("Arial", 9)).pack(pady=5)
+
+        # Button frame
+        btn_frame = tk.Frame(backup_window, bg=self.bg_color)
+        btn_frame.pack(pady=15)
+
+        tk.Button(btn_frame, text="💾 Backup Now", command=lambda: [self.create_manual_backup(), refresh_backup_list()],
+                 bg="#1976D2", fg=self.fg_color,
+                 font=("Arial", 10, "bold"), width=14).pack(side=tk.LEFT, padx=5)
+
+        tk.Button(btn_frame, text="📂 Restore", command=restore_selected,
+                 bg=self.button_bg, fg=self.fg_color,
+                 font=("Arial", 10, "bold"), width=14).pack(side=tk.LEFT, padx=5)
+
+        tk.Button(btn_frame, text="🗑️ Delete", command=delete_backup,
+                 bg=self.button_bg, fg=self.fg_color,
+                 font=("Arial", 10, "bold"), width=14).pack(side=tk.LEFT, padx=5)
+
+        tk.Button(btn_frame, text="🔄 Refresh", command=refresh_backup_list,
+                 bg=self.button_bg, fg=self.fg_color,
+                 font=("Arial", 10, "bold"), width=14).pack(side=tk.LEFT, padx=5)
+
+        tk.Button(btn_frame, text="❌ Close", command=backup_window.destroy,
+                 bg=self.button_bg, fg=self.fg_color,
+                 font=("Arial", 10, "bold"), width=14).pack(side=tk.LEFT, padx=5)
+
 
 class EditEntryWindow:
     """Window for adding/editing entries"""
@@ -5228,46 +5662,58 @@ class DetailsWindow:
             # Validation issues (CRITICAL - RED)
             if self.record[20]:  # validation_issues
                 try:
+                    # Try JSON format first (backward compatibility)
                     issues = json.loads(self.record[20])
-                    if issues:
-                        text.insert(tk.END, "\nCRITICAL ISSUES:\n")
-                        for issue in issues:
-                            text.insert(tk.END, f"  - {issue}\n")
                 except:
-                    pass
+                    # Fall back to pipe-delimited format
+                    issues = [i.strip() for i in self.record[20].split('|') if i.strip()]
+
+                if issues:
+                    text.insert(tk.END, "\nCRITICAL ISSUES:\n")
+                    for issue in issues:
+                        text.insert(tk.END, f"  - {issue}\n")
 
             # Bore warnings (ORANGE)
             if len(self.record) > 24 and self.record[24]:  # bore_warnings (index 24)
                 try:
+                    # Try JSON format first (backward compatibility)
                     bore_warns = json.loads(self.record[24])
-                    if bore_warns:
-                        text.insert(tk.END, "\nBORE WARNINGS:\n")
-                        for warning in bore_warns:
-                            text.insert(tk.END, f"  - {warning}\n")
                 except:
-                    pass
+                    # Fall back to pipe-delimited format
+                    bore_warns = [i.strip() for i in self.record[24].split('|') if i.strip()]
+
+                if bore_warns:
+                    text.insert(tk.END, "\nBORE WARNINGS:\n")
+                    for warning in bore_warns:
+                        text.insert(tk.END, f"  - {warning}\n")
 
             # Dimensional issues (PURPLE)
             if len(self.record) > 25 and self.record[25]:  # dimensional_issues (index 25)
                 try:
+                    # Try JSON format first (backward compatibility)
                     dim_issues = json.loads(self.record[25])
-                    if dim_issues:
-                        text.insert(tk.END, "\nDIMENSIONAL ISSUES:\n")
-                        for issue in dim_issues:
-                            text.insert(tk.END, f"  - {issue}\n")
                 except:
-                    pass
+                    # Fall back to pipe-delimited format
+                    dim_issues = [i.strip() for i in self.record[25].split('|') if i.strip()]
+
+                if dim_issues:
+                    text.insert(tk.END, "\nDIMENSIONAL ISSUES:\n")
+                    for issue in dim_issues:
+                        text.insert(tk.END, f"  - {issue}\n")
 
             # Validation warnings (YELLOW)
             if self.record[21]:  # validation_warnings
                 try:
+                    # Try JSON format first (backward compatibility)
                     warnings = json.loads(self.record[21])
-                    if warnings:
-                        text.insert(tk.END, "\nWARNINGS:\n")
-                        for warning in warnings:
-                            text.insert(tk.END, f"  - {warning}\n")
                 except:
-                    pass
+                    # Fall back to pipe-delimited format
+                    warnings = [i.strip() for i in self.record[21].split('|') if i.strip()]
+
+                if warnings:
+                    text.insert(tk.END, "\nWARNINGS:\n")
+                    for warning in warnings:
+                        text.insert(tk.END, f"  - {warning}\n")
 
         text.config(state=tk.DISABLED)
         
