@@ -637,55 +637,62 @@ class GCodeDatabaseGUI:
         row2.pack(fill=tk.X, pady=5)
         
         # Outer Diameter
+        # OD Range - Common standard sizes
         tk.Label(row2, text="OD Range:", bg=self.bg_color, fg=self.fg_color).pack(side=tk.LEFT, padx=5)
-        self.filter_od_min = tk.Entry(row2, bg=self.input_bg, fg=self.fg_color, width=10)
+        od_values = ["", "5.75", "6.0", "6.25", "6.5", "7.0", "7.5", "8.0", "8.5", "9.5", "10.25", "10.5", "13.0"]
+        self.filter_od_min = ttk.Combobox(row2, values=od_values, width=8)
         self.filter_od_min.pack(side=tk.LEFT, padx=2)
         tk.Label(row2, text="to", bg=self.bg_color, fg=self.fg_color).pack(side=tk.LEFT, padx=2)
-        self.filter_od_max = tk.Entry(row2, bg=self.input_bg, fg=self.fg_color, width=10)
+        self.filter_od_max = ttk.Combobox(row2, values=od_values, width=8)
         self.filter_od_max.pack(side=tk.LEFT, padx=2)
-        
-        # Thickness
+
+        # Thickness - Common values
         tk.Label(row2, text="Thick:", bg=self.bg_color, fg=self.fg_color).pack(side=tk.LEFT, padx=5)
-        self.filter_thickness_min = tk.Entry(row2, bg=self.input_bg, fg=self.fg_color, width=10)
+        thick_values = ["", "0.25", "0.38", "0.5", "0.62", "0.75", "1.0", "1.25", "1.5", "1.75", "2.0", "2.5", "3.0"]
+        self.filter_thickness_min = ttk.Combobox(row2, values=thick_values, width=8)
         self.filter_thickness_min.pack(side=tk.LEFT, padx=2)
         tk.Label(row2, text="to", bg=self.bg_color, fg=self.fg_color).pack(side=tk.LEFT, padx=2)
-        self.filter_thickness_max = tk.Entry(row2, bg=self.input_bg, fg=self.fg_color, width=10)
+        self.filter_thickness_max = ttk.Combobox(row2, values=thick_values, width=8)
         self.filter_thickness_max.pack(side=tk.LEFT, padx=2)
-        
-        # Center Bore
+
+        # Center Bore - Common CB sizes (mm)
         tk.Label(row2, text="CB:", bg=self.bg_color, fg=self.fg_color).pack(side=tk.LEFT, padx=5)
-        self.filter_cb_min = tk.Entry(row2, bg=self.input_bg, fg=self.fg_color, width=10)
+        cb_values = ["", "38", "40", "50", "54", "56", "60", "63", "66", "70", "77", "78", "84", "93", "100", "106", "108", "110", "125", "130", "150", "170", "220"]
+        self.filter_cb_min = ttk.Combobox(row2, values=cb_values, width=8)
         self.filter_cb_min.pack(side=tk.LEFT, padx=2)
         tk.Label(row2, text="to", bg=self.bg_color, fg=self.fg_color).pack(side=tk.LEFT, padx=2)
-        self.filter_cb_max = tk.Entry(row2, bg=self.input_bg, fg=self.fg_color, width=10)
+        self.filter_cb_max = ttk.Combobox(row2, values=cb_values, width=8)
         self.filter_cb_max.pack(side=tk.LEFT, padx=2)
 
         # Row 2.5 - Additional dimensional filters (Hub Dia, Hub H, Step)
         row2_5 = tk.Frame(filter_container, bg=self.bg_color)
         row2_5.pack(fill=tk.X, pady=5)
 
-        # Hub Diameter
+        # Hub Diameter - Common OB/Hub sizes (mm)
         tk.Label(row2_5, text="Hub Dia:", bg=self.bg_color, fg=self.fg_color).pack(side=tk.LEFT, padx=5)
-        self.filter_hub_dia_min = tk.Entry(row2_5, bg=self.input_bg, fg=self.fg_color, width=10)
+        hub_dia_values = ["", "54", "56", "57", "59", "60", "63", "66", "70", "73", "74", "77", "78", "84", "87", "93", "95", "100", "106", "108", "110"]
+        self.filter_hub_dia_min = ttk.Combobox(row2_5, values=hub_dia_values, width=8)
         self.filter_hub_dia_min.pack(side=tk.LEFT, padx=2)
         tk.Label(row2_5, text="to", bg=self.bg_color, fg=self.fg_color).pack(side=tk.LEFT, padx=2)
-        self.filter_hub_dia_max = tk.Entry(row2_5, bg=self.input_bg, fg=self.fg_color, width=10)
+        self.filter_hub_dia_max = ttk.Combobox(row2_5, values=hub_dia_values, width=8)
         self.filter_hub_dia_max.pack(side=tk.LEFT, padx=2)
 
-        # Hub Height
+        # Hub Height - Common hub heights (inches)
         tk.Label(row2_5, text="Hub H:", bg=self.bg_color, fg=self.fg_color).pack(side=tk.LEFT, padx=5)
-        self.filter_hub_h_min = tk.Entry(row2_5, bg=self.input_bg, fg=self.fg_color, width=10)
+        hub_h_values = ["", "0.25", "0.33", "0.38", "0.44", "0.47", "0.5", "0.55", "0.6", "0.65", "0.7", "0.75", "1.0", "1.25", "1.5"]
+        self.filter_hub_h_min = ttk.Combobox(row2_5, values=hub_h_values, width=8)
         self.filter_hub_h_min.pack(side=tk.LEFT, padx=2)
         tk.Label(row2_5, text="to", bg=self.bg_color, fg=self.fg_color).pack(side=tk.LEFT, padx=2)
-        self.filter_hub_h_max = tk.Entry(row2_5, bg=self.input_bg, fg=self.fg_color, width=10)
+        self.filter_hub_h_max = ttk.Combobox(row2_5, values=hub_h_values, width=8)
         self.filter_hub_h_max.pack(side=tk.LEFT, padx=2)
 
-        # Step Diameter
+        # Step Diameter - Common step/shelf sizes (mm)
         tk.Label(row2_5, text="Step D:", bg=self.bg_color, fg=self.fg_color).pack(side=tk.LEFT, padx=5)
-        self.filter_step_d_min = tk.Entry(row2_5, bg=self.input_bg, fg=self.fg_color, width=10)
+        step_d_values = ["", "64", "70", "74", "78", "82", "84", "85", "87", "90", "93", "95", "100", "106", "108", "110", "125", "130"]
+        self.filter_step_d_min = ttk.Combobox(row2_5, values=step_d_values, width=8)
         self.filter_step_d_min.pack(side=tk.LEFT, padx=2)
         tk.Label(row2_5, text="to", bg=self.bg_color, fg=self.fg_color).pack(side=tk.LEFT, padx=2)
-        self.filter_step_d_max = tk.Entry(row2_5, bg=self.input_bg, fg=self.fg_color, width=10)
+        self.filter_step_d_max = ttk.Combobox(row2_5, values=step_d_values, width=8)
         self.filter_step_d_max.pack(side=tk.LEFT, padx=2)
 
         # Row 2.6 - Error type filter
@@ -2975,19 +2982,20 @@ class GCodeDatabaseGUI:
         self.filter_material.clear()
         self.filter_status.clear()
         self.filter_dup_type.clear()
-        self.filter_od_min.delete(0, tk.END)
-        self.filter_od_max.delete(0, tk.END)
-        self.filter_thickness_min.delete(0, tk.END)
-        self.filter_thickness_max.delete(0, tk.END)
-        self.filter_cb_min.delete(0, tk.END)
-        self.filter_cb_max.delete(0, tk.END)
-        self.filter_hub_dia_min.delete(0, tk.END)
-        self.filter_hub_dia_max.delete(0, tk.END)
-        self.filter_hub_h_min.delete(0, tk.END)
-        self.filter_hub_h_max.delete(0, tk.END)
-        self.filter_step_d_min.delete(0, tk.END)
-        self.filter_step_d_max.delete(0, tk.END)
-        self.filter_error_text.set("")  # Combobox uses .set()
+        # All dimensional filters are now comboboxes - use .set("")
+        self.filter_od_min.set("")
+        self.filter_od_max.set("")
+        self.filter_thickness_min.set("")
+        self.filter_thickness_max.set("")
+        self.filter_cb_min.set("")
+        self.filter_cb_max.set("")
+        self.filter_hub_dia_min.set("")
+        self.filter_hub_dia_max.set("")
+        self.filter_hub_h_min.set("")
+        self.filter_hub_h_max.set("")
+        self.filter_step_d_min.set("")
+        self.filter_step_d_max.set("")
+        self.filter_error_text.set("")
         self.filter_duplicates.set(False)
         self.refresh_results()
         
