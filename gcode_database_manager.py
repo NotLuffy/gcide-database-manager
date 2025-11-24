@@ -688,6 +688,18 @@ class GCodeDatabaseGUI:
         self.filter_step_d_max = tk.Entry(row2_5, bg=self.input_bg, fg=self.fg_color, width=10)
         self.filter_step_d_max.pack(side=tk.LEFT, padx=2)
 
+        # Row 2.6 - Error type filter
+        row2_6 = tk.Frame(filter_container, bg=self.bg_color)
+        row2_6.pack(fill=tk.X, pady=5)
+
+        tk.Label(row2_6, text="Error Contains:", bg=self.bg_color, fg=self.fg_color,
+                font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=5)
+        self.filter_error_text = tk.Entry(row2_6, bg=self.input_bg, fg=self.fg_color, width=50)
+        self.filter_error_text.pack(side=tk.LEFT, padx=2)
+
+        tk.Label(row2_6, text="(e.g., 'CB TOO LARGE', 'THICKNESS ERROR', 'OB TOO')",
+                bg=self.bg_color, fg="#888888", font=("Arial", 8, "italic")).pack(side=tk.LEFT, padx=5)
+
         # Row 3 - Sort options
         row3 = tk.Frame(filter_container, bg=self.bg_color)
         row3.pack(fill=tk.X, pady=5)
@@ -2779,6 +2791,12 @@ class GCodeDatabaseGUI:
             query += " AND counter_bore_diameter <= ?"
             params.append(float(self.filter_step_d_max.get()))
 
+        # Error text filter (searches in validation_issues, bore_warnings, dimensional_issues)
+        if self.filter_error_text.get():
+            error_search = f"%{self.filter_error_text.get()}%"
+            query += " AND (validation_issues LIKE ? OR bore_warnings LIKE ? OR dimensional_issues LIKE ?)"
+            params.extend([error_search, error_search, error_search])
+
         query += " ORDER BY program_number"
 
         # Note: Duplicates filter is applied after query in the display logic
@@ -2952,6 +2970,7 @@ class GCodeDatabaseGUI:
         self.filter_hub_h_max.delete(0, tk.END)
         self.filter_step_d_min.delete(0, tk.END)
         self.filter_step_d_max.delete(0, tk.END)
+        self.filter_error_text.delete(0, tk.END)
         self.filter_duplicates.set(False)
         self.refresh_results()
         
