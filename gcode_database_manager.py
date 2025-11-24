@@ -1741,7 +1741,19 @@ class GCodeDatabaseGUI:
                 new_filename = f"o{new_prog_num:05d}{file_ext}" if file_ext else f"o{new_prog_num:05d}"
                 new_filepath = os.path.join(os.path.dirname(filepath), new_filename)
 
-                os.rename(filepath, new_filepath)
+                # Check if target file already exists
+                if os.path.exists(new_filepath) and new_filepath.lower() != filepath.lower():
+                    progress_text.insert(tk.END, f"  ⚠️  SKIP: Target file already exists: {new_filename}\n\n")
+                    skipped += 1
+                    continue
+
+                # Only rename if different (case-insensitive comparison)
+                if new_filepath.lower() != filepath.lower():
+                    os.rename(filepath, new_filepath)
+                    action = "RENAMED"
+                else:
+                    # File already has correct name, just update database if needed
+                    action = "ALREADY CORRECT"
 
                 # Update database with new program number and file path
                 conn = sqlite3.connect(self.db_path)
@@ -1755,10 +1767,15 @@ class GCodeDatabaseGUI:
                 conn.commit()
                 conn.close()
 
-                progress_text.insert(tk.END, f"  ✓ {old_prog_num} → {new_prog_str.lower()} (OD: {closest_od}\")\n")
-                progress_text.insert(tk.END, f"    File: {new_filename}\n\n")
+                if action == "RENAMED":
+                    progress_text.insert(tk.END, f"  ✓ {old_prog_num} → {new_prog_str.lower()} (OD: {closest_od}\")\n")
+                    progress_text.insert(tk.END, f"    File: {new_filename}\n\n")
+                    renamed += 1
+                else:
+                    progress_text.insert(tk.END, f"  ✓ {old_prog_num} already correct (OD: {closest_od}\")\n\n")
+                    renamed += 1
+
                 progress_text.see(tk.END)
-                renamed += 1
 
             except Exception as e:
                 progress_text.insert(tk.END, f"  ❌ ERROR: {str(e)[:100]}\n\n")
