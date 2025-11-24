@@ -694,10 +694,27 @@ class GCodeDatabaseGUI:
 
         tk.Label(row2_6, text="Error Contains:", bg=self.bg_color, fg=self.fg_color,
                 font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=5)
-        self.filter_error_text = tk.Entry(row2_6, bg=self.input_bg, fg=self.fg_color, width=50)
-        self.filter_error_text.pack(side=tk.LEFT, padx=2)
 
-        tk.Label(row2_6, text="(e.g., 'CB TOO LARGE', 'THICKNESS ERROR', 'OB TOO')",
+        # Combobox with common error types (editable for custom searches)
+        common_errors = [
+            "",  # Empty for "all"
+            "CB TOO LARGE",
+            "CB TOO SMALL",
+            "THICKNESS ERROR",
+            "OB TOO LARGE",
+            "OB TOO SMALL",
+            "OD MISMATCH",
+            "DRILL",
+            "CHAMFER",
+            "STEP",
+            "HUB",
+            "BORE"
+        ]
+        self.filter_error_text = ttk.Combobox(row2_6, values=common_errors, width=47)
+        self.filter_error_text.pack(side=tk.LEFT, padx=2)
+        self.filter_error_text.set("")  # Default to empty
+
+        tk.Label(row2_6, text="(Select common error or type custom search)",
                 bg=self.bg_color, fg="#888888", font=("Arial", 8, "italic")).pack(side=tk.LEFT, padx=5)
 
         # Row 3 - Sort options
@@ -2970,7 +2987,7 @@ class GCodeDatabaseGUI:
         self.filter_hub_h_max.delete(0, tk.END)
         self.filter_step_d_min.delete(0, tk.END)
         self.filter_step_d_max.delete(0, tk.END)
-        self.filter_error_text.delete(0, tk.END)
+        self.filter_error_text.set("")  # Combobox uses .set()
         self.filter_duplicates.set(False)
         self.refresh_results()
         
