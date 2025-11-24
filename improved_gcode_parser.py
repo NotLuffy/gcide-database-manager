@@ -838,14 +838,16 @@ class ImprovedGCodeParser:
             # Pattern 1: "number HC number" format where first=thickness, second=hub height
             # Example: "1.0 HC 1.5" means 1.0" thick + 1.5" hub height
             # Also handles trailing decimals: "2. HC 1.5" = 2.0" thick + 1.5" hub
-            dual_hc_match = re.search(r'(\d+\.?\d*)\s+HC\s+(\d+\.?\d*)', title, re.IGNORECASE)
+            # Also handles leading decimals: "5.5 HC .5" = 5.5" thick + 0.5" hub
+            dual_hc_match = re.search(r'(\d+\.?\d*)\s+HC\s+(\d*\.?\d+)', title, re.IGNORECASE)
             if dual_hc_match:
                 try:
                     first_val = float(dual_hc_match.group(1))
                     second_val = float(dual_hc_match.group(2))
 
                     # First value is thickness (override any previous thickness detection)
-                    if 0.25 <= first_val <= 4.0:
+                    # Extended range to 6.5" to handle thick two-operation parts (e.g., 5.5" + 0.5" hub = 6.0" total)
+                    if 0.25 <= first_val <= 6.5:
                         result.thickness = first_val
                         result.thickness_display = str(first_val)
 
@@ -1679,9 +1681,16 @@ class ImprovedGCodeParser:
                 calculated_thickness = result.drill_depth - 0.15
 
             # Tolerance: ±0.01" is acceptable, flag at ±0.02"
+            # For two-operation drilling (>4.2" total), allow extra tolerance since OP2
+            # intentionally drills deeper to ensure punch-through
             diff = calculated_thickness - title_thickness
 
-            if abs(diff) > 0.03:  # Beyond ±0.03" is critical
+            # Two-operation drilling gets ±0.20" tolerance (OP2 drills extra to punch through)
+            is_two_operation = result.drill_depth and result.drill_depth > 4.2
+            critical_tolerance = 0.20 if is_two_operation else 0.03
+            warning_tolerance = 0.16 if is_two_operation else 0.015  # 0.16" to account for floating point
+
+            if abs(diff) > critical_tolerance:  # Beyond tolerance is critical
                 # Check if this might be a mislabeled title
                 # If P-codes also indicate the calculated thickness, title is wrong
                 pcode_agrees_with_drill = False
@@ -1720,7 +1729,7 @@ class ImprovedGCodeParser:
                     result.validation_issues.append(
                         f'THICKNESS ERROR: Spec={title_thickness:.2f}", Calculated from drill={calculated_thickness:.2f}" ({diff:+.3f}") - CRITICAL ERROR'
                     )
-            elif abs(diff) > 0.015:  # Warning zone: ±0.015-0.03"
+            elif abs(diff) > warning_tolerance:  # Warning zone
                 # DIMENSIONAL: Thickness mismatch - PURPLE
                 result.dimensional_issues.append(
                     f'Thickness mismatch: Spec={title_thickness:.2f}", Calculated={calculated_thickness:.2f}" ({diff:+.3f}")'
