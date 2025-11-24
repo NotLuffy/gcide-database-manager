@@ -1146,14 +1146,28 @@ class ImprovedGCodeParser:
 
                     # If line has "(X IS OB)" marker, prioritize this value
                     if has_ob_marker:
-                        ob_candidates.append((x_val, z_val, i, True))  # True = has marker
+                        ob_candidates.append((x_val, z_val, i, True, False))  # True = has marker, False = has_following_z (N/A for marked)
 
                     # OB (Hub D) is typically 2.2-4.0 inches (filter out OD facing operations > 4.0)
                     # Progressive facing cuts down to the OB, then retracts to smaller X (CB)
                     # Exclude values too large (OD facing) and too small (CB)
                     elif 2.2 < x_val < 4.0:
-                        # Store X with its Z depth and line index for chamfer pattern detection
-                        ob_candidates.append((x_val, z_val, i, False))  # False = no marker
+                        # Check if next line is a Z movement (indicates X is OB)
+                        # Pattern: X3.168 (line i) -> Z-0.05 (line i+1) confirms X3.168 is OB
+                        has_following_z = False
+                        if i + 1 < len(lines):
+                            next_line = lines[i+1].strip()
+                            # Check if next line has Z movement without X (pure Z move)
+                            if re.search(r'Z\s*-?\s*([\d.]+)', next_line, re.IGNORECASE) and not re.search(r'X\s*([\d.]+)', next_line, re.IGNORECASE):
+                                next_z_match = re.search(r'Z\s*-?\s*([\d.]+)', next_line, re.IGNORECASE)
+                                if next_z_match:
+                                    next_z_val = float(next_z_match.group(1))
+                                    # If Z is within hub height range (0.05" to 2.0"), this confirms X is OB
+                                    if 0.05 <= next_z_val <= 2.0:
+                                        has_following_z = True
+
+                        # Store X with its Z depth, line index, and following_z flag for detection
+                        ob_candidates.append((x_val, z_val, i, False, has_following_z))  # Added has_following_z flag
 
                     # Also collect CB candidates from OP2 chamfer area (for hub-centric parts)
                     # CB chamfer is at shallow Z (< 0.15) and smaller than OB
@@ -1186,98 +1200,106 @@ class ImprovedGCodeParser:
 
         # Select OB: Enhanced detection with multiple strategies
         # Strategy 1: "(X IS OB)" keyword marker (highest priority)
-        # Strategy 2: X value after chamfer, before moving to positive Z
-        # Strategy 3: Chamfer pattern detection
+        # Strategy 2: X value followed by Z movement (new pattern: X3.168 -> Z-0.05)
+        # Strategy 3: X value after chamfer, before moving to positive Z
+        # Strategy 4: Chamfer pattern detection
         if ob_candidates:
             # First, check if any candidate has the "(X IS OB)" marker
-            marked_ob = [x for x, z, idx, has_marker in ob_candidates if has_marker]
+            marked_ob = [x for x, z, idx, has_marker, has_z in ob_candidates if has_marker]
             if marked_ob:
                 result.ob_from_gcode = marked_ob[0] * 25.4  # Use first marked value, convert to mm
             else:
-                # Strategy 2: Look for X value after chamfer and before moving to positive Z
-                # Pattern from O10040:
-                # Line 78: G01 X10.17 Z-0.05 F0.008 (chamfer at OD)
-                # Lines 109-137: Progressive facing at negative Z (Z-0.1 to Z-1.55)
-                # Line 138: G01 X6.688 F0.013 (X IS OB) <- OB at deepest Z
-                # Line 139: Z-0.05  <- Move to shallow Z (before positive)
-                # Line 140: X6.588 Z0.  <- Move to Z0 (positive)
+                # Strategy 2: X followed by Z movement (highest confidence for unmarked)
+                # Pattern: X3.168 (OB position) -> Z-0.05 (hub height creation)
+                ob_with_following_z = [x for x, z, idx, has_marker, has_z in ob_candidates if has_z]
+                if ob_with_following_z:
+                    # Use the largest X with following Z (typically the final OB after all passes)
+                    result.ob_from_gcode = max(ob_with_following_z) * 25.4  # Convert to mm
+                else:
+                    # Strategy 3: Look for X value after chamfer and before moving to positive Z
+                    # Pattern from O10040:
+                    # Line 78: G01 X10.17 Z-0.05 F0.008 (chamfer at OD)
+                    # Lines 109-137: Progressive facing at negative Z (Z-0.1 to Z-1.55)
+                    # Line 138: G01 X6.688 F0.013 (X IS OB) <- OB at deepest Z
+                    # Line 139: Z-0.05  <- Move to shallow Z (before positive)
+                    # Line 140: X6.588 Z0.  <- Move to Z0 (positive)
 
-                ob_after_chamfer = []
-                for j, (x_val, z_val, line_idx, has_marker) in enumerate(ob_candidates):
-                    if z_val is None:
-                        continue
-
-                    # Look at next 2 lines to see if Z moves toward positive (less negative)
-                    # Z-1.55 -> Z-0.05 -> Z0.0 indicates we found OB before retraction
-                    if j < len(ob_candidates) - 2:
-                        _, next1_z, _, _ = ob_candidates[j+1]
-                        _, next2_z, _, _ = ob_candidates[j+2] if j < len(ob_candidates) - 2 else (None, None, None, None)
-
-                        # Check if Z is moving from deep (negative) toward shallow/positive
-                        if next1_z and next1_z < z_val:  # Next Z is shallower (less negative)
-                            # And if there's a second move that goes even shallower or to positive
-                            if next2_z and next2_z < next1_z:
-                                ob_after_chamfer.append((x_val, z_val))
-
-                if ob_after_chamfer:
-                    # Use the X value with the deepest Z (most negative) before retraction
-                    deepest_ob = max(ob_after_chamfer, key=lambda pair: pair[1])
-                    result.ob_from_gcode = deepest_ob[0] * 25.4  # Convert to mm
-                elif result.hub_diameter:  # Fallback to title spec matching
-                    title_ob_inches = result.hub_diameter / 25.4  # Convert title spec to inches
-
-                    # Look for chamfer pattern: X value between two Z direction changes
-                    ob_with_chamfer_pattern = []
-
-                    for j, (x_val, z_val, line_idx, has_marker) in enumerate(ob_candidates):
+                    ob_after_chamfer = []
+                    for j, (x_val, z_val, line_idx, has_marker, has_z) in enumerate(ob_candidates):
                         if z_val is None:
                             continue
 
-                        # Look at previous and next movements to detect chamfer pattern
-                        has_chamfer_before = False
-                        has_chamfer_after = False
+                        # Look at next 2 lines to see if Z moves toward positive (less negative)
+                        # Z-1.55 -> Z-0.05 -> Z0.0 indicates we found OB before retraction
+                        if j < len(ob_candidates) - 2:
+                            _, next1_z, _, _, _ = ob_candidates[j+1]
+                            _, next2_z, _, _, _ = ob_candidates[j+2] if j < len(ob_candidates) - 2 else (None, None, None, None, None)
 
-                        # Check previous lines for chamfer (larger X, Z movement)
-                        if j > 0:
-                            prev_x, prev_z, _, _ = ob_candidates[j-1]
-                            if prev_x and prev_x > x_val + 0.1:  # X decreased (faced inward)
-                                has_chamfer_before = True
+                            # Check if Z is moving from deep (negative) toward shallow/positive
+                            if next1_z and next1_z < z_val:  # Next Z is shallower (less negative)
+                                # And if there's a second move that goes even shallower or to positive
+                                if next2_z and next2_z < next1_z:
+                                    ob_after_chamfer.append((x_val, z_val))
 
-                        # Check next lines for Z going up (shallower) = chamfer to CB
-                        if j < len(ob_candidates) - 1:
-                            next_x, next_z, _, _ = ob_candidates[j+1]
-                            if next_z and next_z < z_val:  # Z went up (shallower depth)
-                                has_chamfer_after = True
+                    if ob_after_chamfer:
+                        # Use the X value with the deepest Z (most negative) before retraction
+                        deepest_ob = max(ob_after_chamfer, key=lambda pair: pair[1])
+                        result.ob_from_gcode = deepest_ob[0] * 25.4  # Convert to mm
+                    elif result.hub_diameter:  # Fallback to title spec matching
+                        title_ob_inches = result.hub_diameter / 25.4  # Convert title spec to inches
 
-                        # If between chamfers, this is likely the OB
-                        if has_chamfer_before and has_chamfer_after:
-                            ob_with_chamfer_pattern.append(x_val)
+                        # Look for chamfer pattern: X value between two Z direction changes
+                        ob_with_chamfer_pattern = []
 
-                        # Also check if this X is very close to title spec (within 0.05")
-                        if abs(x_val - title_ob_inches) < 0.05:
-                            ob_with_chamfer_pattern.append(x_val)
+                        for j, (x_val, z_val, line_idx, has_marker, has_z) in enumerate(ob_candidates):
+                            if z_val is None:
+                                continue
 
-                    # Select OB from chamfer pattern candidates, or use closest to title
-                    if ob_with_chamfer_pattern:
-                        closest_x = min(ob_with_chamfer_pattern, key=lambda x: abs(x - title_ob_inches))
-                        result.ob_from_gcode = closest_x * 25.4  # Convert to mm
+                            # Look at previous and next movements to detect chamfer pattern
+                            has_chamfer_before = False
+                            has_chamfer_after = False
+
+                            # Check previous lines for chamfer (larger X, Z movement)
+                            if j > 0:
+                                prev_x, prev_z, _, _, _ = ob_candidates[j-1]
+                                if prev_x and prev_x > x_val + 0.1:  # X decreased (faced inward)
+                                    has_chamfer_before = True
+
+                            # Check next lines for Z going up (shallower) = chamfer to CB
+                            if j < len(ob_candidates) - 1:
+                                next_x, next_z, _, _, _ = ob_candidates[j+1]
+                                if next_z and next_z < z_val:  # Z went up (shallower depth)
+                                    has_chamfer_after = True
+
+                            # If between chamfers, this is likely the OB
+                            if has_chamfer_before and has_chamfer_after:
+                                ob_with_chamfer_pattern.append(x_val)
+
+                            # Also check if this X is very close to title spec (within 0.05")
+                            if abs(x_val - title_ob_inches) < 0.05:
+                                ob_with_chamfer_pattern.append(x_val)
+
+                        # Select OB from chamfer pattern candidates, or use closest to title
+                        if ob_with_chamfer_pattern:
+                            closest_x = min(ob_with_chamfer_pattern, key=lambda x: abs(x - title_ob_inches))
+                            result.ob_from_gcode = closest_x * 25.4  # Convert to mm
+                        else:
+                            # Fallback: find X closest to title spec from all candidates
+                            all_x_values = [x for x, z, idx, marker, has_z in ob_candidates]
+                            closest_x = min(all_x_values, key=lambda x: abs(x - title_ob_inches))
+                            result.ob_from_gcode = closest_x * 25.4
                     else:
-                        # Fallback: find X closest to title spec from all candidates
-                        all_x_values = [x for x, z, idx, marker in ob_candidates]
-                        closest_x = min(all_x_values, key=lambda x: abs(x - title_ob_inches))
-                        result.ob_from_gcode = closest_x * 25.4
-                else:
-                    # No title OB available, use largest value > CB
-                    all_x_values = [x for x, z, idx, marker in ob_candidates]
-                    if cb_candidates:
-                        cb_inches = max(cb_candidates)
-                        valid_ob = [x for x in all_x_values if x > cb_inches + 0.15]
-                        if valid_ob:
-                            result.ob_from_gcode = max(valid_ob) * 25.4
+                        # No title OB available, use largest value > CB
+                        all_x_values = [x for x, z, idx, marker, has_z in ob_candidates]
+                        if cb_candidates:
+                            cb_inches = max(cb_candidates)
+                            valid_ob = [x for x in all_x_values if x > cb_inches + 0.15]
+                            if valid_ob:
+                                result.ob_from_gcode = max(valid_ob) * 25.4
+                            else:
+                                result.ob_from_gcode = max(all_x_values) * 25.4
                         else:
                             result.ob_from_gcode = max(all_x_values) * 25.4
-                    else:
-                        result.ob_from_gcode = max(all_x_values) * 25.4
 
         # Select OD: maximum from turning operations (already in diameter mode)
         if od_candidates:
