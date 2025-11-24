@@ -1648,7 +1648,10 @@ class GCodeDatabaseGUI:
             filename = os.path.basename(filepath)
 
             progress_label.config(text=f"Processing {file_idx}/{total_files}: {filename}")
-            progress_text.insert(tk.END, f"[{file_idx}/{total_files}] {old_prog_num} (OD: {od:.2f}\")\n")
+
+            # Handle None OD in display
+            od_display = f"{od:.2f}" if od else "None"
+            progress_text.insert(tk.END, f"[{file_idx}/{total_files}] {old_prog_num} (OD: {od_display}\")\n")
             progress_text.see(tk.END)
             self.root.update()
 
