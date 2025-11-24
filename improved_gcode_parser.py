@@ -1513,14 +1513,64 @@ class ImprovedGCodeParser:
     def _extract_drill_depth(self, lines: List[str]) -> Optional[float]:
         """
         Extract drill depth from G81/G83 commands
+
+        For thick parts (>4.00" total), drilling is split into two operations:
+        - OP1: Max drill depth Z-4.15" (machine limitation)
+        - OP2: Remaining depth (total - 4.15")
+
+        Example: 3.0" thick + 1.25" hub = 4.25" total
+        - OP1: Z-4.15
+        - OP2: Z-0.25 (includes 0.15" clearance, so 4.15 + 0.10 = 4.25")
+
+        This function detects both operations and sums them.
         """
-        for line in lines:
+        drill_depths = []
+        in_op2 = False
+
+        for i, line in enumerate(lines):
+            line_upper = line.upper()
+
+            # Detect OP2 section
+            if 'OP2' in line_upper or '(OP2)' in line_upper:
+                in_op2 = True
+
             stripped = line.strip()
             if stripped.startswith(('G81', 'G83')):
-                z_match = re.search(r'Z\s*-?\s*([\d.]+)', stripped, re.IGNORECASE)
+                z_match = re.search(r'Z\s*-\s*([\d.]+)', stripped, re.IGNORECASE)
                 if z_match:
-                    return float(z_match.group(1))
-        return None
+                    depth = float(z_match.group(1))
+                    drill_depths.append((depth, in_op2))
+
+        if not drill_depths:
+            return None
+
+        # If we have multiple drill operations, check for two-operation pattern
+        if len(drill_depths) >= 2:
+            # Look for OP1 drill close to 4.15" and OP2 drill
+            op1_drills = [d for d, is_op2 in drill_depths if not is_op2]
+            op2_drills = [d for d, is_op2 in drill_depths if is_op2]
+
+            # Check if OP1 has a drill near 4.15" (within 0.05" tolerance)
+            large_op1_drills = [d for d in op1_drills if 4.1 <= d <= 4.2]
+
+            if large_op1_drills and op2_drills:
+                # Two-operation drilling detected
+                op1_depth = max(large_op1_drills)  # Usually 4.15"
+                op2_depth = max(op2_drills)  # Remaining depth
+
+                # Total depth = OP1 + (OP2 - clearance)
+                # OP2 includes extra clearance (typically 0.15"), so subtract it
+                # But if OP2 < 0.5", assume it already accounts for clearance
+                if op2_depth < 0.5:
+                    total_depth = op1_depth + op2_depth
+                else:
+                    # Larger OP2 depth, assume standard clearance included
+                    total_depth = op1_depth + op2_depth - 0.15
+
+                return total_depth
+
+        # Single operation drilling - return deepest drill
+        return max(d for d, _ in drill_depths)
 
     def _validate_consistency(self, result: GCodeParseResult):
         """
