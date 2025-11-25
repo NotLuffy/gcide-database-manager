@@ -536,14 +536,6 @@ class ImprovedGCodeParser:
             elif 'STUD' in combined_upper:
                 confidence = 'HIGH' if (found_in_title and 'STUD' in title_upper) else 'MEDIUM'
                 return '2PC STUD', confidence
-            elif 'IS 2PC' in combined_upper or 'IS2PC' in combined_upper:
-                # IS = Inner Stud / 2-Piece
-                confidence = 'MEDIUM'
-                return '2PC STUD', confidence
-            elif 'OS 2PC' in combined_upper or 'OS2PC' in combined_upper:
-                # OS = Outer Stud / 2-Piece
-                confidence = 'MEDIUM'
-                return '2PC STUD', confidence
             else:
                 # 2PC without specifying LUG or STUD
                 confidence = 'MEDIUM' if found_in_title else 'LOW'
