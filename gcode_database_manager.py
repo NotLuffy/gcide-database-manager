@@ -3288,7 +3288,10 @@ class GCodeDatabaseGUI:
             if other_ods:
                 ws = wb.create_sheet(title="Other Sizes")
                 other_programs = []
-                for od in sorted(other_ods):
+                # Sort ODs, handling None values (put them last)
+                sorted_ods = sorted([od for od in other_ods if od is not None])
+                none_ods = [od for od in other_ods if od is None]
+                for od in sorted_ods + none_ods:
                     other_programs.extend(programs_by_od[od])
                 self._write_excel_sheet(ws, other_programs)
 
@@ -3455,7 +3458,10 @@ class GCodeDatabaseGUI:
             if other_ods:
                 ws = wb.create_sheet(title="Other Sizes")
                 other_programs = []
-                for od in sorted(other_ods):
+                # Sort ODs, handling None values (put them last)
+                sorted_ods = sorted([od for od in other_ods if od is not None])
+                none_ods = [od for od in other_ods if od is None]
+                for od in sorted_ods + none_ods:
                     other_programs.extend(programs_by_od[od])
                 self._write_google_sheet(ws, other_programs)
 
