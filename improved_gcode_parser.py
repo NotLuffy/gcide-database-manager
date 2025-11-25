@@ -232,6 +232,7 @@ class ImprovedGCodeParser:
 
             # 8b. Calculate hub height from drill depth if needed
             # For ANY part type where drill depth suggests a hub exists
+            # EXCEPT 2PC parts (their dimensions refer to mating parts, not actual bores)
             if result.drill_depth and result.thickness:
                 # Calculate potential hub from drill depth
                 potential_hub = result.drill_depth - result.thickness - 0.15
@@ -239,7 +240,8 @@ class ImprovedGCodeParser:
                 # If potential hub is reasonable (0.3" to 3.5"), this might be hub-centric
                 if 0.3 <= potential_hub <= 3.5:
                     # If not already hub_centric, check if we should reclassify
-                    if result.spacer_type != 'hub_centric':
+                    # IMPORTANT: Don't reclassify 2PC parts - they have hubs but title dimensions are for mating parts
+                    if result.spacer_type != 'hub_centric' and '2PC' not in result.spacer_type:
                         # Reclassify as hub_centric if drill suggests significant hub
                         result.spacer_type = 'hub_centric'
                         result.detection_method = 'DRILL_DEPTH'
@@ -476,11 +478,13 @@ class ImprovedGCodeParser:
             confidence = 'HIGH' if found_in_title else 'MEDIUM'
             return 'steel_ring', confidence
 
-        # 2-piece indicators (check before other patterns that might match parts of 2PC titles)
+        # 2-piece indicators (check before hub_centric - 2PC takes priority)
         # 2PC = 2-piece spacer, comes in LUG or STUD variants
-        # IMPORTANT: If title has "HC", prioritize hub_centric over 2PC (2PC might be in comments)
-        if '2PC' in combined_upper and 'HC' not in title_upper:
-            found_in_title = '2PC' in title_upper
+        # Many 2PC parts have "HC" in title (e.g., ".75 HC 2PC STUD") - the HC refers to hub-centric INTERFACE
+        # The title dimensions (XX/YY) often refer to the MATING part, not this part's actual bores
+        # IMPORTANT: 2PC classification takes priority over HC keyword
+        if '2PC' in combined_upper or '2 PC' in combined_upper:
+            found_in_title = '2PC' in title_upper or '2 PC' in title_upper
 
             if 'LUG' in combined_upper:
                 confidence = 'HIGH' if (found_in_title and 'LUG' in title_upper) else 'MEDIUM'
@@ -1018,15 +1022,26 @@ class ImprovedGCodeParser:
                     last_bore_x = float(x_match.group(1))
 
                 if is_chamfer_line:
-                    # The chamfer X value itself is the CB diameter
-                    # Pattern in o10007: X6.701 Z-0.12 (chamfer) → this X6.701 is the CB
-                    # Pattern in o13009: X8.665 Z-0.15 (chamfer) → this X8.665 is the CB
+                    # The chamfer X value meaning depends on spacer type:
+                    # HUB-CENTRIC: chamfer X IS the CB (chamfer at bore entrance)
+                    # STEP: chamfer X IS the counterbore (chamfer at step ledge)
+                    # Pattern in o10007: X6.701 Z-0.12 (chamfer) → this X6.701 is the CB (hub-centric)
+                    # Pattern in o13009: X8.665 Z-0.15 (chamfer) → this X8.665 is the CB (hub-centric)
+                    # Pattern in o57594: X3.547 Z-0.1 (chamfer) → this X3.547 is the COUNTERBORE (step)
                     if x_match:
                         chamfer_x = float(x_match.group(1))
                         if 1.5 < chamfer_x < 10.0:  # Extended to 10.0 for large 13" parts
-                            # Add chamfer X as CB candidate
-                            cb_candidates.append(chamfer_x)
-                            cb_found = True  # This is definitive CB
+                            # For STEP spacers: chamfer is at counterbore, NOT CB
+                            # CB is the smaller bore that goes to full depth
+                            if result.spacer_type == 'step':
+                                # Store chamfer as counterbore diameter (if not already set)
+                                if not result.counter_bore_diameter:
+                                    result.counter_bore_diameter = chamfer_x * 25.4  # Convert to mm
+                                # Don't set cb_found - continue looking for actual CB at full depth
+                            else:
+                                # For hub-centric and other types: chamfer X is the CB
+                                cb_candidates.append(chamfer_x)
+                                cb_found = True  # This is definitive CB
 
                     # Also look ahead for step depth (Z-only movement after chamfer)
                     for j in range(i+1, min(i+5, len(lines))):
@@ -1600,7 +1615,8 @@ class ImprovedGCodeParser:
             line_upper = line.upper()
 
             # Detect OP2 section
-            if 'OP2' in line_upper or '(OP2)' in line_upper:
+            # Check for various OP2 markers: "OP2", "(OP2)", "FLIP PART", "FLIP", etc.
+            if 'OP2' in line_upper or '(OP2)' in line_upper or 'FLIP' in line_upper:
                 in_op2 = True
 
             # Track if DRILL tool is active
@@ -1786,7 +1802,8 @@ class ImprovedGCodeParser:
 
         # CB Validation: Title is SPEC, G-code should be within tolerance
         # Acceptable range: title_cb to (title_cb + 0.1mm)
-        if result.center_bore and result.cb_from_gcode:
+        # SKIP for 2PC parts - their title dimensions refer to mating part interface, not actual bores
+        if result.center_bore and result.cb_from_gcode and '2PC' not in result.spacer_type:
             title_cb = result.center_bore  # SPECIFICATION
             gcode_cb = result.cb_from_gcode  # IMPLEMENTATION
 
@@ -1813,7 +1830,8 @@ class ImprovedGCodeParser:
 
         # OB Validation: Title is SPEC, G-code should be within tolerance
         # Acceptable range: (title_ob - 0.2mm) to title_ob
-        if result.hub_diameter and result.ob_from_gcode:
+        # SKIP for 2PC parts - their title dimensions refer to mating part interface, not actual bores
+        if result.hub_diameter and result.ob_from_gcode and '2PC' not in result.spacer_type:
             title_ob = result.hub_diameter  # SPECIFICATION
             gcode_ob = result.ob_from_gcode  # IMPLEMENTATION
 
@@ -1830,7 +1848,7 @@ class ImprovedGCodeParser:
             elif diff > 0.25:
                 # CRITICAL: OB way too large - RED
                 result.validation_issues.append(
-                    f'OB TOO LARGE: Spec={title_ob:.1f}mm, G-code={gcode_ob:.1f}mm ({diff:+.2f}mm) - CRITICAL ERROR'
+                    f'OB TOO LARGE: Spec={title_ob:.1f}mm, G-code={gcode_ob:.1f}mm) - CRITICAL ERROR'
                 )
             elif abs(diff) > 0.2:
                 # BORE WARNING: At tolerance limit - ORANGE
