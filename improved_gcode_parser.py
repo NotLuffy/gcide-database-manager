@@ -736,50 +736,53 @@ class ImprovedGCodeParser:
                     # Keep other fractions as fractional display (e.g., "7/8")
                     result.thickness_display = f"{numerator}/{denominator}"
 
-        thick_patterns = [
-            (r'\s+(\d+)\s*HC(?:\s|$)', 'MM', True),      # "15HC" or " 15 HC" - MM thickness with hub (no "MM" in text)
-            (r'(\d+\.?\d*)\s*MM\s+HC', 'MM', True),      # "15MM HC" - MM thickness with hub (explicit MM)
-            (r'(\d+\.?\d*)\s*MM\s+THK', 'MM', False),    # "10MM THK" - MM thickness standard
-            (r'\s+(\d+\.?\d*)\s*MM\s*$', 'MM', False),   # "10MM" at end
-            (r'ID\s+(\d+\.?\d*)\s*MM\s+', 'MM', False),  # "ID 10MM SPACER"
-            (r'ID\s+(\d*\.?\d+)\s+2PC', 'IN', False),    # "ID 1.25 2PC" - thickness before 2PC
-            (r'ID\s+(\d*\.?\d+)(?:\s+|$)', 'IN', False), # "ID 1.5" - inches
-            (r'(\d*\.?\d+)\s+2PC', 'IN', False),         # "1.75 2PC" - thickness before 2PC
-            (r'(\d*\.?\d+)\s+THK', 'IN', False),         # "0.75 THK" - inches
-            (r'B/C\s+(\d*\.?\d+)', 'IN', False),         # "B/C 1.50"
-            (r'MM\s+(\d*\.?\d+)\s+(?:THK|HC)', 'IN', False),  # "MM 1.50 THK"
-            (r'/[\d.]+MM\s+(\d*\.?\d+)', 'IN', False),   # After slash pattern
-            (r'(\d*\.?\d+)\s*$', 'IN', False),           # End of line (last resort)
-        ]
+        # Only run decimal patterns if fraction didn't find thickness
+        # This prevents "7/8 THK" from being overwritten by THK pattern matching just "8"
+        if not result.thickness:
+            thick_patterns = [
+                (r'\s+(\d+)\s*HC(?:\s|$)', 'MM', True),      # "15HC" or " 15 HC" - MM thickness with hub (no "MM" in text)
+                (r'(\d+\.?\d*)\s*MM\s+HC', 'MM', True),      # "15MM HC" - MM thickness with hub (explicit MM)
+                (r'(\d+\.?\d*)\s*MM\s+THK', 'MM', False),    # "10MM THK" - MM thickness standard
+                (r'\s+(\d+\.?\d*)\s*MM\s*$', 'MM', False),   # "10MM" at end
+                (r'ID\s+(\d+\.?\d*)\s*MM\s+', 'MM', False),  # "ID 10MM SPACER"
+                (r'ID\s+(\d*\.?\d+)\s+2PC', 'IN', False),    # "ID 1.25 2PC" - thickness before 2PC
+                (r'ID\s+(\d*\.?\d+)(?:\s+|$)', 'IN', False), # "ID 1.5" - inches
+                (r'(\d*\.?\d+)\s+2PC', 'IN', False),         # "1.75 2PC" - thickness before 2PC
+                (r'(\d*\.?\d+)\s+THK', 'IN', False),         # "0.75 THK" - inches
+                (r'B/C\s+(\d*\.?\d+)', 'IN', False),         # "B/C 1.50"
+                (r'MM\s+(\d*\.?\d+)\s+(?:THK|HC)', 'IN', False),  # "MM 1.50 THK"
+                (r'/[\d.]+MM\s+(\d*\.?\d+)', 'IN', False),   # After slash pattern
+                (r'(\d*\.?\d+)\s*$', 'IN', False),           # End of line (last resort)
+            ]
 
-        for pattern, unit, is_hub_centric_mm in thick_patterns:
-            match = re.search(pattern, title, re.IGNORECASE)
-            if match:
-                try:
-                    thickness_val = float(match.group(1))
+            for pattern, unit, is_hub_centric_mm in thick_patterns:
+                match = re.search(pattern, title, re.IGNORECASE)
+                if match:
+                    try:
+                        thickness_val = float(match.group(1))
 
-                    # Determine if this is MM or inches
-                    is_metric = (unit == 'MM') or (thickness_val >= 10 and thickness_val <= 100)
+                        # Determine if this is MM or inches
+                        is_metric = (unit == 'MM') or (thickness_val >= 10 and thickness_val <= 100)
 
-                    if is_metric:
-                        # Store display format as "##MM"
-                        result.thickness_display = f"{int(thickness_val) if thickness_val == int(thickness_val) else thickness_val}MM"
-                        # Convert to inches for calculations
-                        result.thickness = thickness_val / 25.4
-                    else:
-                        # Store display format as is
-                        result.thickness_display = str(thickness_val)
-                        result.thickness = thickness_val
+                        if is_metric:
+                            # Store display format as "##MM"
+                            result.thickness_display = f"{int(thickness_val) if thickness_val == int(thickness_val) else thickness_val}MM"
+                            # Convert to inches for calculations
+                            result.thickness = thickness_val / 25.4
+                        else:
+                            # Store display format as is
+                            result.thickness_display = str(thickness_val)
+                            result.thickness = thickness_val
 
-                    # Validate thickness is in reasonable range
-                    if 0.25 <= result.thickness <= 4.0:
-                        break  # Found valid thickness
-                    else:
-                        # Reset if out of range
-                        result.thickness = None
-                        result.thickness_display = None
-                except:
-                    pass
+                        # Validate thickness is in reasonable range
+                        if 0.25 <= result.thickness <= 4.0:
+                            break  # Found valid thickness
+                        else:
+                            # Reset if out of range
+                            result.thickness = None
+                            result.thickness_display = None
+                    except:
+                        pass
 
         # CB/OB pattern (XX/YY or XX-YY format) - more flexible matching
         cb_ob_patterns = [
