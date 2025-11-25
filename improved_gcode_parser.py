@@ -1963,8 +1963,8 @@ class ImprovedGCodeParser:
                 result.validation_issues.append(
                     f'CB TOO LARGE: Spec={title_cb:.1f}mm, G-code={gcode_cb:.1f}mm ({diff:+.2f}mm) - CRITICAL ERROR'
                 )
-            elif abs(diff) > 0.2:
-                # BORE WARNING: At tolerance limit - ORANGE
+            elif abs(diff) > 0.25:
+                # BORE WARNING: At tolerance limit - ORANGE (only warn if >0.25mm off)
                 result.bore_warnings.append(
                     f'CB at tolerance limit: Spec={title_cb:.1f}mm, G-code={gcode_cb:.1f}mm ({diff:+.2f}mm)'
                 )
@@ -1991,8 +1991,8 @@ class ImprovedGCodeParser:
                 result.validation_issues.append(
                     f'OB TOO LARGE: Spec={title_ob:.1f}mm, G-code={gcode_ob:.1f}mm) - CRITICAL ERROR'
                 )
-            elif abs(diff) > 0.2:
-                # BORE WARNING: At tolerance limit - ORANGE
+            elif abs(diff) > 0.25:
+                # BORE WARNING: At tolerance limit - ORANGE (only warn if >0.25mm off)
                 result.bore_warnings.append(
                     f'OB at tolerance limit: Spec={title_ob:.1f}mm, G-code={gcode_ob:.1f}mm ({diff:+.2f}mm)'
                 )
