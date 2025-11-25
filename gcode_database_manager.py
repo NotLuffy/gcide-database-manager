@@ -3204,7 +3204,6 @@ class GCodeDatabaseGUI:
             export_columns = [
                 # Identity
                 'program_number',
-                'filename',
                 'title',
 
                 # Dimensions (sorted by OD, Type, CB, Thickness)
@@ -3259,7 +3258,7 @@ class GCodeDatabaseGUI:
             # Group programs by OD
             programs_by_od = {}
             for row in results:
-                od = row[3]  # outer_diameter column
+                od = row[2]  # outer_diameter column (index 2: program_number, title, outer_diameter)
                 if od not in programs_by_od:
                     programs_by_od[od] = []
                 programs_by_od[od].append(row)
@@ -3295,7 +3294,6 @@ class GCodeDatabaseGUI:
         # Header
         headers = [
             'Program #',
-            'Filename',
             'Title',
             'OD (in)',
             'Type',
@@ -3368,7 +3366,7 @@ class GCodeDatabaseGUI:
 
             # Define organized column order - same as Excel export
             export_columns = [
-                'program_number', 'filename', 'title',
+                'program_number', 'title',
                 'outer_diameter', 'spacer_type', 'center_bore', 'thickness',
                 'hub_diameter', 'hub_height', 'counter_bore_diameter', 'counter_bore_depth',
                 'material', 'lathe',
@@ -3405,7 +3403,7 @@ class GCodeDatabaseGUI:
             # Group programs by OD
             programs_by_od = {}
             for row in results:
-                od = row[3]  # outer_diameter column
+                od = row[2]  # outer_diameter column (index 2: program_number, title, outer_diameter)
                 if od not in programs_by_od:
                     programs_by_od[od] = []
                 programs_by_od[od].append(row)
