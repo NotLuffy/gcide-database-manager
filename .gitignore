@@ -37,3 +37,8 @@ desktop.ini
 # Test files (if you create any)
 test_*.py
 *_test.py
+
+# Temporary scripts folder (track README only)
+temp_scripts/*.py
+temp_scripts/*.zip
+temp_scripts/*.xlsx
