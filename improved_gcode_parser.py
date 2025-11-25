@@ -865,8 +865,8 @@ class ImprovedGCodeParser:
                         result.thickness = first_val
                         result.thickness_display = str(first_val)
 
-                    # Second value is hub height (can be up to 2.0" for larger parts)
-                    if 0.2 <= second_val <= 2.0:
+                    # Second value is hub height (can be up to 3.5" for larger parts like 13" rounds)
+                    if 0.2 <= second_val <= 3.5:
                         result.hub_height = second_val
                 except:
                     pass
@@ -882,8 +882,8 @@ class ImprovedGCodeParser:
                     if hub_match:
                         try:
                             hub_val = float(hub_match.group(1))
-                            # Hub height can be up to 2.0" for larger parts
-                            if 0.2 <= hub_val <= 2.0:
+                            # Hub height can be up to 3.5" for larger parts like 13" rounds
+                            if 0.2 <= hub_val <= 3.5:
                                 result.hub_height = hub_val
                                 break
                         except:
@@ -1325,10 +1325,11 @@ class ImprovedGCodeParser:
             if facing_z_values:
                 # Hub height is the deepest Z in the facing sequence
                 calculated_hub_height = max(facing_z_values)
-                # Validate it's reasonable (0.20" to 2.00" for larger parts)
-                if 0.2 <= calculated_hub_height <= 2.0:
-                    # Only override if title didn't have hub height
-                    if not result.hub_height or result.hub_height == 0.50:
+                # Validate it's reasonable (0.20" to 3.50" for larger parts like 13" rounds)
+                if 0.2 <= calculated_hub_height <= 3.5:
+                    # IMPORTANT: Only override if title didn't have hub height at all
+                    # Do NOT override if title has a valid hub height (even if it's 0.50)
+                    if not result.hub_height:
                         result.hub_height = round(calculated_hub_height, 2)
 
         # Multi-method thickness calculation (fallback if not in title)
