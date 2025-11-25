@@ -852,7 +852,8 @@ class ImprovedGCodeParser:
             # Example: "1.0 HC 1.5" means 1.0" thick + 1.5" hub height
             # Also handles trailing decimals: "2. HC 1.5" = 2.0" thick + 1.5" hub
             # Also handles leading decimals: "5.5 HC .5" = 5.5" thick + 0.5" hub
-            dual_hc_match = re.search(r'(\d+\.?\d*)\s+HC\s+(\d*\.?\d+)', title, re.IGNORECASE)
+            # Also handles no space: "1.0 HC.5" = 1.0" thick + 0.5" hub
+            dual_hc_match = re.search(r'(\d+\.?\d*)\s*HC\s*(\d*\.?\d+)', title, re.IGNORECASE)
             if dual_hc_match:
                 try:
                     first_val = float(dual_hc_match.group(1))
