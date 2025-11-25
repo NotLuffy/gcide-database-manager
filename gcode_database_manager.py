@@ -528,8 +528,12 @@ class GCodeDatabaseGUI:
         reports_group = tk.Frame(tab_reports, bg=self.bg_color)
         reports_group.pack(fill=tk.X, padx=5, pady=5)
 
-        tk.Button(reports_group, text="📤 Export CSV", command=self.export_csv,
+        tk.Button(reports_group, text="📊 Export Excel", command=self.export_csv,
                  bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
+                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+
+        tk.Button(reports_group, text="📈 Google Sheets", command=self.export_google_sheets,
+                 bg="#34A853", fg=self.fg_color, font=("Arial", 9, "bold"),
                  width=14, height=2).pack(side=tk.LEFT, padx=3)
 
         tk.Button(reports_group, text="📋 Unused #s", command=self.export_unused_numbers,
@@ -3331,6 +3335,156 @@ class GCodeDatabaseGUI:
                     cell.value = str(value)
 
         # Auto-adjust column widths
+        for column in ws.columns:
+            max_length = 0
+            column_letter = column[0].column_letter
+            for cell in column:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except:
+                    pass
+            adjusted_width = min(max_length + 2, 50)  # Cap at 50
+            ws.column_dimensions[column_letter].width = adjusted_width
+
+    def export_google_sheets(self):
+        """Export database to Excel optimized for Google Sheets import"""
+        try:
+            import openpyxl
+        except ImportError:
+            messagebox.showerror("Missing Library",
+                "openpyxl is required for Google Sheets export.\n\n"
+                "Install it with:\npip install openpyxl")
+            return
+
+        filepath = filedialog.asksaveasfilename(
+            defaultextension=".xlsx",
+            filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")]
+        )
+
+        if filepath:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            # Define organized column order - same as Excel export
+            export_columns = [
+                'program_number', 'filename', 'title',
+                'outer_diameter', 'spacer_type', 'center_bore', 'thickness',
+                'hub_diameter', 'hub_height', 'counter_bore_diameter', 'counter_bore_depth',
+                'material', 'lathe',
+                'validation_status', 'detection_confidence',
+                'last_modified'
+            ]
+
+            # Build query with ordering: OD, Type, CB, Thickness
+            columns_str = ', '.join(export_columns)
+            cursor.execute(f"""
+                SELECT {columns_str} FROM programs
+                ORDER BY outer_diameter, spacer_type, center_bore, thickness
+            """)
+            results = cursor.fetchall()
+
+            # Create Excel workbook
+            wb = openpyxl.Workbook()
+            wb.remove(wb.active)  # Remove default sheet
+
+            # Define standard round sizes - combine some to reduce sheet count for Google Sheets
+            # Google Sheets has better performance with fewer sheets
+            round_size_groups = [
+                ('5.75" - 6.00"', [5.75, 6.00]),
+                ('6.25"', [6.25]),
+                ('6.50"', [6.50]),
+                ('7.00"', [7.00]),
+                ('7.50"', [7.50]),
+                ('8.00"', [8.00]),
+                ('9.00" - 9.50"', [9.00, 9.50]),
+                ('10.00"', [10.00]),
+                ('13.00"', [13.00]),
+            ]
+
+            # Group programs by OD
+            programs_by_od = {}
+            for row in results:
+                od = row[3]  # outer_diameter column
+                if od not in programs_by_od:
+                    programs_by_od[od] = []
+                programs_by_od[od].append(row)
+
+            # Create sheet for each round size group
+            for sheet_name, od_values in round_size_groups:
+                group_programs = []
+                for od_value in od_values:
+                    if od_value in programs_by_od:
+                        group_programs.extend(programs_by_od[od_value])
+
+                if group_programs:
+                    ws = wb.create_sheet(title=sheet_name)
+                    self._write_google_sheet(ws, group_programs)
+
+            # Create "Other Sizes" sheet for non-standard sizes
+            all_standard_ods = []
+            for _, od_list in round_size_groups:
+                all_standard_ods.extend(od_list)
+
+            other_ods = [od for od in programs_by_od.keys()
+                        if od not in all_standard_ods]
+            if other_ods:
+                ws = wb.create_sheet(title="Other Sizes")
+                other_programs = []
+                for od in sorted(other_ods):
+                    other_programs.extend(programs_by_od[od])
+                self._write_google_sheet(ws, other_programs)
+
+            # Save workbook
+            wb.save(filepath)
+            conn.close()
+
+            total_sheets = len(wb.sheetnames)
+            messagebox.showinfo("Google Sheets Export Complete",
+                f"Exported {len(results)} records to {total_sheets} sheets.\n\n"
+                f"To import to Google Sheets:\n"
+                f"1. Go to sheets.google.com\n"
+                f"2. File → Import → Upload\n"
+                f"3. Select: {filepath}\n"
+                f"4. Import location: Replace spreadsheet\n\n"
+                f"Optimized for Google Sheets with combined round sizes.")
+
+    def _write_google_sheet(self, ws, data):
+        """Write data to an Excel sheet optimized for Google Sheets"""
+        from openpyxl.styles import Font, PatternFill, Alignment
+
+        # Header - same as Excel export
+        headers = [
+            'Program #', 'Filename', 'Title',
+            'OD (in)', 'Type', 'CB (mm)', 'Thickness (in)',
+            'Hub (mm)', 'Hub Height (in)', 'Counterbore (mm)', 'CB Depth (in)',
+            'Material', 'Lathe',
+            'Status', 'Confidence', 'Last Modified'
+        ]
+
+        # Write header with Google Sheets-friendly formatting
+        for col, header in enumerate(headers, start=1):
+            cell = ws.cell(row=1, column=col, value=header)
+            cell.font = Font(bold=True, color="FFFFFF")
+            # Google green color for headers
+            cell.fill = PatternFill(start_color="34A853", end_color="34A853", fill_type="solid")
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+
+        # Write data
+        for row_idx, row_data in enumerate(data, start=2):
+            for col_idx, value in enumerate(row_data, start=1):
+                cell = ws.cell(row=row_idx, column=col_idx)
+
+                if value is None:
+                    cell.value = ""
+                elif isinstance(value, float):
+                    # Format floats to 2 decimal places
+                    cell.value = round(value, 2)
+                    cell.number_format = '0.00'
+                else:
+                    cell.value = str(value)
+
+        # Auto-adjust column widths (Google Sheets respects this)
         for column in ws.columns:
             max_length = 0
             column_letter = column[0].column_letter
