@@ -455,7 +455,8 @@ class ImprovedGCodeParser:
 
         # 2-piece indicators (check before other patterns that might match parts of 2PC titles)
         # 2PC = 2-piece spacer, comes in LUG or STUD variants
-        if '2PC' in combined_upper:
+        # IMPORTANT: If title has "HC", prioritize hub_centric over 2PC (2PC might be in comments)
+        if '2PC' in combined_upper and 'HC' not in title_upper:
             found_in_title = '2PC' in title_upper
 
             if 'LUG' in combined_upper:
