@@ -234,7 +234,16 @@ class ImprovedGCodeParser:
             # 5. Extract dimensions from G-code
             self._extract_dimensions_from_gcode(result, lines)
 
-            # 5a. Use thickness heuristic for remaining 2PC UNSURE files
+            # 5a. Advanced 2PC classification using G-code analysis
+            if result.spacer_type == '2PC UNSURE' and lines:
+                twopc_analysis = self._analyze_2pc_gcode(lines, result.thickness, result.hub_height)
+                if twopc_analysis['type']:
+                    result.spacer_type = twopc_analysis['type']
+                    result.detection_method = twopc_analysis['method']
+                    result.detection_confidence = twopc_analysis['confidence']
+                    result.detection_notes.append(twopc_analysis['note'])
+
+            # 5b. Use thickness heuristic for remaining 2PC UNSURE files
             # LUG parts are typically thicker (>=1.0"), STUD parts are thinner (<1.0")
             if result.spacer_type == '2PC UNSURE' and result.thickness:
                 if result.thickness >= 1.0:
@@ -806,7 +815,8 @@ class ImprovedGCodeParser:
                 (r'ID\s+(\d*\.?\d+)\s+2PC', 'IN', False),    # "ID 1.25 2PC" - thickness before 2PC
                 (r'ID\s+(\d*\.?\d+)(?:\s+|$)', 'IN', False), # "ID 1.5" - inches
                 (r'(\d*\.?\d+)\s+2PC', 'IN', False),         # "1.75 2PC" - thickness before 2PC
-                (r'(\d*\.?\d+)\s+THK', 'IN', False),         # "0.75 THK" - inches
+                (r'(\d*\.?\d+)\s+THK?(?:\s|$)', 'IN', False), # "0.75 THK" or "0.75 TH" - inches (TH abbreviation)
+                (r'\.(\d+)\s+TH(?:\s|$)', 'DECIMAL', False), # ".75 TH" - decimal without leading digit
                 (r'B/C\s+(\d*\.?\d+)', 'IN', False),         # "B/C 1.50"
                 (r'MM\s+(\d*\.?\d+)\s+(?:THK|HC)', 'IN', False),  # "MM 1.50 THK"
                 (r'/[\d.]+MM\s+(\d*\.?\d+)', 'IN', False),   # After slash pattern
@@ -817,7 +827,13 @@ class ImprovedGCodeParser:
                 match = re.search(pattern, title, re.IGNORECASE)
                 if match:
                     try:
-                        thickness_val = float(match.group(1))
+                        thickness_val_str = match.group(1)
+
+                        # Handle DECIMAL unit (e.g., ".75 TH" → 0.75)
+                        if unit == 'DECIMAL':
+                            thickness_val = float('0.' + thickness_val_str)
+                        else:
+                            thickness_val = float(thickness_val_str)
 
                         # Determine if this is MM or inches
                         is_metric = (unit == 'MM') or (thickness_val >= 10 and thickness_val <= 100)
@@ -963,6 +979,87 @@ class ImprovedGCodeParser:
             # This will be recalculated from drill depth later if available
             if not result.hub_height:
                 result.hub_height = 0.50
+
+    def _analyze_2pc_gcode(self, lines: List[str], thickness: Optional[float], hub_height: Optional[float]) -> dict:
+        """
+        Advanced 2PC LUG vs STUD classification using G-code analysis.
+
+        Rules (from user specification):
+        STUD indicators:
+        - Typically 1.00" in title (but 0.75" actual thickness)
+        - Creates ~0.25" hub (0.75" thick + 0.25" hub ≈ 1.00" total)
+        - Thickness ≤ 0.75"
+        - Hub height ≈ 0.25" (with tolerance)
+        - Special case: 0.5" hub with recess on opposite side (future)
+
+        LUG indicators:
+        - Thickness ≥ 0.75" (typically 1.0" or greater)
+        - If thickness > 0.75" with 0.25" hub → LUG (studs never exceed 0.75")
+        - Creates shelf/recess in OP1: Z-0.31 to Z-0.35 depth
+        - Receives the STUD insert
+
+        Returns:
+            dict with keys: 'type', 'method', 'confidence', 'note'
+        """
+        result = {'type': None, 'method': None, 'confidence': None, 'note': ''}
+
+        # Scan first 100 lines for patterns
+        z_depths = []
+        for line in lines[:100]:
+            # Extract Z-depth values (positive, representing recess depth)
+            z_matches = re.findall(r'Z-(\d+\.?\d*)', line, re.IGNORECASE)
+            for z_str in z_matches:
+                z_val = float(z_str)
+                # Only consider reasonable recess depths (0.1" to 1.0")
+                if 0.1 <= z_val <= 1.0:
+                    z_depths.append(z_val)
+
+        # Rule 1: Check for LUG shelf pattern (Z-0.31 to Z-0.35)
+        lug_shelf_depths = [z for z in z_depths if 0.31 <= z <= 0.35]
+        if lug_shelf_depths:
+            result['type'] = '2PC LUG'
+            result['method'] = 'GCODE_SHELF_DEPTH'
+            result['confidence'] = 'HIGH'
+            result['note'] = f'LUG shelf detected at Z-{lug_shelf_depths[0]:.2f}" (0.31-0.35" range)'
+            return result
+
+        # Rule 2: Thickness > 0.75" with 0.25" hub = LUG (studs never exceed 0.75")
+        if thickness and thickness > 0.75:
+            if hub_height and 0.20 <= hub_height <= 0.30:
+                result['type'] = '2PC LUG'
+                result['method'] = 'THICKNESS_HUB_COMBO'
+                result['confidence'] = 'HIGH'
+                result['note'] = f'LUG: thickness {thickness}" > 0.75" with {hub_height}" hub (studs max 0.75")'
+                return result
+            else:
+                # Thickness > 0.75" alone is strong LUG indicator
+                result['type'] = '2PC LUG'
+                result['method'] = 'THICKNESS_ANALYSIS'
+                result['confidence'] = 'MEDIUM'
+                result['note'] = f'LUG: thickness {thickness}" > 0.75" (studs max 0.75")'
+                return result
+
+        # Rule 3: Thickness = 0.75" with 0.25" hub = STUD pattern
+        if thickness and 0.70 <= thickness <= 0.80:  # Allow tolerance
+            if hub_height and 0.20 <= hub_height <= 0.30:
+                result['type'] = '2PC STUD'
+                result['method'] = 'THICKNESS_HUB_COMBO'
+                result['confidence'] = 'HIGH'
+                result['note'] = f'STUD: thickness {thickness}" ≈ 0.75" with {hub_height}" hub (typical pattern)'
+                return result
+
+        # Rule 4: Hub height detection alone
+        if hub_height:
+            if 0.20 <= hub_height <= 0.30:
+                # 0.25" hub suggests STUD (if no other LUG indicators found)
+                result['type'] = '2PC STUD'
+                result['method'] = 'HUB_HEIGHT_ANALYSIS'
+                result['confidence'] = 'MEDIUM'
+                result['note'] = f'STUD: {hub_height}" hub (0.25" typical for STUD)'
+                return result
+
+        # No definitive pattern found
+        return result
 
     def _extract_dimensions_from_gcode(self, result: GCodeParseResult, lines: List[str]):
         """

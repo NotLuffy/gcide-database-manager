@@ -1,188 +1,223 @@
-# 2PC Detection Improvements - Implementation Summary
+# 2PC Detection Improvements - Phase 2 Implementation
 
 ## Overview
 
-Implemented three-phase approach to improve 2PC LUG vs STUD classification, reducing UNSURE files from 124 to 7 (94.4% improvement).
+Implemented advanced G-code analysis to improve 2PC LUG vs STUD classification using physical part characteristics and machining patterns.
+
+## User-Specified Rules
+
+### STUD Characteristics:
+- Typically labeled as "1.00"" in title (0.75" thick + 0.25" hub ≈ 1.00" total)
+- **Actual thickness**: 0.75" (max, never exceeds this)
+- **Hub height**: ~0.25" (0.20" - 0.30" with tolerance)
+- **Special case** (future): 0.5" hub with recess on opposite side
+
+### LUG Characteristics:
+- **Thickness**: 0.75" minimum, typically 1.0" or greater
+- **Shelf/recess**: Z-0.31 to Z-0.35 depth in OP1 (support shelf)
+- **Key rule**: If thickness > 0.75" with 0.25" hub → LUG (studs never exceed 0.75")
+- **Function**: Receives the STUD insert
 
 ## Implementation Status: ✓ COMPLETE
 
-All three phases have been implemented and tested successfully.
+All improvements implemented and tested successfully.
 
 ## Code Changes
 
-### Phase 1: IS/OS Pattern Detection (Lines 503-510)
+### 1. New Method: _analyze_2pc_gcode() (Lines 976-1055)
 
-**Location**: `improved_gcode_parser.py` lines 503-510
+**Location**: `improved_gcode_parser.py` lines 976-1055
 
-**Pattern Detection**:
-- "IS 2PC" or "IS2PC" → 2PC STUD (Inner Stud)
-- "OS 2PC" or "OS2PC" → 2PC STUD (Outer Stud)
+**Purpose**: Advanced G-code analysis for LUG/STUD classification
 
-**Code**:
+**Detection Rules** (in priority order):
+
+#### Rule 1: LUG Shelf Detection (HIGHEST CONFIDENCE)
 ```python
-elif 'IS 2PC' in combined_upper or 'IS2PC' in combined_upper:
-    # IS = Inner Stud / 2-Piece
-    confidence = 'MEDIUM'
-    return '2PC STUD', confidence
-elif 'OS 2PC' in combined_upper or 'OS2PC' in combined_upper:
-    # OS = Outer Stud / 2-Piece
-    confidence = 'MEDIUM'
-    return '2PC STUD', confidence
+# Scan for Z-depths in range 0.31" - 0.35"
+lug_shelf_depths = [z for z in z_depths if 0.31 <= z <= 0.35]
+if lug_shelf_depths:
+    return '2PC LUG', 'GCODE_SHELF_DEPTH', 'HIGH'
 ```
+- **Confidence**: HIGH
+- **Rationale**: Physical machining operation unique to LUG parts
 
-**Confidence**: MEDIUM (based on title pattern)
-
-### Phase 2: G-Code Comment Detection (Lines 211-229)
-
-**Location**: `improved_gcode_parser.py` lines 211-229
-
-**Pattern Detection**:
-- "(LUG PLATE" in first 20 lines → 2PC LUG
-- "(STUD PLATE" in first 20 lines → 2PC STUD
-
-**Code**:
+#### Rule 2: Thickness > 0.75" = LUG
 ```python
-# 3a. Refine 2PC UNSURE classification using G-code comments
-# 50% of LUG files have "(LUG PLATE)" comment, 80% of STUD files have "(STUD PLATE)" comment
-if result.spacer_type == '2PC UNSURE' and lines:
-    # Scan first 20 lines for LUG/STUD PLATE comments
-    for line in lines[:20]:
-        line_upper = line.upper()
-
-        if 'LUG PLATE' in line_upper or '(LUG' in line_upper and 'PLATE' in line_upper:
-            result.spacer_type = '2PC LUG'
-            result.detection_method = 'GCODE_COMMENT'
-            result.detection_confidence = 'HIGH'
-            result.detection_notes.append('LUG detected from G-code comment')
-            break
-        elif 'STUD PLATE' in line_upper or '(STUD' in line_upper and 'PLATE' in line_upper:
-            result.spacer_type = '2PC STUD'
-            result.detection_method = 'GCODE_COMMENT'
-            result.detection_confidence = 'HIGH'
-            result.detection_notes.append('STUD detected from G-code comment')
-            break
-```
-
-**Confidence**: HIGH (G-code comments are very reliable)
-
-**Based on research**:
-- 50% of LUG files contain "(LUG PLATE. CUT X.XX)" comment
-- 80% of STUD files contain "(STUD PLATE. CUT X.XX)" comment
-
-### Phase 3: Thickness Heuristic (Lines 237-251)
-
-**Location**: `improved_gcode_parser.py` lines 237-251
-
-**Pattern Detection**:
-- Thickness ≥1.0" → 2PC LUG (receiver, thicker)
-- Thickness <1.0" → 2PC STUD (insert, thinner)
-
-**Code**:
-```python
-# 5a. Use thickness heuristic for remaining 2PC UNSURE files
-# LUG parts are typically thicker (>=1.0"), STUD parts are thinner (<1.0")
-if result.spacer_type == '2PC UNSURE' and result.thickness:
-    if result.thickness >= 1.0:
-        # Thicker parts typically LUG (receiver)
-        result.spacer_type = '2PC LUG'
-        result.detection_method = 'THICKNESS_HEURISTIC'
-        result.detection_confidence = 'LOW'
-        result.detection_notes.append(f'LUG inferred from thickness {result.thickness}" (>=1.0")')
+if thickness > 0.75:
+    if hub_height and 0.20 <= hub_height <= 0.30:
+        return '2PC LUG', 'THICKNESS_HUB_COMBO', 'HIGH'
     else:
-        # Thinner parts typically STUD (insert)
-        result.spacer_type = '2PC STUD'
-        result.detection_method = 'THICKNESS_HEURISTIC'
-        result.detection_confidence = 'LOW'
-        result.detection_notes.append(f'STUD inferred from thickness {result.thickness}" (<1.0")')
+        return '2PC LUG', 'THICKNESS_ANALYSIS', 'MEDIUM'
+```
+- **Confidence**: HIGH (with hub), MEDIUM (without)
+- **Rationale**: STUDs never exceed 0.75" thickness
+
+#### Rule 3: Thickness ≈ 0.75" + Hub ≈ 0.25" = STUD
+```python
+if 0.70 <= thickness <= 0.80:
+    if 0.20 <= hub_height <= 0.30:
+        return '2PC STUD', 'THICKNESS_HUB_COMBO', 'HIGH'
+```
+- **Confidence**: HIGH
+- **Rationale**: Classic STUD pattern (0.75" + 0.25" hub = 1.00" total)
+
+#### Rule 4: Hub Height Alone
+```python
+if 0.20 <= hub_height <= 0.30:
+    return '2PC STUD', 'HUB_HEIGHT_ANALYSIS', 'MEDIUM'
+```
+- **Confidence**: MEDIUM
+- **Rationale**: 0.25" hub suggests STUD if no LUG indicators found
+
+### 2. Integration Point (Lines 237-244)
+
+**Location**: `improved_gcode_parser.py` lines 237-244
+
+```python
+# 5a. Advanced 2PC classification using G-code analysis
+if result.spacer_type == '2PC UNSURE' and lines:
+    twopc_analysis = self._analyze_2pc_gcode(lines, result.thickness, result.hub_height)
+    if twopc_analysis['type']:
+        result.spacer_type = twopc_analysis['type']
+        result.detection_method = twopc_analysis['method']
+        result.detection_confidence = twopc_analysis['confidence']
+        result.detection_notes.append(twopc_analysis['note'])
 ```
 
-**Confidence**: LOW (heuristic based on typical patterns, not definitive)
+**Execution Order**:
+1. Keyword detection (LUG/STUD in title/comments)
+2. G-code comment detection ("LUG PLATE" / "STUD PLATE")
+3. **NEW: Advanced G-code analysis** ← Added here
+4. Thickness heuristic (fallback)
+
+### 3. Thickness Parsing Enhancement (Lines 818-819)
+
+**Location**: `improved_gcode_parser.py` lines 818-819
+
+**Problem**: Titles like "6.25  40MM INNER .75 TH  2PC" had unparsed thickness
+
+**Solution**: Added patterns to recognize "TH" abbreviation
+
+```python
+(r'(\d*\.?\d+)\s+THK?(?:\s|$)', 'IN', False),  # "0.75 THK" or "0.75 TH"
+(r'\.(\d+)\s+TH(?:\s|$)', 'DECIMAL', False),   # ".75 TH" without leading 0
+```
+
+**Special handling**:
+```python
+if unit == 'DECIMAL':
+    thickness_val = float('0.' + thickness_val_str)  # ".75" → 0.75
+```
 
 ## Test Results
 
-**Before**: 124 files classified as "2PC UNSURE" (15.3% of 810 2PC parts)
+**Test File**: `test_2pc_logic_improvements.py`
 
-**After testing improvements**:
-- **84 files** → 2PC LUG (67.7%)
-- **33 files** → 2PC STUD (26.6%)
-- **7 files** → Still UNSURE (5.6%)
-- **0 parse errors**
+**Before**: 7 files classified as "2PC UNSURE"
 
-**Improvement**: 94.4% of previously UNSURE files now classified
+**After improvements**:
+- **3 files** → 2PC LUG (using shelf depth detection)
+- **2 files** → 2PC STUD (using thickness + TH abbreviation fix)
+- **2 files** → Still UNSURE (no thickness data available)
 
-## Remaining 7 UNSURE Files
+**Improvement**: 71.4% of UNSURE files now classified (5/7)
 
-These 7 files lack thickness information or other identifying patterns:
+### Detailed Results:
 
-1. **o62260**: "6.25  40MM INNER .75 TH  2PC" - thickness not parsed
-2. **o62265**: "6.25IN HC 80.5MM OUTER 2PC" - no thickness in title
-3. **o62528**: "6.25 IN 71MM 4.25 2PC" - thickness not parsed (4.25" unusual)
-4. **o62688**: "6.25  40MM OUTER .75 TH  2PC" - thickness not parsed
-5. **o65031**: "6.5IN HC 73.1-80.5 OUTER 2PC" - no thickness in title
-6. **o70302**: "7.0 IN DIA 71.5MM ID 2PC  .55 HC" - thickness not parsed
-7. **o75038**: Empty title - no information available
+| Program | Title | Old | New | Method | Confidence |
+|---------|-------|-----|-----|--------|------------|
+| o62260 | 6.25  40MM INNER .75 TH  2PC | UNSURE | **STUD** | THICKNESS_HEURISTIC | LOW |
+| o62265 | 6.25IN HC 80.5MM OUTER 2PC | UNSURE | **LUG** | GCODE_SHELF_DEPTH | HIGH |
+| o62528 | 6.25 IN 71MM 4.25 2PC | UNSURE | **LUG** | GCODE_SHELF_DEPTH | HIGH |
+| o62688 | 6.25  40MM OUTER .75 TH  2PC | UNSURE | **STUD** | THICKNESS_HEURISTIC | LOW |
+| o65031 | 6.5IN HC 73.1-80.5 OUTER 2PC | UNSURE | UNSURE | KEYWORD | MEDIUM |
+| o70302 | 7.0 IN DIA 71.5MM ID 2PC  .55 HC | UNSURE | **LUG** | GCODE_SHELF_DEPTH | HIGH |
+| o75038 | (empty title) | UNSURE | UNSURE | KEYWORD | LOW |
 
-**Why these remain UNSURE**:
-- Missing or unparsed thickness values
-- "TH" abbreviation for thickness not recognized
-- Title formatting issues
+### Remaining UNSURE Files (2):
 
-**Recommendation**:
-- These 7 files can be manually reviewed and corrected in titles
-- Or parser can be enhanced to recognize "TH" abbreviation
-- 5.6% UNSURE is acceptable (down from 15.3%)
+1. **o65031**: No thickness in title, no shelf pattern detected in G-code
+2. **o75038**: Empty title, no data to parse
+
+**Acceptable**: 2/7 remaining UNSURE (28.6%) is good given lack of data
 
 ## Detection Method Distribution
 
 | Method | Count | Confidence | Notes |
 |--------|-------|------------|-------|
-| THICKNESS_HEURISTIC | 117 | LOW | Used when title/comments don't have clear indicators |
-| GCODE_COMMENT | 0 | HIGH | None found in UNSURE files (they lacked comments) |
-| IS/OS Pattern | 0 | MEDIUM | None found in UNSURE files |
+| GCODE_SHELF_DEPTH | 3 | HIGH | Z-0.31 to Z-0.35 shelf pattern detected |
+| THICKNESS_HEURISTIC | 2 | LOW | Thickness 0.75" = STUD (fallback method) |
 
-**Observation**: All 124 UNSURE files lacked clear title keywords (LUG/STUD/IS/OS) and G-code comments, so they all fell through to the thickness heuristic. This is expected and validates the three-phase approach.
+**Key Success**: 3/5 classified files used HIGH confidence shelf depth detection
 
-## Impact on Database
+## Impact on Database (Projected)
 
-**Before rescan**:
-- 2PC LUG: 408 files (50.4%)
-- 2PC STUD: 278 files (34.3%)
-- 2PC UNSURE: 124 files (15.3%)
+**Current Status** (from database):
+- Total programs: ~6,200
+- 2PC LUG: ~492 files
+- 2PC STUD: ~311 files
+- 2PC UNSURE: 7 files
 
-**After rescan (projected)**:
-- 2PC LUG: 492 files (60.7%) ← +84 files
-- 2PC STUD: 311 files (38.4%) ← +33 files
-- 2PC UNSURE: 7 files (0.9%) ← -117 files
+**After applying improvements**:
+- 2PC LUG: 495 files (+3)
+- 2PC STUD: 313 files (+2)
+- 2PC UNSURE: 2 files (-5, 71.4% reduction)
 
-**Total 2PC parts**: 810 (unchanged)
+## Technical Details
+
+### Z-Depth Extraction Logic
+
+Scans first 100 lines of G-code for Z-depth patterns:
+```python
+z_matches = re.findall(r'Z-(\d+\.?\d*)', line, re.IGNORECASE)
+for z_str in z_matches:
+    z_val = float(z_str)
+    if 0.1 <= z_val <= 1.0:  # Reasonable recess depth range
+        z_depths.append(z_val)
+```
+
+**LUG shelf pattern**: Z-0.31 to Z-0.35 (shelf for STUD insert)
+
+### Thickness + Hub Logic
+
+**STUD pattern**:
+- Thickness: 0.70" - 0.80" (0.75" typical, with tolerance)
+- Hub: 0.20" - 0.30" (0.25" typical, with tolerance)
+- Total: ~1.00" (often written in title as "1.00")
+
+**LUG pattern**:
+- Thickness: >0.75" (typically 1.0" or greater)
+- Hub: 0.20" - 0.30" (same as STUD)
+- Key: If thickness > 0.75" → **always LUG** (STUDs max out at 0.75")
 
 ## Next Steps
 
-1. ✓ Testing complete - 94.4% improvement verified
+1. ✅ Testing complete - 71.4% improvement verified
 2. **Rescan database** to apply improvements to all files
-3. Consider adding "TH" abbreviation recognition for thickness
-4. Consider adding "INNER" pattern detection (many INNER files are likely LUG based on thickness)
-5. Consider adding "OUTER" pattern detection
+3. Consider manual review of 2 remaining UNSURE files
+4. Future: Add special case for 0.5" hub with recess (STUD variant)
+5. Future: Consider "INNER" vs "OUTER" keyword patterns
 
 ## Files Changed
 
 - `improved_gcode_parser.py`:
-  - Lines 503-510: IS/OS pattern detection
-  - Lines 211-229: G-code comment detection
-  - Lines 237-251: Thickness heuristic
+  - Lines 237-244: Integration of advanced analysis
+  - Lines 976-1055: New `_analyze_2pc_gcode()` method
+  - Lines 818-819: Enhanced thickness parsing for "TH" abbreviation
 
 ## Testing
 
-Created `test_2pc_improvements.py` to validate improvements on all 124 UNSURE files.
+Created `test_2pc_logic_improvements.py` to validate improvements on all 7 UNSURE files.
 
-Results: **94.4% success rate** (117/124 files classified)
+**Results**: 71.4% success rate (5/7 files classified)
 
 ## Conclusion
 
-The three-phase 2PC detection improvement successfully reduced UNSURE classifications from 15.3% to 0.9%, a **94.4% improvement**. The combination of:
+The advanced 2PC detection successfully leverages:
+1. **Physical machining patterns** (LUG shelf depth)
+2. **Part dimensional rules** (thickness limits)
+3. **Combined characteristics** (thickness + hub height)
+4. **Improved parsing** (TH abbreviation support)
 
-1. **Title pattern detection** (IS/OS keywords)
-2. **G-code comment analysis** (LUG PLATE / STUD PLATE)
-3. **Thickness heuristic** (>=1.0" = LUG, <1.0" = STUD)
-
-...provides robust classification for nearly all 2PC parts. The remaining 7 UNSURE files (0.9%) have missing or unparsed thickness data and can be handled through manual review or enhanced title parsing.
+This multi-layered approach provides robust classification with proper confidence levels, reducing UNSURE classifications from 7 to 2 files (71.4% improvement).
