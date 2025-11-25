@@ -3234,10 +3234,18 @@ class GCodeDatabaseGUI:
             ]
 
             # Build query with ordering: OD, Type, CB, Thickness
+            # NULLS LAST ensures NULL values don't cause sorting issues
             columns_str = ', '.join(export_columns)
             cursor.execute(f"""
                 SELECT {columns_str} FROM programs
-                ORDER BY outer_diameter, spacer_type, center_bore, thickness
+                ORDER BY
+                    CASE WHEN outer_diameter IS NULL THEN 1 ELSE 0 END,
+                    outer_diameter,
+                    spacer_type,
+                    CASE WHEN center_bore IS NULL THEN 1 ELSE 0 END,
+                    center_bore,
+                    CASE WHEN thickness IS NULL THEN 1 ELSE 0 END,
+                    thickness
             """)
             results = cursor.fetchall()
 
@@ -3385,10 +3393,18 @@ class GCodeDatabaseGUI:
             ]
 
             # Build query with ordering: OD, Type, CB, Thickness
+            # NULLS LAST ensures NULL values don't cause sorting issues
             columns_str = ', '.join(export_columns)
             cursor.execute(f"""
                 SELECT {columns_str} FROM programs
-                ORDER BY outer_diameter, spacer_type, center_bore, thickness
+                ORDER BY
+                    CASE WHEN outer_diameter IS NULL THEN 1 ELSE 0 END,
+                    outer_diameter,
+                    spacer_type,
+                    CASE WHEN center_bore IS NULL THEN 1 ELSE 0 END,
+                    center_bore,
+                    CASE WHEN thickness IS NULL THEN 1 ELSE 0 END,
+                    thickness
             """)
             results = cursor.fetchall()
 
