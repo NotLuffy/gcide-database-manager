@@ -230,14 +230,24 @@ class ImprovedGCodeParser:
             # If title has CB/OB (CB < OB) but no "HC" keyword, check if hub is machined in OP2
             self._detect_hub_from_gcode(result, lines)
 
-            # 8b. Calculate hub height from drill depth if needed (for hub_centric parts)
-            # If title has "HC" but no explicit hub height, calculate from drill depth
-            if result.spacer_type == 'hub_centric' and result.hub_height == 0.50 and result.drill_depth and result.thickness:
-                # Hub height = total_drill - thickness - 0.15 (tolerance)
-                calculated_hub = result.drill_depth - result.thickness - 0.15
-                # Validate it's reasonable (0.20" to 3.50")
-                if 0.2 <= calculated_hub <= 3.5:
-                    result.hub_height = round(calculated_hub, 2)
+            # 8b. Calculate hub height from drill depth if needed
+            # For ANY part type where drill depth suggests a hub exists
+            if result.drill_depth and result.thickness:
+                # Calculate potential hub from drill depth
+                potential_hub = result.drill_depth - result.thickness - 0.15
+
+                # If potential hub is reasonable (0.3" to 3.5"), this might be hub-centric
+                if 0.3 <= potential_hub <= 3.5:
+                    # If not already hub_centric, check if we should reclassify
+                    if result.spacer_type != 'hub_centric':
+                        # Reclassify as hub_centric if drill suggests significant hub
+                        result.spacer_type = 'hub_centric'
+                        result.detection_method = 'DRILL_DEPTH'
+                        result.detection_confidence = 'MEDIUM'
+                        result.hub_height = round(potential_hub, 2)
+                    # If already hub_centric but hub_height is default 0.50, update it
+                    elif not result.hub_height or result.hub_height == 0.50:
+                        result.hub_height = round(potential_hub, 2)
 
             # 9. Validate consistency
             self._validate_consistency(result)
