@@ -208,11 +208,47 @@ class ImprovedGCodeParser:
             result.detection_confidence = type_detection['confidence']
             result.detection_notes = type_detection['notes']
 
+            # 3a. Refine 2PC UNSURE classification using G-code comments
+            # 50% of LUG files have "(LUG PLATE)" comment, 80% of STUD files have "(STUD PLATE)" comment
+            if result.spacer_type == '2PC UNSURE' and lines:
+                # Scan first 20 lines for LUG/STUD PLATE comments
+                for line in lines[:20]:
+                    line_upper = line.upper()
+
+                    if 'LUG PLATE' in line_upper or '(LUG' in line_upper and 'PLATE' in line_upper:
+                        result.spacer_type = '2PC LUG'
+                        result.detection_method = 'GCODE_COMMENT'
+                        result.detection_confidence = 'HIGH'
+                        result.detection_notes.append('LUG detected from G-code comment')
+                        break
+                    elif 'STUD PLATE' in line_upper or '(STUD' in line_upper and 'PLATE' in line_upper:
+                        result.spacer_type = '2PC STUD'
+                        result.detection_method = 'GCODE_COMMENT'
+                        result.detection_confidence = 'HIGH'
+                        result.detection_notes.append('STUD detected from G-code comment')
+                        break
+
             # 4. Extract dimensions from title
             self._extract_dimensions_from_title(result)
 
             # 5. Extract dimensions from G-code
             self._extract_dimensions_from_gcode(result, lines)
+
+            # 5a. Use thickness heuristic for remaining 2PC UNSURE files
+            # LUG parts are typically thicker (>=1.0"), STUD parts are thinner (<1.0")
+            if result.spacer_type == '2PC UNSURE' and result.thickness:
+                if result.thickness >= 1.0:
+                    # Thicker parts typically LUG (receiver)
+                    result.spacer_type = '2PC LUG'
+                    result.detection_method = 'THICKNESS_HEURISTIC'
+                    result.detection_confidence = 'LOW'
+                    result.detection_notes.append(f'LUG inferred from thickness {result.thickness}" (>=1.0")')
+                else:
+                    # Thinner parts typically STUD (insert)
+                    result.spacer_type = '2PC STUD'
+                    result.detection_method = 'THICKNESS_HEURISTIC'
+                    result.detection_confidence = 'LOW'
+                    result.detection_notes.append(f'STUD inferred from thickness {result.thickness}" (<1.0")')
 
             # 6. Extract material
             result.material = self._extract_material(result.title, lines)
@@ -499,6 +535,14 @@ class ImprovedGCodeParser:
                 return '2PC LUG', confidence
             elif 'STUD' in combined_upper:
                 confidence = 'HIGH' if (found_in_title and 'STUD' in title_upper) else 'MEDIUM'
+                return '2PC STUD', confidence
+            elif 'IS 2PC' in combined_upper or 'IS2PC' in combined_upper:
+                # IS = Inner Stud / 2-Piece
+                confidence = 'MEDIUM'
+                return '2PC STUD', confidence
+            elif 'OS 2PC' in combined_upper or 'OS2PC' in combined_upper:
+                # OS = Outer Stud / 2-Piece
+                confidence = 'MEDIUM'
                 return '2PC STUD', confidence
             else:
                 # 2PC without specifying LUG or STUD
