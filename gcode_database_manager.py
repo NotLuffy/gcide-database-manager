@@ -816,7 +816,7 @@ class GCodeDatabaseGUI:
         
         # Treeview
         columns = ("Program #", "Dup", "Title", "Type", "Lathe", "OD", "Thick", "CB", "Hub H", "Hub D",
-                  "CB Bore", "Step D", "Material", "Status", "File")
+                  "CB Bore", "Step D", "Material", "Status", "Warning Details", "File")
 
         self.tree = ttk.Treeview(tree_frame, columns=columns, show="headings",
                                 yscrollcommand=vsb.set, xscrollcommand=hsb.set)
@@ -848,12 +848,17 @@ class GCodeDatabaseGUI:
             "Step D": 70,
             "Material": 100,
             "Status": 90,
+            "Warning Details": 300,
             "File": 200
         }
         
         for col in columns:
             self.tree.heading(col, text=col, command=lambda c=col: self.sort_column(c))
-            self.tree.column(col, width=column_widths[col], anchor="center")
+            # Warning Details and Title should be left-aligned for readability
+            if col in ["Warning Details", "Title", "File"]:
+                self.tree.column(col, width=column_widths[col], anchor="w")
+            else:
+                self.tree.column(col, width=column_widths[col], anchor="center")
         
         # Layout
         self.tree.grid(row=0, column=0, sticky="nsew")
@@ -2931,6 +2936,45 @@ class GCodeDatabaseGUI:
             # Validation status (index 19 - validation_status)
             validation_status = row[19] if len(row) > 19 and row[19] else "N/A"  # Shifted from row[18]
 
+            # Extract warning details based on status type
+            warning_details = "-"
+            if validation_status == 'CRITICAL' and len(row) > 20 and row[20]:  # validation_issues
+                # Parse CRITICAL issues
+                try:
+                    import json
+                    issues = json.loads(row[20])
+                    warning_details = "; ".join(issues[:2])  # Show first 2 issues
+                except:
+                    issues = [i.strip() for i in row[20].split('|') if i.strip()]
+                    warning_details = "; ".join(issues[:2]) if issues else row[20][:100]
+            elif validation_status == 'BORE_WARNING' and len(row) > 24 and row[24]:  # bore_warnings
+                # Parse BORE warnings
+                try:
+                    import json
+                    warns = json.loads(row[24])
+                    warning_details = "; ".join(warns[:2])
+                except:
+                    warns = [i.strip() for i in row[24].split('|') if i.strip()]
+                    warning_details = "; ".join(warns[:2]) if warns else row[24][:100]
+            elif validation_status == 'DIMENSIONAL' and len(row) > 25 and row[25]:  # dimensional_issues
+                # Parse DIMENSIONAL issues
+                try:
+                    import json
+                    dim_issues = json.loads(row[25])
+                    warning_details = "; ".join(dim_issues[:2])
+                except:
+                    dim_issues = [i.strip() for i in row[25].split('|') if i.strip()]
+                    warning_details = "; ".join(dim_issues[:2]) if dim_issues else row[25][:100]
+            elif validation_status == 'WARNING' and len(row) > 21 and row[21]:  # validation_warnings
+                # Parse general WARNING
+                try:
+                    import json
+                    warns = json.loads(row[21])
+                    warning_details = "; ".join(warns[:2])
+                except:
+                    warns = [i.strip() for i in row[21].split('|') if i.strip()]
+                    warning_details = "; ".join(warns[:2]) if warns else row[21][:100]
+
             # Count status
             if validation_status in status_counts:
                 status_counts[validation_status] += 1
@@ -2957,7 +3001,7 @@ class GCodeDatabaseGUI:
 
             self.tree.insert("", "end", values=(
                 program_number, is_dup, title, spacer_type, lathe, od, thick, cb,
-                hub_h, hub_d, cb_bore, step_d, material, validation_status, filename
+                hub_h, hub_d, cb_bore, step_d, material, validation_status, warning_details, filename
             ), tags=(tag,))
 
         # Update count with status breakdown
