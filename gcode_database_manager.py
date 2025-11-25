@@ -3178,7 +3178,7 @@ class GCodeDatabaseGUI:
             DetailsWindow(self, result)
             
     def export_csv(self):
-        """Export database to CSV"""
+        """Export database to CSV with organized columns"""
         import csv
 
         filepath = filedialog.asksaveasfilename(
@@ -3190,25 +3190,78 @@ class GCodeDatabaseGUI:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
 
-            # Get column names from database
-            cursor.execute("PRAGMA table_info(programs)")
-            columns = [col[1] for col in cursor.fetchall()]
+            # Define organized column order - dimensions and key info only
+            # Grouped by: Identity, Dimensions, Type/Classification, Status
+            export_columns = [
+                # Identity
+                'program_number',
+                'filename',
+                'title',
 
-            # Get all data
-            cursor.execute("SELECT * FROM programs ORDER BY program_number")
+                # Dimensions (most important)
+                'outer_diameter',
+                'thickness',
+                'center_bore',
+                'hub_diameter',
+                'hub_height',
+                'counter_bore_diameter',
+                'counter_bore_depth',
+
+                # Classification
+                'spacer_type',
+                'material',
+                'lathe',
+
+                # Status (summary only)
+                'validation_status',
+                'detection_confidence',
+
+                # Metadata
+                'last_modified'
+            ]
+
+            # Build query with selected columns
+            columns_str = ', '.join(export_columns)
+            cursor.execute(f"SELECT {columns_str} FROM programs ORDER BY program_number")
             results = cursor.fetchall()
 
             # Write CSV with proper escaping
             with open(filepath, 'w', newline='', encoding='utf-8') as f:
                 writer = csv.writer(f)
 
-                # Header
-                writer.writerow(columns)
+                # Header - make it more readable
+                header = [
+                    'Program #',
+                    'Filename',
+                    'Title',
+                    'OD (in)',
+                    'Thickness (in)',
+                    'CB (mm)',
+                    'OB/Hub (mm)',
+                    'Hub Height (in)',
+                    'Counterbore (mm)',
+                    'CB Depth (in)',
+                    'Type',
+                    'Material',
+                    'Lathe',
+                    'Status',
+                    'Confidence',
+                    'Last Modified'
+                ]
+                writer.writerow(header)
 
                 # Data
                 for row in results:
-                    # Convert None to empty string
-                    cleaned_row = [str(x) if x is not None else "" for x in row]
+                    # Convert None to empty string, format numbers nicely
+                    cleaned_row = []
+                    for val in row:
+                        if val is None:
+                            cleaned_row.append("")
+                        elif isinstance(val, float):
+                            # Format floats to 2 decimal places
+                            cleaned_row.append(f"{val:.2f}")
+                        else:
+                            cleaned_row.append(str(val))
                     writer.writerow(cleaned_row)
 
             conn.close()
