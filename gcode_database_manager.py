@@ -3485,7 +3485,7 @@ class GCodeDatabaseGUI:
 
         # Header - same as Excel export
         headers = [
-            'Program #', 'Filename', 'Title',
+            'Program #', 'Title',
             'OD (in)', 'Type', 'CB (mm)', 'Thickness (in)',
             'Hub (mm)', 'Hub Height (in)', 'Counterbore (mm)', 'CB Depth (in)',
             'Material', 'Lathe',
