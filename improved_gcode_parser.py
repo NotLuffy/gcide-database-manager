@@ -471,6 +471,14 @@ class ImprovedGCodeParser:
             confidence = 'HIGH' if found_in_title else 'MEDIUM'
             return 'step', confidence
 
+        # STEP pattern with dash: "90MM-74MM" or "90-74 MM" (counterbore-CB format)
+        # Dash is used instead of slash in some titles
+        # Pattern: number-number MM (with optional spaces)
+        if re.search(r'\d+\.?\d*\s*MM?\s*-\s*\d+\.?\d*\s*MM?', combined_upper, re.IGNORECASE):
+            found_in_title = re.search(r'\d+\.?\d*\s*MM?\s*-\s*\d+\.?\d*\s*MM?', title_upper, re.IGNORECASE) is not None
+            confidence = 'MEDIUM' if found_in_title else 'LOW'
+            return 'step', confidence
+
         # Steel Ring indicators
         # Patterns: "STEEL S-1", "HCS-1", "STEEL HCS-2", "STEEL HCS-1"
         if re.search(r'STEEL\s+S-\d|HCS-\d|STEEL\s+HCS-\d', combined_upper):
