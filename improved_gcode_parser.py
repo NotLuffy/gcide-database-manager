@@ -226,7 +226,11 @@ class ImprovedGCodeParser:
             # 8. Extract drill depth
             result.drill_depth = self._extract_drill_depth(lines)
 
-            # 8a. Calculate hub height from drill depth if needed (for hub_centric parts)
+            # 8a. Detect hub-centric from G-code if not detected from title
+            # If title has CB/OB (CB < OB) but no "HC" keyword, check if hub is machined in OP2
+            self._detect_hub_from_gcode(result, lines)
+
+            # 8b. Calculate hub height from drill depth if needed (for hub_centric parts)
             # If title has "HC" but no explicit hub height, calculate from drill depth
             if result.spacer_type == 'hub_centric' and result.hub_height == 0.50 and result.drill_depth and result.thickness:
                 # Hub height = total_drill - thickness - 0.15 (tolerance)
@@ -1645,6 +1649,104 @@ class ImprovedGCodeParser:
 
         # Single operation drilling - return deepest drill
         return max(d for d, _ in drill_depths)
+
+    def _detect_hub_from_gcode(self, result: GCodeParseResult, lines: List[str]):
+        """
+        Detect hub-centric parts from G-code even without "HC" in title
+
+        Logic:
+        1. If already classified as hub_centric (has "HC" in title) → skip
+        2. Check if title has CB/OB where CB < OB (indicates potential hub)
+        3. Look for OP2 facing operations that create a raised hub
+        4. If hub detected in OP2 → reclassify as hub_centric
+        5. If no hub but has CB/OB → could be step piece
+
+        Hub pattern in OP2:
+        - Progressive facing: Z-0.25, Z-0.5, Z-0.75, ... Z-2.0
+        - Large X values (> 4.0") indicate facing the outer diameter
+        - Deep Z values (0.5" to 3.5") indicate hub height
+        """
+        # Skip if already hub_centric
+        if result.spacer_type == 'hub_centric':
+            return
+
+        # Skip if no CB/OB to check
+        if not result.center_bore or not result.hub_diameter:
+            return
+
+        # Check if CB < OB (potential for hub)
+        cb_mm = result.center_bore
+        ob_mm = result.hub_diameter
+
+        if cb_mm >= ob_mm:
+            # CB >= OB means no hub (standard spacer or step)
+            return
+
+        # Look for OP2 facing operations
+        in_op2 = False
+        facing_z_values = []
+        last_x_value = None  # Track modal X position
+
+        for i, line in enumerate(lines):
+            line_upper = line.upper()
+
+            # Detect OP2 section
+            if 'OP2' in line_upper or '(OP2)' in line_upper:
+                in_op2 = True
+
+            if in_op2:
+                stripped = line.strip()
+
+                # Track X movements for modal programming
+                x_match = re.search(r'X\s*([\d.]+)', stripped, re.IGNORECASE)
+                if x_match:
+                    last_x_value = float(x_match.group(1))
+
+                # Look for G01 facing moves
+                if stripped.startswith('G01'):
+                    z_match = re.search(r'Z\s*-\s*([\d.]+)', stripped, re.IGNORECASE)
+
+                    if z_match:
+                        z_val = float(z_match.group(1))
+
+                        # Check if Z is in hub range
+                        if 0.2 <= z_val <= 3.5:
+                            # Pattern 1: X and Z on same line
+                            if x_match:
+                                x_val = float(x_match.group(1))
+                                if x_val > 4.0:
+                                    facing_z_values.append(z_val)
+                            # Pattern 2: Z on this line, X on next line (modal programming)
+                            # Check next line for X movement to small value (hub/center)
+                            elif i + 1 < len(lines):
+                                next_line = lines[i + 1].strip()
+                                next_x_match = re.search(r'^X\s*([\d.]+)', next_line, re.IGNORECASE)
+                                if next_x_match:
+                                    next_x_val = float(next_x_match.group(1))
+                                    # If next X is small (< 10"), this is facing to hub diameter
+                                    # The Z-depth before moving to small X indicates hub height
+                                    if next_x_val < 10.0:
+                                        facing_z_values.append(z_val)
+                            # Pattern 3: Progressive Z using last X position
+                            elif last_x_value and last_x_value > 4.0:
+                                facing_z_values.append(z_val)
+
+        # If we found significant facing operations in OP2, it's hub-centric
+        if facing_z_values:
+            # Need at least 3 progressive facing moves to confirm hub
+            if len(facing_z_values) >= 3:
+                max_hub_height = max(facing_z_values)
+
+                # Validate hub height is reasonable
+                if 0.3 <= max_hub_height <= 3.5:
+                    # Reclassify as hub_centric
+                    result.spacer_type = 'hub_centric'
+                    result.detection_method = 'GCODE'
+                    result.detection_confidence = 'MEDIUM'
+
+                    # Set hub height from OP2 facing
+                    if not result.hub_height or result.hub_height == 0.50:
+                        result.hub_height = round(max_hub_height, 2)
 
     def _validate_consistency(self, result: GCodeParseResult):
         """
