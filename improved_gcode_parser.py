@@ -226,6 +226,15 @@ class ImprovedGCodeParser:
             # 8. Extract drill depth
             result.drill_depth = self._extract_drill_depth(lines)
 
+            # 8a. Calculate hub height from drill depth if needed (for hub_centric parts)
+            # If title has "HC" but no explicit hub height, calculate from drill depth
+            if result.spacer_type == 'hub_centric' and result.hub_height == 0.50 and result.drill_depth and result.thickness:
+                # Hub height = total_drill - thickness - 0.15 (tolerance)
+                calculated_hub = result.drill_depth - result.thickness - 0.15
+                # Validate it's reasonable (0.20" to 3.50")
+                if 0.2 <= calculated_hub <= 3.5:
+                    result.hub_height = round(calculated_hub, 2)
+
             # 9. Validate consistency
             self._validate_consistency(result)
 
@@ -871,25 +880,22 @@ class ImprovedGCodeParser:
                 except:
                     pass
 
-            # Pattern 2: Single value patterns "HC 0.5" or "0.5 HC" (no thickness before/after)
+            # Pattern 2: Single value pattern "HC 0.5" (only value AFTER HC)
+            # IMPORTANT: Do NOT match value before HC (that's the thickness)
             if not result.hub_height:
-                hub_patterns = [
-                    r'HC\s+(\d+\.?\d*)',  # HC 0.5 or HC 1.
-                    r'(\d+\.?\d*)\s+HC',  # 0.5 HC or 1. HC (only if not part of dual pattern)
-                ]
-                for pattern in hub_patterns:
-                    hub_match = re.search(pattern, title, re.IGNORECASE)
-                    if hub_match:
-                        try:
-                            hub_val = float(hub_match.group(1))
-                            # Hub height can be up to 3.5" for larger parts like 13" rounds
-                            if 0.2 <= hub_val <= 3.5:
-                                result.hub_height = hub_val
-                                break
-                        except:
-                            pass
+                # Only match HC followed by a value (e.g., "HC 0.5", "HC.5")
+                hub_match = re.search(r'HC\s*(\d*\.?\d+)', title, re.IGNORECASE)
+                if hub_match:
+                    try:
+                        hub_val = float(hub_match.group(1))
+                        # Hub height can be up to 3.5" for larger parts like 13" rounds
+                        if 0.2 <= hub_val <= 3.5:
+                            result.hub_height = hub_val
+                    except:
+                        pass
 
-            # If not found in title, use standard 0.50" hub height
+            # If not found in title, use standard 0.50" hub height as placeholder
+            # This will be recalculated from drill depth later if available
             if not result.hub_height:
                 result.hub_height = 0.50
 
