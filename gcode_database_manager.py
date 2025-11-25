@@ -3191,9 +3191,14 @@ class GCodeDatabaseGUI:
                 "Install it with:\npip install openpyxl")
             return
 
+        from datetime import datetime
+        default_filename = f"GCode_Programs_{datetime.now().strftime('%Y%m%d')}.xlsx"
+
         filepath = filedialog.asksaveasfilename(
             defaultextension=".xlsx",
-            filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")]
+            initialfile=default_filename,
+            filetypes=[("Excel Workbook", "*.xlsx"), ("All files", "*.*")],
+            title="Export to Excel - By Round Size"
         )
 
         if filepath:
@@ -3355,9 +3360,14 @@ class GCodeDatabaseGUI:
                 "Install it with:\npip install openpyxl")
             return
 
+        from datetime import datetime
+        default_filename = f"GCode_GoogleSheets_{datetime.now().strftime('%Y%m%d')}.xlsx"
+
         filepath = filedialog.asksaveasfilename(
             defaultextension=".xlsx",
-            filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")]
+            initialfile=default_filename,
+            filetypes=[("Excel Workbook", "*.xlsx"), ("All files", "*.*")],
+            title="Export for Google Sheets"
         )
 
         if filepath:
