@@ -1558,7 +1558,7 @@ class ImprovedGCodeParser:
 
     def _extract_drill_depth(self, lines: List[str]) -> Optional[float]:
         """
-        Extract drill depth from G81/G83 commands
+        Extract drill depth from G81/G83 commands or G01 center drilling
 
         For thick parts (>4.00" total), drilling is split into two operations:
         - OP1: Max drill depth Z-4.15" (machine limitation)
@@ -1569,9 +1569,15 @@ class ImprovedGCodeParser:
         - OP2: Z-0.25 (includes 0.15" clearance, so 4.15 + 0.10 = 4.25")
 
         This function detects both operations and sums them.
+
+        Also detects G01 drilling pattern in OP2 (used for shallow depths):
+        - T101 (DRILL)
+        - G00 X0 (center position)
+        - G01 Z-0.5 (feed to depth)
         """
         drill_depths = []
         in_op2 = False
+        drill_tool_active = False
 
         for i, line in enumerate(lines):
             line_upper = line.upper()
@@ -1580,12 +1586,36 @@ class ImprovedGCodeParser:
             if 'OP2' in line_upper or '(OP2)' in line_upper:
                 in_op2 = True
 
+            # Track if DRILL tool is active
+            if 'DRILL' in line_upper and ('T1' in line_upper or 'T2' in line_upper):
+                drill_tool_active = True
+            elif line_upper.strip().startswith('T') and 'DRILL' not in line_upper:
+                # Different tool activated, DRILL no longer active
+                drill_tool_active = False
+
             stripped = line.strip()
+
+            # Standard drill cycles (G81/G83)
             if stripped.startswith(('G81', 'G83')):
                 z_match = re.search(r'Z\s*-\s*([\d.]+)', stripped, re.IGNORECASE)
                 if z_match:
                     depth = float(z_match.group(1))
                     drill_depths.append((depth, in_op2))
+
+            # G01 drilling (common in OP2 for shallow depths)
+            # Pattern: DRILL tool + X0 (center) + G01 Z-depth
+            elif in_op2 and drill_tool_active and stripped.startswith('G01'):
+                # Check if at center (X0 or no X movement)
+                x_match = re.search(r'X\s*([\d.]+)', stripped, re.IGNORECASE)
+                z_match = re.search(r'Z\s*-\s*([\d.]+)', stripped, re.IGNORECASE)
+
+                if z_match:
+                    # If no X or X is 0, this is center drilling
+                    if not x_match or (x_match and abs(float(x_match.group(1))) < 0.1):
+                        depth = float(z_match.group(1))
+                        # Only add if it's a reasonable drill depth (not a tiny facing move)
+                        if depth >= 0.15:
+                            drill_depths.append((depth, in_op2))
 
         if not drill_depths:
             return None
@@ -1728,11 +1758,12 @@ class ImprovedGCodeParser:
             # intentionally drills deeper to ensure punch-through
             diff = calculated_thickness - title_thickness
 
-            # Two-operation drilling gets ±0.20" tolerance (OP2 drills extra to punch through)
+            # Two-operation drilling gets ±0.30" tolerance (OP2 drills extra to punch through)
+            # OP2 must drill at least 0.10" to breach, but often drills 0.25-0.50" to ensure complete separation
             # Standard drilling gets ±0.12" tolerance (drills may go slightly deeper for safety)
             is_two_operation = result.drill_depth and result.drill_depth > 4.2
-            critical_tolerance = 0.20 if is_two_operation else 0.12
-            warning_tolerance = 0.16 if is_two_operation else 0.08
+            critical_tolerance = 0.30 if is_two_operation else 0.12
+            warning_tolerance = 0.25 if is_two_operation else 0.08
 
             if abs(diff) > critical_tolerance:  # Beyond tolerance is critical
                 # Check if this might be a mislabeled title
