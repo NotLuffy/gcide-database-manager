@@ -1,0 +1,25 @@
+# G-Code Database Manager - Python Dependencies
+
+# Minimum Python version: 3.7
+
+# Standard library modules (included with Python):
+# - tkinter (GUI framework - may need separate install on Linux)
+# - sqlite3 (database engine)
+# - re (regular expressions)
+# - os, sys (operating system interface)
+# - dataclasses (data structures, Python 3.7+)
+# - typing (type hints)
+# - datetime (date/time handling)
+
+# External packages (install with pip):
+openpyxl>=3.0.0    # For Excel export with multiple sheets
+
+# Installation:
+# pip install -r requirements.txt
+
+# Installation verification:
+# python --version        # Should show 3.7 or higher
+# python -m tkinter       # Should open a test window
+
+# Linux users may need to install tkinter separately:
+# sudo apt-get install python3-tk

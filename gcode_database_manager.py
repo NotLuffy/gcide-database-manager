@@ -3178,12 +3178,18 @@ class GCodeDatabaseGUI:
             DetailsWindow(self, result)
             
     def export_csv(self):
-        """Export database to CSV with organized columns"""
-        import csv
+        """Export database to Excel with separate sheets for each round size"""
+        try:
+            import openpyxl
+        except ImportError:
+            messagebox.showerror("Missing Library",
+                "openpyxl is required for Excel export.\n\n"
+                "Install it with:\npip install openpyxl")
+            return
 
         filepath = filedialog.asksaveasfilename(
-            defaultextension=".csv",
-            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
+            defaultextension=".xlsx",
+            filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")]
         )
 
         if filepath:
@@ -3191,24 +3197,23 @@ class GCodeDatabaseGUI:
             cursor = conn.cursor()
 
             # Define organized column order - dimensions and key info only
-            # Grouped by: Identity, Dimensions, Type/Classification, Status
             export_columns = [
                 # Identity
                 'program_number',
                 'filename',
                 'title',
 
-                # Dimensions (most important)
+                # Dimensions (sorted by OD, Type, CB, Thickness)
                 'outer_diameter',
-                'thickness',
+                'spacer_type',
                 'center_bore',
+                'thickness',
                 'hub_diameter',
                 'hub_height',
                 'counter_bore_diameter',
                 'counter_bore_depth',
 
                 # Classification
-                'spacer_type',
                 'material',
                 'lathe',
 
@@ -3220,52 +3225,123 @@ class GCodeDatabaseGUI:
                 'last_modified'
             ]
 
-            # Build query with selected columns
+            # Build query with ordering: OD, Type, CB, Thickness
             columns_str = ', '.join(export_columns)
-            cursor.execute(f"SELECT {columns_str} FROM programs ORDER BY program_number")
+            cursor.execute(f"""
+                SELECT {columns_str} FROM programs
+                ORDER BY outer_diameter, spacer_type, center_bore, thickness
+            """)
             results = cursor.fetchall()
 
-            # Write CSV with proper escaping
-            with open(filepath, 'w', newline='', encoding='utf-8') as f:
-                writer = csv.writer(f)
+            # Create Excel workbook
+            wb = openpyxl.Workbook()
+            wb.remove(wb.active)  # Remove default sheet
 
-                # Header - make it more readable
-                header = [
-                    'Program #',
-                    'Filename',
-                    'Title',
-                    'OD (in)',
-                    'Thickness (in)',
-                    'CB (mm)',
-                    'OB/Hub (mm)',
-                    'Hub Height (in)',
-                    'Counterbore (mm)',
-                    'CB Depth (in)',
-                    'Type',
-                    'Material',
-                    'Lathe',
-                    'Status',
-                    'Confidence',
-                    'Last Modified'
-                ]
-                writer.writerow(header)
+            # Define standard round sizes
+            round_sizes = [
+                ('5.75"', 5.75),
+                ('6.00"', 6.00),
+                ('6.25"', 6.25),
+                ('6.50"', 6.50),
+                ('7.00"', 7.00),
+                ('7.50"', 7.50),
+                ('8.00"', 8.00),
+                ('9.00"', 9.00),
+                ('9.50"', 9.50),
+                ('10.00"', 10.00),
+                ('13.00"', 13.00),
+            ]
 
-                # Data
-                for row in results:
-                    # Convert None to empty string, format numbers nicely
-                    cleaned_row = []
-                    for val in row:
-                        if val is None:
-                            cleaned_row.append("")
-                        elif isinstance(val, float):
-                            # Format floats to 2 decimal places
-                            cleaned_row.append(f"{val:.2f}")
-                        else:
-                            cleaned_row.append(str(val))
-                    writer.writerow(cleaned_row)
+            # Group programs by OD
+            programs_by_od = {}
+            for row in results:
+                od = row[3]  # outer_diameter column
+                if od not in programs_by_od:
+                    programs_by_od[od] = []
+                programs_by_od[od].append(row)
 
+            # Create sheet for each round size
+            for sheet_name, od_value in round_sizes:
+                if od_value in programs_by_od:
+                    ws = wb.create_sheet(title=sheet_name)
+                    self._write_excel_sheet(ws, programs_by_od[od_value])
+
+            # Create "Other Sizes" sheet for non-standard sizes
+            other_ods = [od for od in programs_by_od.keys()
+                        if od not in [size[1] for size in round_sizes]]
+            if other_ods:
+                ws = wb.create_sheet(title="Other Sizes")
+                other_programs = []
+                for od in sorted(other_ods):
+                    other_programs.extend(programs_by_od[od])
+                self._write_excel_sheet(ws, other_programs)
+
+            # Save workbook
+            wb.save(filepath)
             conn.close()
-            messagebox.showinfo("Export Complete", f"Exported {len(results)} records to:\n{filepath}")
+
+            total_sheets = len(wb.sheetnames)
+            messagebox.showinfo("Export Complete",
+                f"Exported {len(results)} records to {total_sheets} sheets:\n{filepath}")
+
+    def _write_excel_sheet(self, ws, data):
+        """Write data to an Excel sheet with formatting"""
+        from openpyxl.styles import Font, PatternFill, Alignment
+
+        # Header
+        headers = [
+            'Program #',
+            'Filename',
+            'Title',
+            'OD (in)',
+            'Type',
+            'CB (mm)',
+            'Thickness (in)',
+            'Hub (mm)',
+            'Hub Height (in)',
+            'Counterbore (mm)',
+            'CB Depth (in)',
+            'Material',
+            'Lathe',
+            'Status',
+            'Confidence',
+            'Last Modified'
+        ]
+
+        # Write header with formatting
+        for col, header in enumerate(headers, start=1):
+            cell = ws.cell(row=1, column=col, value=header)
+            cell.font = Font(bold=True)
+            cell.fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+
+        # Write data
+        for row_idx, row_data in enumerate(data, start=2):
+            for col_idx, value in enumerate(row_data, start=1):
+                cell = ws.cell(row=row_idx, column=col_idx)
+
+                if value is None:
+                    cell.value = ""
+                elif isinstance(value, float):
+                    # Format floats to 2 decimal places
+                    cell.value = round(value, 2)
+                    cell.number_format = '0.00'
+                else:
+                    cell.value = str(value)
+
+        # Auto-adjust column widths
+        for column in ws.columns:
+            max_length = 0
+            column_letter = column[0].column_letter
+            for cell in column:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except:
+                    pass
+            adjusted_width = min(max_length + 2, 50)  # Cap at 50
+            ws.column_dimensions[column_letter].width = adjusted_width
 
     def export_unused_numbers(self):
         """Export a CSV of unused program numbers within standard ranges"""
