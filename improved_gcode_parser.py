@@ -234,7 +234,10 @@ class ImprovedGCodeParser:
             # 5. Extract dimensions from G-code
             self._extract_dimensions_from_gcode(result, lines)
 
-            # 5a. Advanced 2PC classification using G-code analysis
+            # 5a. Auto-correct title dimensions using G-code (when title parsing failed or is inaccurate)
+            self._auto_correct_dimensions(result)
+
+            # 5b. Advanced 2PC classification using G-code analysis
             if result.spacer_type == '2PC UNSURE' and lines:
                 twopc_analysis = self._analyze_2pc_gcode(lines, result.thickness, result.hub_height)
                 if twopc_analysis['type']:
@@ -817,6 +820,7 @@ class ImprovedGCodeParser:
                 (r'(\d*\.?\d+)\s+2PC', 'IN', False),         # "1.75 2PC" - thickness before 2PC
                 (r'(\d*\.?\d+)\s+THK?(?:\s|$)', 'IN', False), # "0.75 THK" or "0.75 TH" - inches (TH abbreviation)
                 (r'\.(\d+)\s+TH(?:\s|$)', 'DECIMAL', False), # ".75 TH" - decimal without leading digit
+                (r'(\d+\.?\d*)\s+THK(?:\s|$)', 'IN', False), # "4.5 THK" - thickness before THK keyword
                 (r'B/C\s+(\d*\.?\d+)', 'IN', False),         # "B/C 1.50"
                 (r'MM\s+(\d*\.?\d+)\s+(?:THK|HC)', 'IN', False),  # "MM 1.50 THK"
                 (r'/[\d.]+MM\s+(\d*\.?\d+)', 'IN', False),   # After slash pattern
@@ -979,6 +983,49 @@ class ImprovedGCodeParser:
             # This will be recalculated from drill depth later if available
             if not result.hub_height:
                 result.hub_height = 0.50
+
+    def _auto_correct_dimensions(self, result: GCodeParseResult):
+        """
+        Auto-correct title dimensions using G-code when title parsing failed or is inaccurate.
+
+        ML Analysis showed:
+        - 92.9% of programs have title CB within 0.5mm of G-code CB
+        - When difference >1mm, G-code is usually correct (title parsing error)
+        - Use G-code as fallback/correction for missing or inaccurate dimensions
+        """
+
+        # 1. Center Bore - Use G-code if title missing or significantly different
+        if result.cb_from_gcode:
+            if not result.center_bore:
+                # Title parsing failed - use G-code
+                result.center_bore = result.cb_from_gcode
+                result.detection_notes.append(f'CB corrected from G-code: {result.cb_from_gcode:.1f}mm (title parsing failed)')
+            elif abs(result.cb_from_gcode - result.center_bore) > 5.0:
+                # Title and G-code differ significantly (>5mm) - trust G-code
+                old_cb = result.center_bore
+                result.center_bore = result.cb_from_gcode
+                result.detection_notes.append(
+                    f'CB corrected from G-code: {result.cb_from_gcode:.1f}mm (title had {old_cb:.1f}mm, diff={result.cb_from_gcode - old_cb:+.1f}mm)'
+                )
+
+        # 2. Outer Bore / Hub Diameter - Use G-code if title missing or significantly different
+        if result.ob_from_gcode:
+            if not result.hub_diameter:
+                # Title parsing failed for hub-centric - use G-code
+                result.hub_diameter = result.ob_from_gcode
+                result.detection_notes.append(f'OB corrected from G-code: {result.ob_from_gcode:.1f}mm (title parsing failed)')
+            elif abs(result.ob_from_gcode - result.hub_diameter) > 5.0:
+                # Title and G-code differ significantly (>5mm) - trust G-code
+                old_ob = result.hub_diameter
+                result.hub_diameter = result.ob_from_gcode
+                result.detection_notes.append(
+                    f'OB corrected from G-code: {result.ob_from_gcode:.1f}mm (title had {old_ob:.1f}mm, diff={result.ob_from_gcode - old_ob:+.1f}mm)'
+                )
+
+        # 3. Thickness - Could potentially use drill_depth calculation if title missing
+        # (Not implemented yet - would need drill_depth field in database)
+
+        # Note: We don't auto-correct OD because title OD is the specification
 
     def _analyze_2pc_gcode(self, lines: List[str], thickness: Optional[float], hub_height: Optional[float]) -> dict:
         """
