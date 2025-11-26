@@ -986,46 +986,35 @@ class ImprovedGCodeParser:
 
     def _auto_correct_dimensions(self, result: GCodeParseResult):
         """
-        Auto-correct title dimensions using G-code when title parsing failed or is inaccurate.
+        Auto-correct title dimensions using G-code when title parsing failed.
+
+        IMPORTANT: Only use G-code as fallback when title missing, NOT for correction.
+        Differences >0.1mm between title and G-code often indicate CB/OB confusion in
+        G-code extraction, not title parsing errors.
 
         ML Analysis showed:
         - 92.9% of programs have title CB within 0.5mm of G-code CB
-        - When difference >1mm, G-code is usually correct (title parsing error)
-        - Use G-code as fallback/correction for missing or inaccurate dimensions
+        - When they differ significantly, it's often G-code extracting wrong bore
+        - Example: Title "141.3/170MM" (CB/OB) but G-code finds 169.9mm for both
         """
 
-        # 1. Center Bore - Use G-code if title missing or significantly different
-        if result.cb_from_gcode:
-            if not result.center_bore:
-                # Title parsing failed - use G-code
-                result.center_bore = result.cb_from_gcode
-                result.detection_notes.append(f'CB corrected from G-code: {result.cb_from_gcode:.1f}mm (title parsing failed)')
-            elif abs(result.cb_from_gcode - result.center_bore) > 5.0:
-                # Title and G-code differ significantly (>5mm) - trust G-code
-                old_cb = result.center_bore
-                result.center_bore = result.cb_from_gcode
-                result.detection_notes.append(
-                    f'CB corrected from G-code: {result.cb_from_gcode:.1f}mm (title had {old_cb:.1f}mm, diff={result.cb_from_gcode - old_cb:+.1f}mm)'
-                )
+        # 1. Center Bore - ONLY use G-code if title completely missing
+        if result.cb_from_gcode and not result.center_bore:
+            # Title parsing failed - use G-code as fallback
+            result.center_bore = result.cb_from_gcode
+            result.detection_notes.append(f'CB from G-code: {result.cb_from_gcode:.1f}mm (title missing)')
 
-        # 2. Outer Bore / Hub Diameter - Use G-code if title missing or significantly different
-        if result.ob_from_gcode:
-            if not result.hub_diameter:
-                # Title parsing failed for hub-centric - use G-code
-                result.hub_diameter = result.ob_from_gcode
-                result.detection_notes.append(f'OB corrected from G-code: {result.ob_from_gcode:.1f}mm (title parsing failed)')
-            elif abs(result.ob_from_gcode - result.hub_diameter) > 5.0:
-                # Title and G-code differ significantly (>5mm) - trust G-code
-                old_ob = result.hub_diameter
-                result.hub_diameter = result.ob_from_gcode
-                result.detection_notes.append(
-                    f'OB corrected from G-code: {result.ob_from_gcode:.1f}mm (title had {old_ob:.1f}mm, diff={result.ob_from_gcode - old_ob:+.1f}mm)'
-                )
+        # 2. Outer Bore / Hub Diameter - ONLY use G-code if title completely missing
+        if result.ob_from_gcode and not result.hub_diameter:
+            # Title parsing failed for hub-centric - use G-code as fallback
+            result.hub_diameter = result.ob_from_gcode
+            result.detection_notes.append(f'OB from G-code: {result.ob_from_gcode:.1f}mm (title missing)')
 
-        # 3. Thickness - Could potentially use drill_depth calculation if title missing
-        # (Not implemented yet - would need drill_depth field in database)
-
-        # Note: We don't auto-correct OD because title OD is the specification
+        # Note: We DON'T auto-correct existing title values because:
+        # - Title is the specification (what should be made)
+        # - G-code CB/OB extraction sometimes confuses which bore is which
+        # - Differences >0.1mm suggest G-code extraction error, not title error
+        # - Validation system will flag significant mismatches for review
 
     def _analyze_2pc_gcode(self, lines: List[str], thickness: Optional[float], hub_height: Optional[float]) -> dict:
         """
