@@ -52,7 +52,7 @@ class MLAnalyzer:
                 thickness, center_bore, hub_diameter, hub_height,
                 counter_bore_diameter, counter_bore_depth,
                 material, validation_status, detection_confidence,
-                cb_from_gcode, ob_from_gcode, drill_depth
+                cb_from_gcode, ob_from_gcode, lathe
             FROM programs
         """, conn)
 
@@ -159,7 +159,7 @@ class MLAnalyzer:
 
         # Features that might distinguish LUG from STUD
         feature_cols = ['outer_diameter', 'thickness', 'center_bore', 'hub_diameter',
-                       'hub_height', 'drill_depth', 'cb_from_gcode']
+                       'hub_height', 'counter_bore_depth', 'cb_from_gcode', 'ob_from_gcode']
 
         # Prepare data
         X = twopc[feature_cols].fillna(0)
