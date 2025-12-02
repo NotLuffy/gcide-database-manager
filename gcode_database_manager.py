@@ -203,9 +203,18 @@ class GCodeDatabaseGUI:
         self.db_path = "gcode_database.db"
         self.init_database()
 
+        # User session (will be set after login, for now use default admin)
+        self.current_user = None
+        self.current_user_id = None
+        self.current_username = "admin"  # Default to admin for now
+        self.current_user_role = "admin"
+
         # Configuration
         self.config_file = "gcode_manager_config.json"
         self.load_config()
+
+        # Initialize repository system
+        self.init_repository()
 
         # Initialize improved parser
         self.parser = ImprovedGCodeParser()
@@ -222,6 +231,10 @@ class GCodeDatabaseGUI:
 
         # Build GUI
         self.setup_gui()
+
+        # Enable drag and drop
+        self.setup_drag_drop()
+
         self.refresh_results()
         
     def init_database(self):
@@ -322,10 +335,557 @@ class GCodeDatabaseGUI:
             cursor.execute("ALTER TABLE programs ADD COLUMN duplicate_group TEXT")  # Group ID for related duplicates
         except:
             pass
+        try:
+            cursor.execute("ALTER TABLE programs ADD COLUMN current_version INTEGER DEFAULT 1")  # Current version number
+        except:
+            pass
+        try:
+            cursor.execute("ALTER TABLE programs ADD COLUMN modified_by TEXT")  # Last user who modified
+        except:
+            pass
+        try:
+            cursor.execute("ALTER TABLE programs ADD COLUMN is_managed INTEGER DEFAULT 0")  # 1 if in repository, 0 if external
+        except:
+            pass
+
+        # Create users table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password_hash TEXT,
+                full_name TEXT,
+                role TEXT DEFAULT 'viewer',
+                email TEXT,
+                date_created TEXT,
+                last_login TEXT,
+                is_active INTEGER DEFAULT 1
+            )
+        ''')
+
+        # Create default admin user if no users exist
+        cursor.execute("SELECT COUNT(*) FROM users")
+        if cursor.fetchone()[0] == 0:
+            from datetime import datetime
+            cursor.execute("""
+                INSERT INTO users (username, password_hash, full_name, role, date_created, is_active)
+                VALUES ('admin', NULL, 'Administrator', 'admin', ?, 1)
+            """, (datetime.now().isoformat(),))
+
+        # Create program_versions table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS program_versions (
+                version_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                program_number TEXT NOT NULL,
+                version_number TEXT NOT NULL,
+                version_tag TEXT,
+                file_content TEXT,
+                file_hash TEXT,
+                file_path TEXT,
+                date_created TEXT,
+                created_by TEXT,
+                change_summary TEXT,
+                dimensions_snapshot TEXT,
+                FOREIGN KEY (program_number) REFERENCES programs(program_number)
+            )
+        ''')
+
+        # Add file_path column to existing program_versions table
+        try:
+            cursor.execute("ALTER TABLE program_versions ADD COLUMN file_path TEXT")
+        except:
+            pass
+
+        # Create activity_log table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS activity_log (
+                log_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                username TEXT,
+                action_type TEXT,
+                program_number TEXT,
+                details TEXT,
+                timestamp TEXT,
+                FOREIGN KEY (user_id) REFERENCES users(user_id)
+            )
+        ''')
+
+        # Create edit_locks table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS edit_locks (
+                lock_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                program_number TEXT UNIQUE,
+                locked_by INTEGER,
+                locked_by_username TEXT,
+                locked_at TEXT,
+                FOREIGN KEY (locked_by) REFERENCES users(user_id)
+            )
+        ''')
+
+        # Create comments table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS comments (
+                comment_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                program_number TEXT,
+                version_id INTEGER,
+                user_id INTEGER,
+                username TEXT,
+                comment_text TEXT,
+                parent_comment_id INTEGER,
+                timestamp TEXT,
+                FOREIGN KEY (user_id) REFERENCES users(user_id),
+                FOREIGN KEY (version_id) REFERENCES program_versions(version_id)
+            )
+        ''')
+
+        # Create production_tracking table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS production_tracking (
+                track_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                program_number TEXT,
+                version_id INTEGER,
+                production_status TEXT,
+                run_count INTEGER DEFAULT 0,
+                last_used TEXT,
+                quality_notes TEXT,
+                operator TEXT,
+                FOREIGN KEY (version_id) REFERENCES program_versions(version_id)
+            )
+        ''')
 
         conn.commit()
         conn.close()
-        
+
+    def init_repository(self):
+        """Initialize managed file repository structure"""
+        # Get base path (where this script is located)
+        base_path = os.path.dirname(os.path.abspath(__file__))
+
+        # Define repository paths
+        self.repository_path = os.path.join(base_path, 'repository')
+        self.versions_path = os.path.join(base_path, 'versions')
+        self.backups_path = os.path.join(base_path, 'backups')
+        self.deleted_path = os.path.join(base_path, 'deleted')
+
+        # Create directories if they don't exist
+        os.makedirs(self.repository_path, exist_ok=True)
+        os.makedirs(self.versions_path, exist_ok=True)
+        os.makedirs(self.backups_path, exist_ok=True)
+        os.makedirs(self.deleted_path, exist_ok=True)
+
+        print(f"[Repository] Initialized at: {self.repository_path}")
+        print(f"[Versions] Initialized at: {self.versions_path}")
+        print(f"[Backups] Initialized at: {self.backups_path}")
+        print(f"[Deleted] Initialized at: {self.deleted_path}")
+
+    def is_managed_file(self, file_path):
+        """Check if a file is in the managed repository"""
+        if not file_path:
+            return False
+        abs_path = os.path.abspath(file_path)
+        repo_path = os.path.abspath(self.repository_path)
+        return abs_path.startswith(repo_path)
+
+    def import_to_repository(self, source_file, program_number=None):
+        """
+        Import a file into the managed repository.
+        Returns the new path in the repository.
+        """
+        try:
+            # If already in repository, return as-is
+            if self.is_managed_file(source_file):
+                return source_file
+
+            # Get filename
+            filename = os.path.basename(source_file)
+
+            # Destination path in repository
+            dest_path = os.path.join(self.repository_path, filename)
+
+            # If file already exists, handle collision
+            if os.path.exists(dest_path):
+                # Check if it's the same file (same content)
+                with open(source_file, 'rb') as f1:
+                    source_content = f1.read()
+                with open(dest_path, 'rb') as f2:
+                    dest_content = f2.read()
+
+                if source_content == dest_content:
+                    # Same file, just return existing path
+                    print(f"[Repository] File already exists (identical): {filename}")
+                    return dest_path
+                else:
+                    # Different file with same name - create unique name
+                    base, ext = os.path.splitext(filename)
+                    counter = 1
+                    while os.path.exists(dest_path):
+                        dest_path = os.path.join(self.repository_path, f"{base}_{counter}{ext}")
+                        counter += 1
+                    print(f"[Repository] Collision detected, using: {os.path.basename(dest_path)}")
+
+            # Copy file to repository
+            shutil.copy2(source_file, dest_path)
+            print(f"[Repository] Imported: {filename}")
+
+            # Skip activity logging during bulk imports to avoid database locks
+            # self.log_activity('import_to_repository', program_number, {
+            #     'source': source_file,
+            #     'destination': dest_path
+            # })
+
+            return dest_path
+
+        except Exception as e:
+            print(f"[Repository] Error importing file: {e}")
+            return None
+
+    def create_version_file(self, program_number, version_number, source_file_path):
+        """
+        Save a version as a physical file in the versions folder.
+        Returns the path to the version file.
+        """
+        try:
+            # Create version folder for this program
+            version_folder = os.path.join(self.versions_path, program_number)
+            os.makedirs(version_folder, exist_ok=True)
+
+            # Get file extension
+            ext = os.path.splitext(source_file_path)[1] or '.nc'
+
+            # Version filename
+            version_filename = f"{version_number}{ext}"
+            version_path = os.path.join(version_folder, version_filename)
+
+            # Copy file to version folder
+            if os.path.exists(source_file_path):
+                shutil.copy2(source_file_path, version_path)
+                print(f"[Version] Saved version file: {version_filename}")
+                return version_path
+            else:
+                print(f"[Version] Source file not found: {source_file_path}")
+                return None
+
+        except Exception as e:
+            print(f"[Version] Error creating version file: {e}")
+            return None
+
+    def get_version_file_path(self, program_number, version_number):
+        """Get the file path for a specific version"""
+        version_folder = os.path.join(self.versions_path, program_number)
+
+        if not os.path.exists(version_folder):
+            return None
+
+        # Try common extensions
+        for ext in ['.nc', '.gcode', '.txt', '']:
+            version_path = os.path.join(version_folder, f"{version_number}{ext}")
+            if os.path.exists(version_path):
+                return version_path
+
+        return None
+
+    def migrate_file_to_repository(self, program_number):
+        """
+        Migrate a single file from external location to managed repository.
+        Returns True if successful, False otherwise.
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            # Get current file path and managed status
+            cursor.execute("SELECT file_path, is_managed FROM programs WHERE program_number = ?", (program_number,))
+            result = cursor.fetchone()
+
+            if not result:
+                conn.close()
+                return False
+
+            current_path, is_managed = result
+
+            # Already managed
+            if is_managed:
+                print(f"[Migration] {program_number} already in repository")
+                conn.close()
+                return True
+
+            # Check if file exists
+            if not current_path or not os.path.exists(current_path):
+                print(f"[Migration] File not found: {current_path}")
+                conn.close()
+                return False
+
+            # Import to repository
+            new_path = self.import_to_repository(current_path, program_number)
+
+            if new_path:
+                # Update database
+                cursor.execute("""
+                    UPDATE programs SET file_path = ?, is_managed = 1 WHERE program_number = ?
+                """, (new_path, program_number))
+
+                conn.commit()
+                print(f"[Migration] Successfully migrated {program_number}")
+
+                # Log activity
+                self.log_activity('migrate_to_repository', program_number, {
+                    'old_path': current_path,
+                    'new_path': new_path
+                })
+
+                conn.close()
+                return True
+            else:
+                conn.close()
+                return False
+
+        except Exception as e:
+            print(f"[Migration] Error migrating {program_number}: {e}")
+            return False
+
+    def migrate_all_to_repository(self):
+        """
+        Migrate all external files to the managed repository.
+        Returns (success_count, error_count)
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        # Get all programs with external files
+        cursor.execute("""
+            SELECT program_number FROM programs
+            WHERE file_path IS NOT NULL AND (is_managed IS NULL OR is_managed = 0)
+        """)
+
+        programs = [row[0] for row in cursor.fetchall()]
+        conn.close()
+
+        print(f"[Migration] Found {len(programs)} external files to migrate")
+
+        success = 0
+        errors = 0
+
+        for prog_num in programs:
+            if self.migrate_file_to_repository(prog_num):
+                success += 1
+            else:
+                errors += 1
+
+        print(f"[Migration] Complete: {success} successful, {errors} errors")
+        return success, errors
+
+    def get_repository_stats(self):
+        """Get statistics about repository usage"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        stats = {}
+
+        # Total programs
+        cursor.execute("SELECT COUNT(*) FROM programs WHERE file_path IS NOT NULL")
+        stats['total_programs'] = cursor.fetchone()[0]
+
+        # Managed files
+        cursor.execute("SELECT COUNT(*) FROM programs WHERE is_managed = 1")
+        stats['managed_files'] = cursor.fetchone()[0]
+
+        # External files
+        stats['external_files'] = stats['total_programs'] - stats['managed_files']
+
+        # Total versions
+        cursor.execute("SELECT COUNT(*) FROM program_versions")
+        stats['total_versions'] = cursor.fetchone()[0]
+
+        # Repository size
+        repo_size = 0
+        if os.path.exists(self.repository_path):
+            for file in os.listdir(self.repository_path):
+                file_path = os.path.join(self.repository_path, file)
+                if os.path.isfile(file_path):
+                    repo_size += os.path.getsize(file_path)
+
+        stats['repository_size_mb'] = repo_size / (1024 * 1024)
+
+        # Versions size
+        versions_size = 0
+        if os.path.exists(self.versions_path):
+            for root, _, files in os.walk(self.versions_path):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    versions_size += os.path.getsize(file_path)
+
+        stats['versions_size_mb'] = versions_size / (1024 * 1024)
+
+        conn.close()
+        return stats
+
+    def log_activity(self, action_type, program_number=None, details=None):
+        """Log user activity to the activity_log table"""
+        try:
+            # Use timeout to prevent database locked errors
+            conn = sqlite3.connect(self.db_path, timeout=10.0)
+            cursor = conn.cursor()
+
+            from datetime import datetime
+            timestamp = datetime.now().isoformat()
+
+            # Convert details to JSON if it's a dict
+            if isinstance(details, dict):
+                import json
+                details = json.dumps(details)
+
+            cursor.execute("""
+                INSERT INTO activity_log (user_id, username, action_type, program_number, details, timestamp)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (self.current_user_id, self.current_username, action_type, program_number, details, timestamp))
+
+            conn.commit()
+            conn.close()
+        except sqlite3.OperationalError as e:
+            if "locked" in str(e).lower():
+                print(f"[Activity Log] Database temporarily locked, activity not logged: {action_type}")
+            else:
+                print(f"[Activity Log] Error logging activity: {e}")
+        except Exception as e:
+            print(f"[Activity Log] Error logging activity: {e}")
+
+    def create_version(self, program_number, change_summary=None):
+        """Create a new version of a program"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            # Get current program data
+            cursor.execute("SELECT file_path, current_version FROM programs WHERE program_number = ?", (program_number,))
+            result = cursor.fetchone()
+
+            if not result:
+                conn.close()
+                return None
+
+            file_path, current_version = result
+
+            if not file_path or not os.path.exists(file_path):
+                conn.close()
+                return None
+
+            # Read file content
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+
+            # Calculate file hash
+            import hashlib
+            file_hash = hashlib.sha256(content.encode()).hexdigest()
+
+            # Get dimensions snapshot
+            cursor.execute("""
+                SELECT outer_diameter, thickness, center_bore, hub_height, hub_diameter,
+                       counter_bore_diameter, material, spacer_type
+                FROM programs WHERE program_number = ?
+            """, (program_number,))
+            dims = cursor.fetchone()
+
+            import json
+            dimensions_snapshot = json.dumps({
+                'outer_diameter': dims[0],
+                'thickness': dims[1],
+                'center_bore': dims[2],
+                'hub_height': dims[3],
+                'hub_diameter': dims[4],
+                'counter_bore_diameter': dims[5],
+                'material': dims[6],
+                'spacer_type': dims[7]
+            }) if dims else None
+
+            # Increment version
+            new_version = (current_version or 0) + 1
+            version_number = f"v{new_version}.0"
+
+            # Create version file (save physical copy)
+            version_file_path = self.create_version_file(program_number, version_number, file_path)
+
+            # Create version record
+            from datetime import datetime
+            cursor.execute("""
+                INSERT INTO program_versions (
+                    program_number, version_number, file_content, file_hash, file_path,
+                    date_created, created_by, change_summary, dimensions_snapshot
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (program_number, version_number, content, file_hash, version_file_path,
+                  datetime.now().isoformat(), self.current_username, change_summary, dimensions_snapshot))
+
+            version_id = cursor.lastrowid
+
+            # Update program's current version
+            cursor.execute("""
+                UPDATE programs SET current_version = ?, modified_by = ? WHERE program_number = ?
+            """, (new_version, self.current_username, program_number))
+
+            conn.commit()
+            conn.close()
+
+            # Log activity
+            self.log_activity('create_version', program_number, {
+                'version_number': version_number,
+                'change_summary': change_summary,
+                'version_file': version_file_path
+            })
+
+            return version_id
+
+        except Exception as e:
+            print(f"[Version] Error creating version: {e}")
+            return None
+
+    def get_version_history(self, program_number):
+        """Get all versions of a program"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                SELECT version_id, version_number, version_tag, date_created,
+                       created_by, change_summary
+                FROM program_versions
+                WHERE program_number = ?
+                ORDER BY date_created DESC
+            """, (program_number,))
+
+            versions = cursor.fetchall()
+            conn.close()
+
+            return versions
+
+        except Exception as e:
+            print(f"[Version] Error getting version history: {e}")
+            return []
+
+    def compare_versions(self, version_id1, version_id2):
+        """Compare two versions of a program"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            cursor.execute("SELECT file_content, version_number FROM program_versions WHERE version_id = ?", (version_id1,))
+            v1 = cursor.fetchone()
+
+            cursor.execute("SELECT file_content, version_number FROM program_versions WHERE version_id = ?", (version_id2,))
+            v2 = cursor.fetchone()
+
+            conn.close()
+
+            if not v1 or not v2:
+                return None
+
+            return {
+                'version1': {'content': v1[0], 'version_number': v1[1]},
+                'version2': {'content': v2[0], 'version_number': v2[1]}
+            }
+
+        except Exception as e:
+            print(f"[Version] Error comparing versions: {e}")
+            return None
+
     def load_config(self):
         """Load configuration from file"""
         default_config = {
@@ -416,7 +976,7 @@ class GCodeDatabaseGUI:
         # Create main container
         main_container = tk.Frame(self.root, bg=self.bg_color)
         main_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-        
+
         # Top section - Title and Ribbon Tabs
         top_frame = tk.Frame(main_container, bg=self.bg_color)
         top_frame.pack(fill=tk.X, pady=(0, 10))
@@ -428,23 +988,175 @@ class GCodeDatabaseGUI:
         ribbon_frame.pack(fill=tk.X, pady=(0, 10))
 
         self.create_ribbon_tabs(ribbon_frame)
-        
-        # Middle section - Filters
-        filter_frame = tk.LabelFrame(main_container, text="Search & Filter", 
-                                     bg=self.bg_color, fg=self.fg_color,
-                                     font=("Arial", 10, "bold"))
-        filter_frame.pack(fill=tk.X, pady=(0, 10))
-        
+
+        # Create tabbed interface for action buttons
+        tab_buttons_frame = tk.Frame(main_container, bg=self.bg_color)
+        tab_buttons_frame.pack(fill=tk.X, pady=(0, 5))
+
+        self.view_notebook = ttk.Notebook(tab_buttons_frame)
+        self.view_notebook.pack(fill=tk.X)
+
+        # Tab 1: All Programs (no special actions)
+        self.all_programs_tab = tk.Frame(self.view_notebook, bg=self.bg_color, height=100)
+        self.view_notebook.add(self.all_programs_tab, text=" 📋 All Programs ")
+
+        # Tab 2: Repository (managed files only)
+        self.repository_tab = tk.Frame(self.view_notebook, bg=self.bg_color, height=100)
+        self.view_notebook.add(self.repository_tab, text=" 📁 Repository ")
+
+        # Tab 3: External (scanned files only)
+        self.external_tab = tk.Frame(self.view_notebook, bg=self.bg_color, height=100)
+        self.view_notebook.add(self.external_tab, text=" 🔍 External/Scanned ")
+
+        # Track which tab is active
+        self.view_notebook.bind("<<NotebookTabChanged>>", self.on_tab_change)
+
+        # Setup tab-specific action buttons
+        self.setup_all_programs_tab()
+        self.setup_repository_tab()
+        self.setup_external_tab()
+
+        # Create shared filter and results section (below tabs)
+        # Middle section - Filters with toggle capability
+        self.filter_outer_frame = tk.Frame(main_container, bg=self.bg_color)
+        self.filter_outer_frame.pack(fill=tk.X, pady=(0, 10))
+
+        # Toggle bar - always visible
+        toggle_bar = tk.Frame(self.filter_outer_frame, bg=self.bg_color)
+        toggle_bar.pack(fill=tk.X)
+
+        # Toggle button
+        self.filter_expanded = True
+        self.toggle_filter_btn = tk.Button(toggle_bar, text="▼ Search & Filter",
+                                          command=self.toggle_filter_section,
+                                          bg=self.accent_color, fg=self.fg_color,
+                                          font=("Arial", 10, "bold"), width=20, anchor="w")
+        self.toggle_filter_btn.pack(side=tk.LEFT, padx=5, pady=2)
+
+        tk.Label(toggle_bar, text="(Click to minimize/expand)",
+                bg=self.bg_color, fg="#888888", font=("Arial", 8, "italic")).pack(side=tk.LEFT, padx=5)
+
+        # Collapsible filter frame
+        filter_frame = tk.Frame(self.filter_outer_frame, bg=self.bg_color)
+        filter_frame.pack(fill=tk.X, pady=(5, 0))
+        self.filter_collapsible_frame = filter_frame
+
         self.create_filter_section(filter_frame)
-        
+
         # Bottom section - Results
-        results_frame = tk.LabelFrame(main_container, text="Results", 
+        results_frame = tk.LabelFrame(main_container, text="Results",
                                       bg=self.bg_color, fg=self.fg_color,
                                       font=("Arial", 10, "bold"))
         results_frame.pack(fill=tk.BOTH, expand=True)
-        
+
         self.create_results_section(results_frame)
-        
+
+    def setup_all_programs_tab(self):
+        """Setup the All Programs tab - shows all files (repository + external)"""
+        # Info and action buttons
+        info_frame = tk.Frame(self.all_programs_tab, bg=self.bg_color)
+        info_frame.pack(fill=tk.X, pady=5, padx=10)
+
+        # Info label
+        tk.Label(info_frame, text="Viewing all programs (repository + external files)",
+                bg=self.bg_color, fg=self.fg_color, font=("Arial", 10, "italic")).pack(side=tk.LEFT)
+
+        # Stats button
+        tk.Button(info_frame, text="📊 Stats", command=self.show_all_programs_stats,
+                 bg=self.accent_color, fg=self.fg_color, font=("Arial", 9, "bold"),
+                 width=10, height=1).pack(side=tk.RIGHT, padx=5)
+
+    def setup_repository_tab(self):
+        """Setup the Repository tab (managed files only)"""
+        # Info and action buttons
+        info_frame = tk.Frame(self.repository_tab, bg=self.bg_color)
+        info_frame.pack(fill=tk.X, pady=5, padx=10)
+
+        # Info label
+        tk.Label(info_frame, text="Repository: Managed files in repository/ folder",
+                bg=self.bg_color, fg=self.fg_color, font=("Arial", 10, "italic")).pack(side=tk.LEFT)
+
+        # Repository stats button
+        tk.Button(info_frame, text="📊 Stats", command=self.show_repository_stats,
+                 bg=self.accent_color, fg=self.fg_color, font=("Arial", 9, "bold"),
+                 width=10, height=1).pack(side=tk.RIGHT, padx=5)
+
+        # Repository management buttons - Row 1 (Basic operations)
+        repo_buttons1 = tk.Frame(self.repository_tab, bg=self.bg_color)
+        repo_buttons1.pack(fill=tk.X, pady=5, padx=10)
+
+        tk.Button(repo_buttons1, text="🗑️ Delete Selected", command=self.delete_from_repository,
+                 bg="#D32F2F", fg=self.fg_color, font=("Arial", 9, "bold"),
+                 width=15, height=1).pack(side=tk.LEFT, padx=3)
+
+        tk.Button(repo_buttons1, text="📤 Export", command=self.export_selected_file,
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
+                 width=15, height=1).pack(side=tk.LEFT, padx=3)
+
+        # Repository management buttons - Row 2 (Duplicate management)
+        repo_buttons2 = tk.Frame(self.repository_tab, bg=self.bg_color)
+        repo_buttons2.pack(fill=tk.X, pady=5, padx=10)
+
+        tk.Button(repo_buttons2, text="🔍 Manage Duplicates (Scan/Rename/Delete)",
+                 command=self.manage_duplicates,
+                 bg="#FF6B00", fg=self.fg_color, font=("Arial", 10, "bold"),
+                 width=40, height=2).pack(side=tk.LEFT, padx=3)
+
+    def setup_external_tab(self):
+        """Setup the External/Scanned tab (external files only)"""
+        # Info and action buttons
+        info_frame = tk.Frame(self.external_tab, bg=self.bg_color)
+        info_frame.pack(fill=tk.X, pady=5, padx=10)
+
+        tk.Label(info_frame, text="External: Scanned files NOT in repository (temporary view)",
+                bg=self.bg_color, fg=self.fg_color, font=("Arial", 10, "italic")).pack(side=tk.LEFT)
+
+        # Stats button
+        tk.Button(info_frame, text="📊 Stats", command=self.show_external_stats,
+                 bg=self.accent_color, fg=self.fg_color, font=("Arial", 9, "bold"),
+                 width=10, height=1).pack(side=tk.RIGHT, padx=5)
+
+        # External file management buttons
+        external_buttons = tk.Frame(self.external_tab, bg=self.bg_color)
+        external_buttons.pack(fill=tk.X, pady=5, padx=10)
+
+        tk.Button(external_buttons, text="➕ Add to Repository", command=self.add_selected_to_repository,
+                 bg="#388E3C", fg=self.fg_color, font=("Arial", 9, "bold"),
+                 width=18, height=1).pack(side=tk.LEFT, padx=3)
+
+        tk.Button(external_buttons, text="🗑️ Remove from DB", command=self.remove_from_database,
+                 bg="#D32F2F", fg=self.fg_color, font=("Arial", 9, "bold"),
+                 width=15, height=1).pack(side=tk.LEFT, padx=3)
+
+        tk.Button(external_buttons, text="🔄 Refresh", command=lambda: self.refresh_results(view_mode='external'),
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
+                 width=12, height=1).pack(side=tk.LEFT, padx=3)
+
+    def on_tab_change(self, event=None):
+        """Handle tab change events"""
+        current_tab = self.view_notebook.index(self.view_notebook.select())
+
+        # Refresh results based on which tab is active
+        if current_tab == 0:  # All Programs
+            self.refresh_results(view_mode='all')
+        elif current_tab == 1:  # Repository
+            self.refresh_results(view_mode='repository')
+        elif current_tab == 2:  # External
+            self.refresh_results(view_mode='external')
+
+    def toggle_filter_section(self):
+        """Toggle the visibility of the filter section"""
+        if self.filter_expanded:
+            # Collapse the filter section
+            self.filter_collapsible_frame.pack_forget()
+            self.toggle_filter_btn.config(text="▶ Search & Filter (Click to expand)")
+            self.filter_expanded = False
+        else:
+            # Expand the filter section
+            self.filter_collapsible_frame.pack(fill=tk.X, pady=(5, 0))
+            self.toggle_filter_btn.config(text="▼ Search & Filter")
+            self.filter_expanded = True
+
     def create_top_section(self, parent):
         """Create top action buttons"""
         # Title
@@ -598,11 +1310,33 @@ class GCodeDatabaseGUI:
         """Create filter controls"""
         filter_container = tk.Frame(parent, bg=self.bg_color)
         filter_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-        
+
+        # Row 0 - Title Search Bar (prominent)
+        row0 = tk.Frame(filter_container, bg=self.bg_color)
+        row0.pack(fill=tk.X, pady=(5, 10))
+
+        tk.Label(row0, text="🔍 Title Search:", bg=self.bg_color, fg=self.fg_color,
+                font=("Arial", 10, "bold")).pack(side=tk.LEFT, padx=5)
+        self.filter_title = tk.Entry(row0, bg=self.input_bg, fg=self.fg_color,
+                                     font=("Arial", 10), width=60)
+        self.filter_title.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
+
+        # Bind Enter key to trigger search
+        self.filter_title.bind('<Return>', lambda _: self.refresh_results())
+
+        # Clear title search button
+        btn_clear_title = tk.Button(row0, text="✕", command=self.clear_title_search,
+                                   bg=self.button_bg, fg=self.fg_color,
+                                   font=("Arial", 9, "bold"), width=3)
+        btn_clear_title.pack(side=tk.LEFT, padx=2)
+
+        tk.Label(row0, text="(Use + for multi-term search, e.g., \"lug + 1.25 + 74\". Press Enter to search)",
+                bg=self.bg_color, fg="#888888", font=("Arial", 8, "italic")).pack(side=tk.LEFT, padx=5)
+
         # Row 1
         row1 = tk.Frame(filter_container, bg=self.bg_color)
         row1.pack(fill=tk.X, pady=5)
-        
+
         # Program Number
         tk.Label(row1, text="Program #:", bg=self.bg_color, fg=self.fg_color).pack(side=tk.LEFT, padx=5)
         self.filter_program = tk.Entry(row1, bg=self.input_bg, fg=self.fg_color, width=15)
@@ -895,7 +1629,390 @@ class GCodeDatabaseGUI:
                             bg=self.button_bg, fg=self.fg_color,
                             font=("Arial", 9), width=12)
         btn_view.pack(side=tk.LEFT, padx=5)
-        
+
+        btn_compare = tk.Button(action_frame, text="🔄 Compare Files", command=self.compare_files,
+                               bg="#FF9800", fg=self.fg_color,
+                               font=("Arial", 9, "bold"), width=14)
+        btn_compare.pack(side=tk.LEFT, padx=5)
+
+        # Status label for drag-drop feedback (separate from results counter)
+        self.dragdrop_label = tk.Label(action_frame, text="",
+                                     bg=self.bg_color, fg=self.fg_color,
+                                     font=("Arial", 9))
+        self.dragdrop_label.pack(side=tk.RIGHT, padx=10)
+
+    def setup_drag_drop(self):
+        """Setup drag and drop for the main window"""
+        try:
+            from tkinterdnd2 import DND_FILES
+
+            # Check if root is already a TkinterDnD.Tk instance
+            # If not, we'll use event bindings as fallback
+            try:
+                self.root.drop_target_register(DND_FILES)
+                self.root.dnd_bind('<<Drop>>', self.on_drop)
+                self.root.dnd_bind('<<DragEnter>>', self.on_drag_enter)
+                self.root.dnd_bind('<<DragLeave>>', self.on_drag_leave)
+                print("[Drag & Drop] TkinterDnD2 enabled successfully")
+            except Exception:
+                print("[Drag & Drop] TkinterDnD2 not available, using fallback method")
+                self._setup_drag_drop_fallback()
+        except ImportError:
+            print("[Drag & Drop] TkinterDnD2 not installed, using fallback method")
+            self._setup_drag_drop_fallback()
+
+    def _setup_drag_drop_fallback(self):
+        """Fallback drag-drop using standard tk file dialog"""
+        # Add a button to manually add files if drag-drop not available
+        pass  # Manual add file functionality already exists via scan_folder
+
+    def on_drag_enter(self, _):
+        """Visual feedback when files are dragged over window"""
+        self.root.configure(bg="#3a4a5a")  # Slightly lighter bg
+        if hasattr(self, 'dragdrop_label'):
+            self.dragdrop_label.config(text="Drop files here to import...")
+
+    def on_drag_leave(self, _):
+        """Restore appearance when drag leaves"""
+        self.root.configure(bg=self.bg_color)
+        if hasattr(self, 'dragdrop_label'):
+            self.dragdrop_label.config(text="")
+
+    def on_drop(self, event):
+        """Handle dropped files"""
+        self.root.configure(bg=self.bg_color)
+
+        # Parse the file paths from the drop event
+        files = self._parse_drop_files(event.data)
+
+        if not files:
+            if hasattr(self, 'dragdrop_label'):
+                self.dragdrop_label.config(text="No valid files dropped")
+            return
+
+        # Filter for gcode files only
+        gcode_files = [f for f in files if self._is_gcode_file(f)]
+
+        if not gcode_files:
+            messagebox.showwarning("No G-Code Files",
+                                 f"No G-Code files found in {len(files)} dropped file(s).\n\n"
+                                 "G-Code files must contain pattern: o##### (4+ digits)")
+            if hasattr(self, 'dragdrop_label'):
+                self.dragdrop_label.config(text="")
+            return
+
+        # Process the files
+        self.process_dropped_files(gcode_files)
+
+    def _parse_drop_files(self, data):
+        """Parse file paths from drag-drop event data"""
+        # Handle different formats from different systems
+        if isinstance(data, list):
+            return data
+
+        # Windows/Unix paths can be space or newline separated
+        # Wrapped in {} or not
+        files = []
+        data = str(data)
+
+        # Remove outer braces if present
+        if data.startswith('{') and data.endswith('}'):
+            data = data[1:-1]
+
+        # Split by spaces, but respect paths with spaces
+        import shlex
+        try:
+            files = shlex.split(data)
+        except:
+            # Fallback: simple split
+            files = data.split()
+
+        return [f.strip() for f in files if f.strip()]
+
+    def _is_gcode_file(self, filepath):
+        """Check if file is a G-code file based on naming pattern"""
+        if not os.path.isfile(filepath):
+            return False
+
+        filename = os.path.basename(filepath)
+        # Match files with o##### pattern (4+ digits)
+        return bool(re.search(r'[oO]\d{4,}', filename))
+
+    def process_dropped_files(self, filepaths):
+        """
+        Process dropped files with smart duplicate detection and warnings.
+
+        Features:
+        - Duplicate detection (exact content match)
+        - Filename collision warnings with auto-rename suggestions
+        - Program number mismatch warnings
+        """
+        # Get existing files from database
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT program_number, file_path FROM programs WHERE file_path IS NOT NULL")
+        db_files = cursor.fetchall()
+
+        # Build lookup structures
+        db_programs = {}  # {program_number: file_path}
+        db_filenames = {}  # {filename_lower: (program_number, file_path)}
+        db_contents = {}  # {content_hash: (program_number, file_path)}
+
+        for prog_num, file_path in db_files:
+            db_programs[prog_num] = file_path
+
+            if file_path and os.path.exists(file_path):
+                filename_lower = os.path.basename(file_path).lower()
+                db_filenames[filename_lower] = (prog_num, file_path)
+
+                # Read content for exact duplicate detection
+                try:
+                    with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                        content = f.read()
+                        content_hash = hash(content)
+                        db_contents[content_hash] = (prog_num, file_path)
+                except Exception:
+                    pass
+
+        conn.close()
+
+        # Analyze each dropped file
+        files_to_add = []
+        warnings = []
+
+        for filepath in filepaths:
+            filename = os.path.basename(filepath)
+            filename_lower = filename.lower()
+
+            # Extract program number from filename
+            match = re.search(r'[oO](\d{4,})', filename)
+            if not match:
+                warnings.append(f"⚠️ Skipped {filename}: No program number found")
+                continue
+
+            file_prog_num = 'o' + match.group(1)
+
+            # Read file content
+            try:
+                with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+                    content = f.read()
+                    content_hash = hash(content)
+            except Exception as e:
+                warnings.append(f"❌ Error reading {filename}: {str(e)}")
+                continue
+
+            # Check 1: Exact content duplicate
+            if content_hash in db_contents:
+                existing_prog, existing_path = db_contents[content_hash]
+                existing_name = os.path.basename(existing_path)
+                warnings.append(f"🔁 Duplicate: {filename} is identical to {existing_name} (already in database)")
+                continue
+
+            # Check 2: Filename collision (same name, different content)
+            if filename_lower in db_filenames:
+                existing_prog, existing_path = db_filenames[filename_lower]
+
+                # Offer auto-rename suggestion
+                suggestion = self._suggest_unique_filename(filename, db_filenames)
+
+                result = messagebox.askyesnocancel(
+                    "Filename Collision Detected",
+                    f"File already exists: {filename}\n"
+                    f"In database as: {existing_prog}\n\n"
+                    f"The file you're adding has DIFFERENT content.\n\n"
+                    f"Options:\n"
+                    f"• YES: Save with suggested name: {suggestion}\n"
+                    f"• NO: Skip this file\n"
+                    f"• CANCEL: Stop importing\n\n"
+                    f"Suggested name will also update internal program number."
+                )
+
+                if result is None:  # Cancel
+                    break
+                elif result:  # Yes - rename
+                    # Add with new name
+                    files_to_add.append((filepath, suggestion, content))
+                    warnings.append(f"✏️ Renamed: {filename} → {suggestion}")
+                else:  # No - skip
+                    warnings.append(f"⏭️ Skipped: {filename} (filename collision)")
+                continue
+
+            # Check 3: Program number mismatch (filename != internal program number)
+            # Parse the file to get internal program number
+            internal_prog_num = self._extract_program_number_from_content(content)
+
+            if internal_prog_num and internal_prog_num != file_prog_num:
+                result = messagebox.askyesno(
+                    "Program Number Mismatch",
+                    f"Warning: Filename and internal program number don't match!\n\n"
+                    f"Filename: {filename} ({file_prog_num})\n"
+                    f"Internal: {internal_prog_num}\n\n"
+                    f"This file may have been renamed incorrectly.\n\n"
+                    f"Add it anyway?\n"
+                    f"(It will be stored as {file_prog_num} based on filename)"
+                )
+
+                if not result:
+                    warnings.append(f"⏭️ Skipped: {filename} (program number mismatch)")
+                    continue
+                else:
+                    warnings.append(f"⚠️ Added with mismatch: {filename} (internal: {internal_prog_num})")
+
+            # Check 4: Program number already exists (different file)
+            if file_prog_num in db_programs:
+                existing_path = db_programs[file_prog_num]
+                existing_name = os.path.basename(existing_path)
+
+                if existing_name.lower() != filename_lower:
+                    result = messagebox.askyesno(
+                        "Program Number Exists",
+                        f"Program number {file_prog_num} already exists!\n\n"
+                        f"Existing: {existing_name}\n"
+                        f"New file: {filename}\n\n"
+                        f"These appear to be different files with the same program number.\n\n"
+                        f"Add the new file anyway?\n"
+                        f"(Will replace the existing entry)"
+                    )
+
+                    if not result:
+                        warnings.append(f"⏭️ Skipped: {filename} (program number exists)")
+                        continue
+
+            # All checks passed - add file
+            files_to_add.append((filepath, filename, content))
+
+        # Process files to add
+        if files_to_add:
+            self._import_files(files_to_add, warnings)
+
+        # Show summary
+        if warnings:
+            summary = "\n".join(warnings)
+            messagebox.showinfo("Import Summary",
+                              f"Processed {len(filepaths)} file(s)\n"
+                              f"Added: {len(files_to_add)}\n\n"
+                              f"Details:\n{summary[:500]}")
+
+        # Refresh the display
+        self.refresh_results()
+
+        if hasattr(self, 'dragdrop_label'):
+            self.dragdrop_label.config(text=f"Imported {len(files_to_add)} file(s)")
+
+    def _suggest_unique_filename(self, original_filename, existing_filenames):
+        """Suggest a unique filename by appending _v2, _v3, etc."""
+        base, ext = os.path.splitext(original_filename)
+
+        # Extract program number
+        match = re.search(r'([oO]\d{4,})', base)
+        if not match:
+            return original_filename
+
+        prog_prefix = match.group(1)
+
+        counter = 2
+        while True:
+            # Update program number
+            new_prog_num = f"{prog_prefix[0]}{int(prog_prefix[1:]) + counter - 1}"
+            new_filename = base.replace(prog_prefix, new_prog_num) + ext
+
+            if new_filename.lower() not in existing_filenames:
+                return new_filename
+
+            counter += 1
+
+            if counter > 1000:  # Safety limit
+                return f"{base}_UNIQUE{ext}"
+
+    def _extract_program_number_from_content(self, content):
+        """Extract program number from G-code content"""
+        # Look for O##### pattern in first few lines
+        lines = content.split('\n')[:50]  # Check first 50 lines
+
+        for line in lines:
+            match = re.search(r'[oO](\d{4,})', line)
+            if match:
+                return 'o' + match.group(1)
+
+        return None
+
+    def _import_files(self, files_to_add, warnings):
+        """Import files into the database"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        target_folder = self.config.get("target_folder", "")
+        if not target_folder or not os.path.exists(target_folder):
+            messagebox.showerror("No Target Folder",
+                               "Please set a target folder in settings before importing files.")
+            conn.close()
+            return
+
+        for original_path, suggested_filename, _ in files_to_add:
+            try:
+                # Determine destination path
+                dest_path = os.path.join(target_folder, suggested_filename)
+
+                # Copy file to target folder
+                if original_path != dest_path:
+                    shutil.copy2(original_path, dest_path)
+
+                # Parse the file
+                record = self.parse_gcode_file(dest_path)
+                if not record:
+                    warnings.append(f"⚠️ Failed to parse: {suggested_filename}")
+                    continue
+
+                # Insert into database (or update if exists)
+                cursor.execute("""
+                    INSERT OR REPLACE INTO programs (
+                        program_number, title, spacer_type, outer_diameter, thickness, thickness_display,
+                        center_bore, hub_height, hub_diameter, counter_bore_diameter, counter_bore_depth,
+                        paired_program, material, notes, date_created, last_modified, file_path,
+                        detection_confidence, detection_method, validation_status, validation_issues,
+                        validation_warnings, cb_from_gcode, ob_from_gcode, bore_warnings, dimensional_issues,
+                        lathe, duplicate_type
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    record.program_number,
+                    record.title,
+                    record.spacer_type,
+                    record.outer_diameter,
+                    record.thickness,
+                    record.thickness_display,
+                    record.center_bore,
+                    record.hub_height,
+                    record.hub_diameter,
+                    record.counter_bore_diameter,
+                    record.counter_bore_depth,
+                    record.paired_program,
+                    record.material,
+                    record.notes,
+                    record.date_created,
+                    record.last_modified,
+                    record.file_path,
+                    record.detection_confidence,
+                    record.detection_method,
+                    record.validation_status,
+                    record.validation_issues,
+                    record.validation_warnings,
+                    record.cb_from_gcode,
+                    record.ob_from_gcode,
+                    record.bore_warnings,
+                    record.dimensional_issues,
+                    record.lathe,
+                    record.duplicate_type
+                ))
+
+                warnings.append(f"✅ Added: {suggested_filename}")
+
+            except Exception as e:
+                warnings.append(f"❌ Error importing {suggested_filename}: {str(e)}")
+
+        conn.commit()
+        conn.close()
+
     def parse_gcode_file(self, filepath: str) -> Optional[ProgramRecord]:
         """Parse a gcode file using the improved parser"""
         try:
@@ -1013,10 +2130,63 @@ class GCodeDatabaseGUI:
         """Scan a folder for gcode files and import them"""
         folder = filedialog.askdirectory(title="Select Folder with G-Code Files",
                                         initialdir=self.config.get("last_folder", ""))
-        
+
         if not folder:
             return
-            
+
+        # Ask user: Import to repository or keep external?
+        import_mode_dialog = tk.Toplevel(self.root)
+        import_mode_dialog.title("Import Mode")
+        import_mode_dialog.geometry("550x300")
+        import_mode_dialog.configure(bg=self.bg_color)
+        import_mode_dialog.transient(self.root)
+        import_mode_dialog.grab_set()
+
+        # Title
+        tk.Label(import_mode_dialog, text="📁 Choose Import Mode",
+                font=("Arial", 14, "bold"), bg=self.bg_color, fg=self.fg_color).pack(pady=15)
+
+        # Description
+        desc = ("How would you like to handle the scanned files?\n\n"
+                "• Repository: Copy files to managed repository folder\n"
+                "  (Files under your control, organized, tracked)\n\n"
+                "• External: Reference files in their current location\n"
+                "  (Files stay where they are, temporary view)")
+        tk.Label(import_mode_dialog, text=desc,
+                font=("Arial", 10), bg=self.bg_color, fg=self.fg_color,
+                justify=tk.LEFT).pack(padx=20, pady=10)
+
+        # Store result
+        import_to_repo = [False]  # Use list to allow modification in nested function
+
+        def choose_repository():
+            import_to_repo[0] = True
+            import_mode_dialog.destroy()
+
+        def choose_external():
+            import_to_repo[0] = False
+            import_mode_dialog.destroy()
+
+        # Buttons
+        btn_frame = tk.Frame(import_mode_dialog, bg=self.bg_color)
+        btn_frame.pack(pady=15)
+
+        tk.Button(btn_frame, text="📁 Repository\n(Copy to Repository)",
+                 command=choose_repository,
+                 bg="#388E3C", fg=self.fg_color, font=("Arial", 10, "bold"),
+                 width=20, height=3).pack(side=tk.LEFT, padx=10)
+
+        tk.Button(btn_frame, text="🔍 External\n(Keep in Place)",
+                 command=choose_external,
+                 bg=self.accent_color, fg=self.fg_color, font=("Arial", 10, "bold"),
+                 width=20, height=3).pack(side=tk.LEFT, padx=10)
+
+        # Wait for user choice
+        self.root.wait_window(import_mode_dialog)
+
+        # Store the choice for this scan
+        add_to_repository = import_to_repo[0]
+
         self.config["last_folder"] = folder
         self.save_config()
         
@@ -1291,20 +2461,33 @@ class GCodeDatabaseGUI:
                              record.program_number))
                         updated += 1
                     else:
+                        # If user chose repository mode, import the file first
+                        final_file_path = record.file_path
+                        is_managed_file = 0
+
+                        if add_to_repository and record.file_path and os.path.exists(record.file_path):
+                            imported_path = self.import_to_repository(record.file_path, record.program_number)
+                            if imported_path:
+                                final_file_path = imported_path
+                                is_managed_file = 1
+                                progress_text.insert(tk.END, f"  → Imported to repository\n")
+                                progress_text.see(tk.END)
+
                         # Insert new
                         cursor.execute('''
-                            INSERT INTO programs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            INSERT INTO programs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ''', (record.program_number, record.title, record.spacer_type, record.outer_diameter,
                              record.thickness, record.thickness_display, record.center_bore, record.hub_height,
                              record.hub_diameter, record.counter_bore_diameter,
                              record.counter_bore_depth, record.paired_program,
                              record.material, record.notes, record.date_created,
-                             record.last_modified, record.file_path, record.detection_confidence,
+                             record.last_modified, final_file_path, record.detection_confidence,
                              record.detection_method, record.validation_status,
                              record.validation_issues, record.validation_warnings,
                              record.bore_warnings, record.dimensional_issues,
                              record.cb_from_gcode, record.ob_from_gcode, record.lathe,
-                             None, None, None))  # duplicate_type, parent_file, duplicate_group
+                             None, None, None,  # duplicate_type, parent_file, duplicate_group
+                             None, self.current_username, is_managed_file))  # current_version, modified_by, is_managed
                         added += 1
                         
                 except Exception as e:
@@ -1384,94 +2567,129 @@ class GCodeDatabaseGUI:
         # Get all existing files from database (filename and content hash)
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        cursor.execute("SELECT file_path FROM programs WHERE file_path IS NOT NULL")
-        existing_files_data = {}  # {filename_lower: [file_paths]}
-
-        for row in cursor.fetchall():
-            file_path = row[0]
-            if file_path and os.path.exists(file_path):
-                basename = os.path.basename(file_path).lower()
-                if basename not in existing_files_data:
-                    existing_files_data[basename] = []
-                existing_files_data[basename].append(file_path)
 
         # Scan for gcode files (with or without extension)
         gcode_files = []
-        name_collisions = []  # Files with same name but need content check
 
-        for root, dirs, files in os.walk(folder):
-            for file in files:
-                # Match any file containing o##### pattern (4+ digits)
-                if re.search(r'[oO]\d{4,}', file):
-                    filepath = os.path.join(root, file)
-                    basename_lower = file.lower()
+        # Scan for new files is always in external mode (not adding to repository)
+        # Check for duplicates to avoid re-importing existing files
+        if True:  # External mode
+            cursor.execute("SELECT file_path FROM programs WHERE file_path IS NOT NULL")
+            existing_files_data = {}  # {filename_lower: [file_paths]}
 
-                    # Check if filename exists in database
-                    if basename_lower in existing_files_data:
-                        # Need to check content to see if it's exact duplicate
-                        name_collisions.append((filepath, existing_files_data[basename_lower]))
+            for row in cursor.fetchall():
+                file_path = row[0]
+                if file_path and os.path.exists(file_path):
+                    basename = os.path.basename(file_path).lower()
+                    if basename not in existing_files_data:
+                        existing_files_data[basename] = []
+                    existing_files_data[basename].append(file_path)
+
+            name_collisions = []  # Files with same name but need content check
+
+            for root, dirs, files in os.walk(folder):
+                for file in files:
+                    # Match any file containing o##### pattern (4+ digits)
+                    if re.search(r'[oO]\d{4,}', file):
+                        filepath = os.path.join(root, file)
+                        basename_lower = file.lower()
+
+                        # Check if filename exists in database
+                        if basename_lower in existing_files_data:
+                            # Need to check content to see if it's exact duplicate
+                            name_collisions.append((filepath, existing_files_data[basename_lower]))
+                        else:
+                            # New filename, safe to add
+                            gcode_files.append(filepath)
+
+            # Check name collisions for exact duplicates vs different content
+            # Use file size + hash comparison for better performance
+            exact_duplicates = []
+            different_content = []
+
+            import hashlib
+
+            def calculate_file_hash(filepath):
+                """Calculate SHA256 hash of a file efficiently"""
+                sha256_hash = hashlib.sha256()
+                try:
+                    with open(filepath, 'rb') as f:
+                        # Read in 4KB chunks to handle large files
+                        for byte_block in iter(lambda: f.read(4096), b""):
+                            sha256_hash.update(byte_block)
+                    return sha256_hash.hexdigest()
+                except:
+                    return None
+
+            for new_file, existing_paths in name_collisions:
+                try:
+                    # Step 1: Quick file size check
+                    new_size = os.path.getsize(new_file)
+
+                    # Compare with existing file(s)
+                    is_exact_match = False
+                    for existing_path in existing_paths:
+                        try:
+                            existing_size = os.path.getsize(existing_path)
+
+                            # If sizes are different, definitely different files
+                            if new_size != existing_size:
+                                continue
+
+                            # Step 2: Sizes match - calculate hashes for accurate comparison
+                            new_hash = calculate_file_hash(new_file)
+                            existing_hash = calculate_file_hash(existing_path)
+
+                            if new_hash and existing_hash and new_hash == existing_hash:
+                                is_exact_match = True
+                                break
+                        except:
+                            continue
+
+                    if is_exact_match:
+                        exact_duplicates.append(new_file)
                     else:
-                        # New filename, safe to add
-                        gcode_files.append(filepath)
-
-        # Check name collisions for exact duplicates vs different content
-        exact_duplicates = []
-        different_content = []
-
-        for new_file, existing_paths in name_collisions:
-            # Read new file content
-            try:
-                with open(new_file, 'r', encoding='utf-8', errors='ignore') as f:
-                    new_content = f.read()
-
-                # Compare with existing file(s)
-                is_exact_match = False
-                for existing_path in existing_paths:
-                    try:
-                        with open(existing_path, 'r', encoding='utf-8', errors='ignore') as f:
-                            existing_content = f.read()
-
-                        if new_content == existing_content:
-                            is_exact_match = True
-                            break
-                    except:
-                        continue
-
-                if is_exact_match:
-                    exact_duplicates.append(new_file)
-                else:
+                        different_content.append((new_file, existing_paths[0]))
+                except:
+                    # If can't read, treat as different content (to be safe)
                     different_content.append((new_file, existing_paths[0]))
-            except:
-                # If can't read, treat as different content (to be safe)
-                different_content.append((new_file, existing_paths[0]))
 
-        progress_label.config(text=f"Analyzing files...")
-        progress_text.insert(tk.END, f"Total files scanned: {len(gcode_files) + len(name_collisions)}\n")
-        progress_text.insert(tk.END, f"New files (unique names): {len(gcode_files)}\n")
-        progress_text.insert(tk.END, f"Exact duplicates (ignored): {len(exact_duplicates)}\n")
-        progress_text.insert(tk.END, f"Name collisions (different content): {len(different_content)}\n\n")
+            progress_label.config(text=f"Analyzing files...")
+            progress_text.insert(tk.END, f"Total files scanned: {len(gcode_files) + len(name_collisions)}\n")
+            progress_text.insert(tk.END, f"New files (unique names): {len(gcode_files)}\n")
+            progress_text.insert(tk.END, f"Exact duplicates (ignored): {len(exact_duplicates)}\n")
+            progress_text.insert(tk.END, f"Name collisions (different content): {len(different_content)}\n\n")
 
-        # Show exact duplicates being skipped
-        if exact_duplicates:
-            progress_text.insert(tk.END, f"=== SKIPPING EXACT DUPLICATES ===\n")
-            for dup_file in exact_duplicates[:10]:
-                progress_text.insert(tk.END, f"  SKIP: {os.path.basename(dup_file)} (exact match already in database)\n")
-            if len(exact_duplicates) > 10:
-                progress_text.insert(tk.END, f"  ... and {len(exact_duplicates) - 10} more\n")
-            progress_text.insert(tk.END, f"\n")
+            # Show exact duplicates being skipped
+            if exact_duplicates:
+                progress_text.insert(tk.END, f"=== SKIPPING EXACT DUPLICATES ===\n")
+                for dup_file in exact_duplicates[:10]:
+                    progress_text.insert(tk.END, f"  SKIP: {os.path.basename(dup_file)} (exact match already in database)\n")
+                if len(exact_duplicates) > 10:
+                    progress_text.insert(tk.END, f"  ... and {len(exact_duplicates) - 10} more\n")
+                progress_text.insert(tk.END, f"\n")
 
-        # Warn about name collisions
-        if different_content:
-            progress_text.insert(tk.END, f"⚠️  WARNING - NAME COLLISIONS DETECTED ===\n")
-            progress_text.insert(tk.END, f"The following files have the same name as files in the database\n")
-            progress_text.insert(tk.END, f"but DIFFERENT CONTENT. You must rename them before adding!\n\n")
-            for new_file, existing_file in different_content[:10]:
-                progress_text.insert(tk.END, f"  ⚠️  {os.path.basename(new_file)}\n")
-                progress_text.insert(tk.END, f"     New: {new_file}\n")
-                progress_text.insert(tk.END, f"     Existing: {existing_file}\n\n")
-            if len(different_content) > 10:
-                progress_text.insert(tk.END, f"  ... and {len(different_content) - 10} more\n")
-            progress_text.insert(tk.END, f"\nPlease rename these files and scan again.\n\n")
+            # Warn about name collisions
+            if different_content:
+                progress_text.insert(tk.END, f"⚠️  WARNING - NAME COLLISIONS DETECTED ===\n")
+                progress_text.insert(tk.END, f"The following files have the same name as files in the database\n")
+                progress_text.insert(tk.END, f"but DIFFERENT CONTENT. You must rename them before adding!\n\n")
+                for new_file, existing_file in different_content[:10]:
+                    progress_text.insert(tk.END, f"  ⚠️  {os.path.basename(new_file)}\n")
+                    progress_text.insert(tk.END, f"     New: {new_file}\n")
+                    progress_text.insert(tk.END, f"     Existing: {existing_file}\n\n")
+                if len(different_content) > 10:
+                    progress_text.insert(tk.END, f"  ... and {len(different_content) - 10} more\n")
+                progress_text.insert(tk.END, f"\nPlease rename these files and scan again.\n\n")
+        else:
+            # Repository mode - skip duplicate checking, just add all files
+            progress_text.insert(tk.END, "Repository mode: Skipping duplicate checks for faster import...\n\n")
+            for root, dirs, files in os.walk(folder):
+                for file in files:
+                    # Match any file containing o##### pattern (4+ digits)
+                    if re.search(r'[oO]\d{4,}', file):
+                        filepath = os.path.join(root, file)
+                        gcode_files.append(filepath)
 
         progress_text.insert(tk.END, f"Processing {len(gcode_files)} new files...\n\n")
         progress_text.see(tk.END)
@@ -1491,6 +2709,7 @@ class GCodeDatabaseGUI:
         added = 0
         errors = 0
         duplicates = 0
+        duplicates_within_processing = 0  # Track duplicates found during processing
 
         # Track which program numbers we've seen in this scan
         seen_in_scan = {}  # program_number -> filepath
@@ -1505,26 +2724,22 @@ class GCodeDatabaseGUI:
             except:
                 size_kb = 0
 
-            progress_label.config(text=f"Processing {idx}/{len(gcode_files)}: {filename}")
+            # Update UI only every 10 files or on first/last file for better performance
+            update_ui = (idx % 10 == 0) or (idx == 1) or (idx == len(gcode_files))
+
+            if update_ui:
+                progress_label.config(text=f"Processing {idx}/{len(gcode_files)}: {filename}")
+
             progress_text.insert(tk.END, f"[{idx}/{len(gcode_files)}] Processing: {filename} ({size_kb:.1f} KB)\n")
-            progress_text.see(tk.END)
-            self.root.update()
 
             try:
-                progress_text.insert(tk.END, f"  Parsing file...\n")
-                progress_text.see(tk.END)
-                self.root.update()
-
                 record = self.parse_gcode_file(filepath)
-
-                progress_text.insert(tk.END, f"  Parse complete.\n")
-                progress_text.see(tk.END)
-                self.root.update()
             except Exception as e:
                 errors += 1
                 progress_text.insert(tk.END, f"  PARSE EXCEPTION: {str(e)[:100]}\n")
-                progress_text.see(tk.END)
-                self.root.update()
+                if update_ui:
+                    progress_text.see(tk.END)
+                    self.root.update()
                 continue
 
             if record:
@@ -1538,7 +2753,6 @@ class GCodeDatabaseGUI:
                             suffix += 1
                         record.program_number = f"{original_prog_num}({suffix})"
                         progress_text.insert(tk.END, f"  DUPLICATE: {original_prog_num} -> saved as {record.program_number}\n")
-                        progress_text.see(tk.END)
                         duplicates_within_processing += 1
 
                     # Track this file with its (possibly modified) program number
@@ -1591,19 +2805,30 @@ class GCodeDatabaseGUI:
                     ))
                     added += 1
                     progress_text.insert(tk.END, f"  ADDED: {record.program_number}\n")
-                    progress_text.see(tk.END)
-                    self.root.update()
+
+                    # Batch commit every 100 files for much better performance
+                    if added % 100 == 0:
+                        conn.commit()
+                        progress_text.insert(tk.END, f"\n[Database] Committed {added} files...\n\n")
+
+                    # Update UI every 10 files for better performance
+                    if update_ui:
+                        progress_text.see(tk.END)
+                        self.root.update()
                 except sqlite3.Error as e:
                     errors += 1
                     progress_text.insert(tk.END, f"  DATABASE ERROR: {str(e)[:100]}\n")
-                    progress_text.see(tk.END)
-                    self.root.update()
+                    if update_ui:
+                        progress_text.see(tk.END)
+                        self.root.update()
             else:
                 errors += 1
                 progress_text.insert(tk.END, f"  PARSE ERROR: Could not extract data\n")
-                progress_text.see(tk.END)
-                self.root.update()
+                if update_ui:
+                    progress_text.see(tk.END)
+                    self.root.update()
 
+        # Final commit for remaining files
         conn.commit()
         conn.close()
 
@@ -1612,6 +2837,8 @@ class GCodeDatabaseGUI:
         progress_text.insert(tk.END, f"\n{'='*50}\n")
         progress_text.insert(tk.END, f"New files found: {len(gcode_files)}\n")
         progress_text.insert(tk.END, f"Duplicates: {duplicates}\n")
+        if duplicates_within_processing > 0:
+            progress_text.insert(tk.END, f"Program number conflicts (saved with suffix): {duplicates_within_processing}\n")
         progress_text.insert(tk.END, f"Added: {added}\n")
         progress_text.insert(tk.END, f"Errors: {errors}\n")
         progress_text.see(tk.END)
@@ -1626,20 +2853,127 @@ class GCodeDatabaseGUI:
         self.refresh_filter_values()
         self.refresh_results()
 
+    def _ml_predict_dimension(self, ml_extractor, dimension, parse_result, program_number):
+        """Helper method to predict a single dimension using ML"""
+        try:
+            import numpy as np
+
+            # Extract features from title
+            title = parse_result.title if parse_result.title else ""
+            features = ml_extractor.extract_title_features(title)
+
+            # Add G-code features
+            features['cb_from_gcode'] = parse_result.cb_from_gcode if parse_result.cb_from_gcode else 0
+            features['ob_from_gcode'] = parse_result.ob_from_gcode if parse_result.ob_from_gcode else 0
+
+            # Add known dimensions for cross-prediction
+            features['known_od'] = parse_result.outer_diameter if (dimension != 'outer_diameter' and parse_result.outer_diameter) else 0
+            features['known_cb'] = parse_result.center_bore if (dimension != 'center_bore' and parse_result.center_bore) else 0
+            features['known_thickness'] = parse_result.thickness if (dimension != 'thickness' and parse_result.thickness) else 0
+
+            # Create feature vector matching training
+            feature_vector = [features.get(fn, 0) for fn in ml_extractor.feature_names]
+            feature_vector = np.array(feature_vector).reshape(1, -1)
+
+            # Predict
+            model = ml_extractor.models.get(dimension)
+            if model:
+                prediction = model.predict(feature_vector)[0]
+                return prediction
+            return None
+        except Exception as e:
+            return None
+
     def rescan_database(self):
         """Re-parse all files already in database to refresh with latest parser improvements"""
-        # Confirm with user
-        response = messagebox.askyesno(
-            "Rescan Database",
-            "This will re-parse ALL files in the database to refresh their data.\n\n"
-            "This is useful after parser improvements (like the updated hub height detection).\n\n"
-            "Files will be re-analyzed but NOT moved or renamed.\n\n"
-            "Continue?",
-            icon='question'
-        )
+        # Create custom dialog with ML fallback option
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Rescan Database")
+        dialog.geometry("500x300")
+        dialog.configure(bg=self.bg_color)
+        dialog.transient(self.root)
+        dialog.grab_set()
 
-        if not response:
+        # Center the dialog
+        dialog.update_idletasks()
+        x = (dialog.winfo_screenwidth() // 2) - (500 // 2)
+        y = (dialog.winfo_screenheight() // 2) - (300 // 2)
+        dialog.geometry(f"500x300+{x}+{y}")
+
+        # Message
+        msg_frame = tk.Frame(dialog, bg=self.bg_color)
+        msg_frame.pack(pady=20, padx=20, fill=tk.BOTH, expand=True)
+
+        msg_label = tk.Label(msg_frame,
+                            text="This will re-parse ALL files in the database to refresh their data.\n\n"
+                                 "This is useful after parser improvements.\n\n"
+                                 "Files will be re-analyzed but NOT moved or renamed.",
+                            bg=self.bg_color, fg=self.fg_color,
+                            font=("Arial", 10),
+                            justify=tk.LEFT,
+                            wraplength=450)
+        msg_label.pack(anchor='w')
+
+        # ML Fallback checkbox
+        use_ml_var = tk.BooleanVar(value=False)  # Default to OFF for speed
+
+        ml_frame = tk.Frame(dialog, bg=self.bg_color)
+        ml_frame.pack(pady=10, padx=20, fill=tk.X)
+
+        ml_check = tk.Checkbutton(ml_frame,
+                                 text="Use ML Fallback for missing dimensions",
+                                 variable=use_ml_var,
+                                 bg=self.bg_color, fg=self.fg_color,
+                                 selectcolor=self.input_bg,
+                                 activebackground=self.bg_color,
+                                 activeforeground=self.fg_color,
+                                 font=("Arial", 10, "bold"),
+                                 cursor='hand2')
+        ml_check.pack(anchor='w')
+
+        ml_note = tk.Label(ml_frame,
+                          text="(Slower but fills all missing dimensions automatically)",
+                          bg=self.bg_color, fg=self.fg_color,
+                          font=("Arial", 8, "italic"),
+                          justify=tk.LEFT)
+        ml_note.pack(anchor='w', padx=25)
+
+        # Buttons
+        button_frame = tk.Frame(dialog, bg=self.bg_color)
+        button_frame.pack(pady=20)
+
+        result = {'proceed': False, 'use_ml': False}
+
+        def on_proceed():
+            result['proceed'] = True
+            result['use_ml'] = use_ml_var.get()
+            dialog.destroy()
+
+        def on_cancel():
+            result['proceed'] = False
+            dialog.destroy()
+
+        proceed_btn = tk.Button(button_frame, text="Proceed",
+                               command=on_proceed,
+                               bg=self.button_bg, fg=self.fg_color,
+                               font=("Arial", 10, "bold"),
+                               width=15, height=2)
+        proceed_btn.pack(side=tk.LEFT, padx=10)
+
+        cancel_btn = tk.Button(button_frame, text="Cancel",
+                              command=on_cancel,
+                              bg=self.bg_color, fg=self.fg_color,
+                              font=("Arial", 10),
+                              width=15, height=2)
+        cancel_btn.pack(side=tk.LEFT, padx=10)
+
+        # Wait for dialog to close
+        self.root.wait_window(dialog)
+
+        if not result['proceed']:
             return
+
+        use_ml_fallback = result['use_ml']
 
         # Show progress window
         progress_window = tk.Toplevel(self.root)
@@ -1676,9 +3010,43 @@ class GCodeDatabaseGUI:
         from improved_gcode_parser import ImprovedGCodeParser
         parser = ImprovedGCodeParser()
 
+        # Try to initialize ML fallback (only if user enabled it)
+        ml_extractor = None
+        ml_available = False
+        if use_ml_fallback:
+            try:
+                from ml_dimension_extractor import MLDimensionExtractor
+                ml_extractor = MLDimensionExtractor(self.db_path)
+                if ml_extractor.load_models():
+                    ml_available = True
+                    progress_text.insert(tk.END, "[ML Fallback] Loaded ML models for missing dimensions\n\n")
+                else:
+                    progress_text.insert(tk.END, "[ML Fallback] Training ML models...\n")
+                    ml_extractor.load_data()
+                    ml_extractor.train_all_models()
+                    ml_extractor.save_models()
+                    ml_available = True
+                    progress_text.insert(tk.END, "[ML Fallback] ML models trained successfully\n\n")
+                progress_text.see(tk.END)
+                self.root.update()
+            except ImportError:
+                progress_text.insert(tk.END, "[ML Fallback] ML libraries not installed - skipping ML predictions\n")
+                progress_text.insert(tk.END, "              Install with: pip install pandas scikit-learn numpy\n\n")
+                progress_text.see(tk.END)
+                self.root.update()
+            except Exception as e:
+                progress_text.insert(tk.END, f"[ML Fallback] Error initializing ML: {str(e)[:80]}\n\n")
+                progress_text.see(tk.END)
+                self.root.update()
+        else:
+            progress_text.insert(tk.END, "ML Fallback disabled (for faster scanning)\n\n")
+            progress_text.see(tk.END)
+            self.root.update()
+
         updated = 0
         skipped = 0
         errors = 0
+        ml_predictions = 0
 
         for idx, (prog_num, file_path) in enumerate(all_files, 1):
             filename = os.path.basename(file_path)
@@ -1709,6 +3077,38 @@ class GCodeDatabaseGUI:
                         self.root.update()
                     continue
 
+                # Apply ML fallback for missing dimensions
+                if ml_available and ml_extractor:
+                    # Check and predict Outer Diameter
+                    if not parse_result.outer_diameter:
+                        ml_od = self._ml_predict_dimension(ml_extractor, 'outer_diameter', parse_result, prog_num)
+                        if ml_od:
+                            parse_result.outer_diameter = ml_od
+                            if parse_result.detection_confidence != 'ML_FALLBACK':
+                                parse_result.detection_confidence = 'ML_FALLBACK'
+                            parse_result.detection_notes.append(f'OD from ML: {ml_od:.2f}"')
+                            ml_predictions += 1
+
+                    # Check and predict Thickness
+                    if not parse_result.thickness:
+                        ml_thickness = self._ml_predict_dimension(ml_extractor, 'thickness', parse_result, prog_num)
+                        if ml_thickness:
+                            parse_result.thickness = ml_thickness
+                            if parse_result.detection_confidence != 'ML_FALLBACK':
+                                parse_result.detection_confidence = 'ML_FALLBACK'
+                            parse_result.detection_notes.append(f'Thickness from ML: {ml_thickness:.3f}"')
+                            ml_predictions += 1
+
+                    # Check and predict Center Bore
+                    if not parse_result.center_bore:
+                        ml_cb = self._ml_predict_dimension(ml_extractor, 'center_bore', parse_result, prog_num)
+                        if ml_cb:
+                            parse_result.center_bore = ml_cb
+                            if parse_result.detection_confidence != 'ML_FALLBACK':
+                                parse_result.detection_confidence = 'ML_FALLBACK'
+                            parse_result.detection_notes.append(f'CB from ML: {ml_cb:.1f}mm')
+                            ml_predictions += 1
+
                 # Calculate validation status (prioritized by severity)
                 validation_status = "PASS"
                 if parse_result.validation_issues:
@@ -1722,6 +3122,8 @@ class GCodeDatabaseGUI:
 
                 # Update database with refreshed data
                 # Note: paired_program not updated (not in parser result)
+                notes = '|'.join(parse_result.detection_notes) if parse_result.detection_notes else None
+
                 cursor.execute("""
                     UPDATE programs
                     SET title = ?,
@@ -1744,7 +3146,8 @@ class GCodeDatabaseGUI:
                         ob_from_gcode = ?,
                         bore_warnings = ?,
                         dimensional_issues = ?,
-                        lathe = ?
+                        lathe = ?,
+                        notes = ?
                     WHERE program_number = ?
                 """, (
                     parse_result.title,
@@ -1768,6 +3171,7 @@ class GCodeDatabaseGUI:
                     '|'.join(parse_result.bore_warnings) if parse_result.bore_warnings else None,
                     '|'.join(parse_result.dimensional_issues) if parse_result.dimensional_issues else None,
                     parse_result.lathe,
+                    notes,
                     prog_num
                 ))
 
@@ -1798,6 +3202,9 @@ class GCodeDatabaseGUI:
         progress_text.insert(tk.END, f"Total files: {total_files}\n")
         progress_text.insert(tk.END, f"Updated: {updated}\n")
         progress_text.insert(tk.END, f"Skipped (not found): {skipped}\n")
+        if ml_available and ml_predictions > 0:
+            progress_text.insert(tk.END, f"\n[ML Fallback] {ml_predictions} dimensions predicted by ML\n")
+            progress_text.insert(tk.END, f"              (Programs marked as 'ML_FALLBACK')\n")
         progress_text.insert(tk.END, f"Errors: {errors}\n")
         progress_text.see(tk.END)
 
@@ -2723,16 +4130,52 @@ class GCodeDatabaseGUI:
             self.filter_status.values = new_statuses
             self.filter_status.clear()
 
-    def refresh_results(self):
-        """Refresh the results table based on current filters"""
+    def refresh_results(self, view_mode='all', external_only=False):
+        """Refresh the results table based on current filters
+
+        Args:
+            view_mode: 'all' (default), 'repository', or 'external'
+            external_only: Deprecated, use view_mode='external' instead
+        """
+        # Handle deprecated parameter
+        if external_only:
+            view_mode = 'external'
+
         # Clear existing
         for item in self.tree.get_children():
             self.tree.delete(item)
-        
+
         # Build query
         query = "SELECT * FROM programs WHERE 1=1"
         params = []
-        
+
+        # Add view mode filter
+        if view_mode == 'repository':
+            # Only show managed files (in repository)
+            query += " AND is_managed = 1"
+        elif view_mode == 'external':
+            # Only show external files (NOT in repository)
+            query += " AND (is_managed = 0 OR is_managed IS NULL)"
+        # 'all' mode shows everything (no additional filter)
+
+        # Title search filter - supports multiple terms with +
+        if self.filter_title.get():
+            search_text = self.filter_title.get().strip()
+
+            # Check if using + operator for multi-term search
+            if '+' in search_text:
+                # Split by + and strip whitespace from each term
+                search_terms = [term.strip() for term in search_text.split('+') if term.strip()]
+
+                # Each term must be present (AND logic)
+                for term in search_terms:
+                    query += " AND title LIKE ?"
+                    params.append(f"%{term}%")
+            else:
+                # Single term search
+                query += " AND title LIKE ?"
+                params.append(f"%{search_text}%")
+
         # Program number filter
         if self.filter_program.get():
             query += " AND program_number LIKE ?"
@@ -2942,38 +4385,62 @@ class GCodeDatabaseGUI:
                 # Parse CRITICAL issues
                 try:
                     import json
-                    issues = json.loads(row[20])
-                    warning_details = "; ".join(issues[:2])  # Show first 2 issues
+                    if isinstance(row[20], str):
+                        issues = json.loads(row[20])
+                    else:
+                        issues = row[20] if isinstance(row[20], list) else []
+                    warning_details = "; ".join(str(x) for x in issues[:2]) if issues else ""
                 except:
-                    issues = [i.strip() for i in row[20].split('|') if i.strip()]
-                    warning_details = "; ".join(issues[:2]) if issues else row[20][:100]
+                    try:
+                        issues = [i.strip() for i in str(row[20]).split('|') if i.strip()]
+                        warning_details = "; ".join(issues[:2]) if issues else str(row[20])[:100]
+                    except:
+                        warning_details = str(row[20])[:100] if row[20] else ""
             elif validation_status == 'BORE_WARNING' and len(row) > 24 and row[24]:  # bore_warnings
                 # Parse BORE warnings
                 try:
                     import json
-                    warns = json.loads(row[24])
-                    warning_details = "; ".join(warns[:2])
+                    if isinstance(row[24], str):
+                        warns = json.loads(row[24])
+                    else:
+                        warns = row[24] if isinstance(row[24], list) else []
+                    warning_details = "; ".join(str(x) for x in warns[:2]) if warns else ""
                 except:
-                    warns = [i.strip() for i in row[24].split('|') if i.strip()]
-                    warning_details = "; ".join(warns[:2]) if warns else row[24][:100]
+                    try:
+                        warns = [i.strip() for i in str(row[24]).split('|') if i.strip()]
+                        warning_details = "; ".join(warns[:2]) if warns else str(row[24])[:100]
+                    except:
+                        warning_details = str(row[24])[:100] if row[24] else ""
             elif validation_status == 'DIMENSIONAL' and len(row) > 25 and row[25]:  # dimensional_issues
                 # Parse DIMENSIONAL issues
                 try:
                     import json
-                    dim_issues = json.loads(row[25])
-                    warning_details = "; ".join(dim_issues[:2])
+                    if isinstance(row[25], str):
+                        dim_issues = json.loads(row[25])
+                    else:
+                        dim_issues = row[25] if isinstance(row[25], list) else []
+                    warning_details = "; ".join(str(x) for x in dim_issues[:2]) if dim_issues else ""
                 except:
-                    dim_issues = [i.strip() for i in row[25].split('|') if i.strip()]
-                    warning_details = "; ".join(dim_issues[:2]) if dim_issues else row[25][:100]
+                    try:
+                        dim_issues = [i.strip() for i in str(row[25]).split('|') if i.strip()]
+                        warning_details = "; ".join(dim_issues[:2]) if dim_issues else str(row[25])[:100]
+                    except:
+                        warning_details = str(row[25])[:100] if row[25] else ""
             elif validation_status == 'WARNING' and len(row) > 21 and row[21]:  # validation_warnings
                 # Parse general WARNING
                 try:
                     import json
-                    warns = json.loads(row[21])
-                    warning_details = "; ".join(warns[:2])
+                    if isinstance(row[21], str):
+                        warns = json.loads(row[21])
+                    else:
+                        warns = row[21] if isinstance(row[21], list) else []
+                    warning_details = "; ".join(str(x) for x in warns[:2]) if warns else ""
                 except:
-                    warns = [i.strip() for i in row[21].split('|') if i.strip()]
-                    warning_details = "; ".join(warns[:2]) if warns else row[21][:100]
+                    try:
+                        warns = [i.strip() for i in str(row[21]).split('|') if i.strip()]
+                        warning_details = "; ".join(warns[:2]) if warns else str(row[21])[:100]
+                    except:
+                        warning_details = str(row[21])[:100] if row[21] else ""
 
             # Count status
             if validation_status in status_counts:
@@ -3004,8 +4471,16 @@ class GCodeDatabaseGUI:
                 hub_h, hub_d, cb_bore, step_d, material, validation_status, warning_details, filename
             ), tags=(tag,))
 
-        # Update count with status breakdown
-        status_text = f"Results: {len(results)} programs  |  "
+        # Update count with status breakdown and view mode indicator
+        # Add view mode label
+        if view_mode == 'repository':
+            view_label = "Repository"
+        elif view_mode == 'external':
+            view_label = "External"
+        else:
+            view_label = "All Programs"
+
+        status_text = f"{view_label}: {len(results)} programs  |  "
         status_parts = []
         if status_counts['CRITICAL'] > 0:
             status_parts.append(f"CRITICAL: {status_counts['CRITICAL']}")
@@ -3023,8 +4498,14 @@ class GCodeDatabaseGUI:
         status_text += "  ".join(status_parts) if status_parts else "No status data"
         self.results_label.config(text=status_text)
         
+    def clear_title_search(self):
+        """Clear just the title search field"""
+        self.filter_title.delete(0, tk.END)
+        self.refresh_results()
+
     def clear_filters(self):
         """Clear all filter fields"""
+        self.filter_title.delete(0, tk.END)
         self.filter_program.delete(0, tk.END)
         self.filter_type.clear()
         self.filter_material.clear()
@@ -6096,6 +7577,1720 @@ For more documentation, see project README files in the application directory.
                  bg=self.button_bg, fg=self.fg_color,
                  font=("Arial", 10, "bold"), width=14).pack(side=tk.LEFT, padx=5)
 
+    # ===== Repository Management Methods =====
+
+    def show_repository_stats(self):
+        """Show ONLY repository (managed) files statistics"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        # Only count managed files (is_managed = 1)
+        cursor.execute("SELECT COUNT(*) FROM programs WHERE is_managed = 1")
+        managed_count = cursor.fetchone()[0]
+
+        # Count versions
+        cursor.execute("SELECT COUNT(*) FROM program_versions")
+        versions_count = cursor.fetchone()[0]
+
+        # Repository size
+        repo_size = 0
+        if os.path.exists(self.repository_path):
+            for file in os.listdir(self.repository_path):
+                file_path = os.path.join(self.repository_path, file)
+                if os.path.isfile(file_path):
+                    repo_size += os.path.getsize(file_path)
+
+        # Versions size
+        versions_size = 0
+        if os.path.exists(self.versions_path):
+            for root, _, files in os.walk(self.versions_path):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    versions_size += os.path.getsize(file_path)
+
+        conn.close()
+
+        # Create stats dialog
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Repository Statistics")
+        dialog.geometry("500x350")
+        dialog.configure(bg=self.bg_color)
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        # Title
+        tk.Label(dialog, text="📊 Repository Statistics",
+                font=("Arial", 14, "bold"), bg=self.bg_color, fg=self.fg_color).pack(pady=10)
+
+        tk.Label(dialog, text="(Managed files in repository/ folder only)",
+                font=("Arial", 9, "italic"), bg=self.bg_color, fg="#888888").pack(pady=2)
+
+        # Stats frame
+        stats_frame = tk.Frame(dialog, bg=self.bg_color)
+        stats_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+
+        # Display stats
+        stats_data = [
+            ("Repository Files:", f"{managed_count}"),
+            ("", ""),
+            ("Total Versions:", f"{versions_count}"),
+            ("", ""),
+            ("Repository Size:", f"{repo_size / (1024 * 1024):.2f} MB"),
+            ("Versions Size:", f"{versions_size / (1024 * 1024):.2f} MB"),
+            ("Total Storage:", f"{(repo_size + versions_size) / (1024 * 1024):.2f} MB"),
+        ]
+
+        for label, value in stats_data:
+            if label:  # Skip empty rows for spacing
+                row = tk.Frame(stats_frame, bg=self.bg_color)
+                row.pack(fill=tk.X, pady=5)
+
+                tk.Label(row, text=label, font=("Arial", 11), bg=self.bg_color, fg=self.fg_color,
+                        anchor='w').pack(side=tk.LEFT)
+                tk.Label(row, text=value, font=("Arial", 11, "bold"), bg=self.bg_color, fg=self.accent_color,
+                        anchor='e').pack(side=tk.RIGHT)
+
+        # Buttons
+        btn_frame = tk.Frame(dialog, bg=self.bg_color)
+        btn_frame.pack(pady=10)
+
+        tk.Button(btn_frame, text="🔄 Refresh", command=lambda: [dialog.destroy(), self.show_repository_stats()],
+                 bg=self.accent_color, fg=self.fg_color, font=("Arial", 10, "bold"),
+                 width=12, height=2).pack(side=tk.LEFT, padx=5)
+
+        tk.Button(btn_frame, text="Close", command=dialog.destroy,
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold"),
+                 width=12, height=2).pack(side=tk.LEFT, padx=5)
+
+    def show_all_programs_stats(self):
+        """Show ALL programs statistics (repository + external combined)"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        # Count all programs
+        cursor.execute("SELECT COUNT(*) FROM programs WHERE file_path IS NOT NULL")
+        total_count = cursor.fetchone()[0]
+
+        # Count managed files
+        cursor.execute("SELECT COUNT(*) FROM programs WHERE is_managed = 1")
+        managed_count = cursor.fetchone()[0]
+
+        # Count external files
+        external_count = total_count - managed_count
+
+        # Count versions
+        cursor.execute("SELECT COUNT(*) FROM program_versions")
+        versions_count = cursor.fetchone()[0]
+
+        # Repository size
+        repo_size = 0
+        if os.path.exists(self.repository_path):
+            for file in os.listdir(self.repository_path):
+                file_path = os.path.join(self.repository_path, file)
+                if os.path.isfile(file_path):
+                    repo_size += os.path.getsize(file_path)
+
+        # Versions size
+        versions_size = 0
+        if os.path.exists(self.versions_path):
+            for root, _, files in os.walk(self.versions_path):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    versions_size += os.path.getsize(file_path)
+
+        conn.close()
+
+        # Create stats dialog
+        dialog = tk.Toplevel(self.root)
+        dialog.title("All Programs Statistics")
+        dialog.geometry("500x400")
+        dialog.configure(bg=self.bg_color)
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        # Title
+        tk.Label(dialog, text="📊 All Programs Statistics",
+                font=("Arial", 14, "bold"), bg=self.bg_color, fg=self.fg_color).pack(pady=10)
+
+        tk.Label(dialog, text="(Repository + External files combined)",
+                font=("Arial", 9, "italic"), bg=self.bg_color, fg="#888888").pack(pady=2)
+
+        # Stats frame
+        stats_frame = tk.Frame(dialog, bg=self.bg_color)
+        stats_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+
+        # Display stats
+        managed_pct = (managed_count / max(total_count, 1)) * 100
+        external_pct = (external_count / max(total_count, 1)) * 100
+
+        stats_data = [
+            ("Total Programs:", f"{total_count}"),
+            ("", ""),
+            ("Managed Files (Repository):", f"{managed_count} ({managed_pct:.1f}%)"),
+            ("External Files:", f"{external_count} ({external_pct:.1f}%)"),
+            ("", ""),
+            ("Total Versions:", f"{versions_count}"),
+            ("", ""),
+            ("Repository Size:", f"{repo_size / (1024 * 1024):.2f} MB"),
+            ("Versions Size:", f"{versions_size / (1024 * 1024):.2f} MB"),
+            ("Total Storage:", f"{(repo_size + versions_size) / (1024 * 1024):.2f} MB"),
+        ]
+
+        for label, value in stats_data:
+            if label:  # Skip empty rows for spacing
+                row = tk.Frame(stats_frame, bg=self.bg_color)
+                row.pack(fill=tk.X, pady=5)
+
+                tk.Label(row, text=label, font=("Arial", 11), bg=self.bg_color, fg=self.fg_color,
+                        anchor='w').pack(side=tk.LEFT)
+                tk.Label(row, text=value, font=("Arial", 11, "bold"), bg=self.bg_color, fg=self.accent_color,
+                        anchor='e').pack(side=tk.RIGHT)
+
+        # Buttons
+        btn_frame = tk.Frame(dialog, bg=self.bg_color)
+        btn_frame.pack(pady=10)
+
+        tk.Button(btn_frame, text="🔄 Refresh", command=lambda: [dialog.destroy(), self.show_all_programs_stats()],
+                 bg=self.accent_color, fg=self.fg_color, font=("Arial", 10, "bold"),
+                 width=12, height=2).pack(side=tk.LEFT, padx=5)
+
+        tk.Button(btn_frame, text="Close", command=dialog.destroy,
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold"),
+                 width=12, height=2).pack(side=tk.LEFT, padx=5)
+
+    def show_external_stats(self):
+        """Show ONLY external (non-managed) files statistics"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        # Only count external files (is_managed = 0 or NULL)
+        cursor.execute("SELECT COUNT(*) FROM programs WHERE (is_managed = 0 OR is_managed IS NULL) AND file_path IS NOT NULL")
+        external_count = cursor.fetchone()[0]
+
+        conn.close()
+
+        # Create stats dialog
+        dialog = tk.Toplevel(self.root)
+        dialog.title("External Files Statistics")
+        dialog.geometry("500x300")
+        dialog.configure(bg=self.bg_color)
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        # Title
+        tk.Label(dialog, text="📊 External Files Statistics",
+                font=("Arial", 14, "bold"), bg=self.bg_color, fg=self.fg_color).pack(pady=10)
+
+        tk.Label(dialog, text="(Scanned files NOT in repository)",
+                font=("Arial", 9, "italic"), bg=self.bg_color, fg="#888888").pack(pady=2)
+
+        # Stats frame
+        stats_frame = tk.Frame(dialog, bg=self.bg_color)
+        stats_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+
+        # Display stats
+        stats_data = [
+            ("External Files:", f"{external_count}"),
+            ("", ""),
+            ("Note:", "External files remain in their original locations"),
+            ("", "(USB drives, network folders, etc.)"),
+        ]
+
+        for label, value in stats_data:
+            if label:  # Skip empty rows for spacing
+                row = tk.Frame(stats_frame, bg=self.bg_color)
+                row.pack(fill=tk.X, pady=5)
+
+                if label == "Note:":
+                    tk.Label(row, text=label, font=("Arial", 11, "italic"), bg=self.bg_color, fg="#888888",
+                            anchor='w').pack(side=tk.LEFT)
+                    tk.Label(row, text=value, font=("Arial", 11, "italic"), bg=self.bg_color, fg="#888888",
+                            anchor='e').pack(side=tk.RIGHT)
+                else:
+                    tk.Label(row, text=label, font=("Arial", 11), bg=self.bg_color, fg=self.fg_color,
+                            anchor='w').pack(side=tk.LEFT)
+                    tk.Label(row, text=value, font=("Arial", 11, "bold"), bg=self.bg_color, fg=self.accent_color,
+                            anchor='e').pack(side=tk.RIGHT)
+
+        # Buttons
+        btn_frame = tk.Frame(dialog, bg=self.bg_color)
+        btn_frame.pack(pady=10)
+
+        tk.Button(btn_frame, text="🔄 Refresh", command=lambda: [dialog.destroy(), self.show_external_stats()],
+                 bg=self.accent_color, fg=self.fg_color, font=("Arial", 10, "bold"),
+                 width=12, height=2).pack(side=tk.LEFT, padx=5)
+
+        tk.Button(btn_frame, text="Close", command=dialog.destroy,
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold"),
+                 width=12, height=2).pack(side=tk.LEFT, padx=5)
+
+    def delete_from_repository(self):
+        """Delete selected program from repository (and optionally from database)"""
+        selection = self.tree.selection()
+        if not selection:
+            messagebox.showwarning("No Selection", "Please select a program to delete")
+            return
+
+        item = self.tree.item(selection[0])
+        values = item['values']
+        program_number = values[0]
+
+        # Get program info
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT file_path, is_managed, title FROM programs WHERE program_number = ?",
+                      (program_number,))
+        result = cursor.fetchone()
+        conn.close()
+
+        if not result:
+            messagebox.showerror("Error", "Program not found in database")
+            return
+
+        file_path, is_managed, title = result
+
+        if not is_managed:
+            messagebox.showinfo("Not in Repository",
+                              f"{program_number} is not in the repository.\n\n"
+                              "Use 'Remove from Database' in the External tab instead.")
+            return
+
+        # Confirm deletion
+        response = messagebox.askyesnocancel(
+            "Delete from Repository",
+            f"Delete {program_number} from repository?\n\n"
+            f"Title: {title}\n"
+            f"File: {file_path}\n\n"
+            "Choose:\n"
+            "• YES - Delete file from repository AND remove from database\n"
+            "• NO - Delete file from repository but keep database entry\n"
+            "• CANCEL - Don't delete anything"
+        )
+
+        if response is None:  # Cancel
+            return
+
+        try:
+            # Delete the file from repository
+            if file_path and os.path.exists(file_path):
+                os.remove(file_path)
+                print(f"[Repository] Deleted file: {file_path}")
+
+            if response:  # YES - also remove from database
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM programs WHERE program_number = ?", (program_number,))
+                conn.commit()
+                conn.close()
+
+                self.log_activity('delete_from_repository', program_number, {
+                    'file_path': file_path,
+                    'removed_from_db': True
+                })
+
+                messagebox.showinfo("Success", f"{program_number} deleted from repository and database")
+            else:  # NO - just update is_managed flag
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                cursor.execute("UPDATE programs SET is_managed = 0, file_path = NULL WHERE program_number = ?",
+                             (program_number,))
+                conn.commit()
+                conn.close()
+
+                self.log_activity('delete_from_repository', program_number, {
+                    'file_path': file_path,
+                    'removed_from_db': False
+                })
+
+                messagebox.showinfo("Success", f"{program_number} deleted from repository (database entry kept)")
+
+            # Refresh the view
+            current_tab = self.view_notebook.index(self.view_notebook.select())
+            if current_tab == 1:
+                self.refresh_results(view_mode='repository')
+            else:
+                self.refresh_results(view_mode='all')
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to delete file:\n{e}")
+
+    def add_selected_to_repository(self):
+        """Add selected external program to repository"""
+        selection = self.tree.selection()
+        if not selection:
+            messagebox.showwarning("No Selection", "Please select a program to add to repository")
+            return
+
+        item = self.tree.item(selection[0])
+        values = item['values']
+        program_number = values[0]
+
+        # Migrate to repository
+        success = self.migrate_file_to_repository(program_number)
+
+        if success:
+            messagebox.showinfo("Success", f"{program_number} added to repository")
+            # Refresh view
+            current_tab = self.view_notebook.index(self.view_notebook.select())
+            if current_tab == 2:
+                self.refresh_results(view_mode='external')
+            else:
+                self.refresh_results(view_mode='all')
+        else:
+            messagebox.showerror("Error", f"Failed to add {program_number} to repository")
+
+    def remove_from_database(self):
+        """Remove selected external program from database (doesn't delete file)"""
+        selection = self.tree.selection()
+        if not selection:
+            messagebox.showwarning("No Selection", "Please select a program to remove")
+            return
+
+        item = self.tree.item(selection[0])
+        values = item['values']
+        program_number = values[0]
+
+        # Get program info
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT file_path, is_managed, title FROM programs WHERE program_number = ?",
+                      (program_number,))
+        result = cursor.fetchone()
+        conn.close()
+
+        if not result:
+            messagebox.showerror("Error", "Program not found in database")
+            return
+
+        file_path, is_managed, title = result
+
+        if is_managed:
+            messagebox.showinfo("Repository File",
+                              f"{program_number} is in the repository.\n\n"
+                              "Use 'Delete from Repository' in the Repository tab instead.")
+            return
+
+        # Confirm removal
+        response = messagebox.askyesno(
+            "Remove from Database",
+            f"Remove {program_number} from database?\n\n"
+            f"Title: {title}\n"
+            f"File: {file_path}\n\n"
+            "The external file will NOT be deleted,\n"
+            "only the database entry will be removed."
+        )
+
+        if not response:
+            return
+
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM programs WHERE program_number = ?", (program_number,))
+            conn.commit()
+            conn.close()
+
+            self.log_activity('remove_from_database', program_number, {
+                'file_path': file_path,
+                'was_external': True
+            })
+
+            messagebox.showinfo("Success", f"{program_number} removed from database")
+
+            # Refresh view
+            current_tab = self.view_notebook.index(self.view_notebook.select())
+            if current_tab == 2:
+                self.refresh_results(view_mode='external')
+            else:
+                self.refresh_results(view_mode='all')
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to remove from database:\n{e}")
+
+    def export_selected_file(self):
+        """Export selected file from repository to a location"""
+        selection = self.tree.selection()
+        if not selection:
+            messagebox.showwarning("No Selection", "Please select a file to export")
+            return
+
+        item = self.tree.item(selection[0])
+        values = item['values']
+        program_number = values[0]
+
+        # Get file path
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT file_path, title FROM programs WHERE program_number = ?", (program_number,))
+        result = cursor.fetchone()
+        conn.close()
+
+        if not result or not result[0]:
+            messagebox.showerror("Error", "File path not found")
+            return
+
+        source_file = result[0]
+
+        if not os.path.exists(source_file):
+            messagebox.showerror("Error", f"Source file not found:\n{source_file}")
+            return
+
+        # Ask for destination
+        default_filename = os.path.basename(source_file)
+        dest_file = filedialog.asksaveasfilename(
+            title="Export File",
+            initialfile=default_filename,
+            defaultextension=os.path.splitext(default_filename)[1],
+            filetypes=[
+                ("G-Code files", "*.nc *.gcode"),
+                ("All files", "*.*")
+            ]
+        )
+
+        if not dest_file:
+            return
+
+        try:
+            shutil.copy2(source_file, dest_file)
+            self.log_activity('export_file', program_number, {
+                'source': source_file,
+                'destination': dest_file
+            })
+            messagebox.showinfo("Success", f"File exported to:\n{dest_file}")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to export file:\n{e}")
+
+    def manage_duplicates(self):
+        """Master duplicate management dialog - choose which type to manage"""
+        # Create management dialog
+        mgmt_window = tk.Toplevel(self.root)
+        mgmt_window.title("Duplicate Management")
+        mgmt_window.geometry("750x600")
+        mgmt_window.configure(bg=self.bg_color)
+        mgmt_window.transient(self.root)
+
+        # Header
+        tk.Label(mgmt_window, text="🔍 Duplicate Management",
+                font=("Arial", 14, "bold"), bg=self.bg_color, fg=self.fg_color).pack(pady=8)
+
+        tk.Label(mgmt_window, text="Choose the type of duplicates to manage:",
+                font=("Arial", 9), bg=self.bg_color, fg=self.fg_color).pack(pady=3)
+
+        # Create scrollable canvas
+        canvas = tk.Canvas(mgmt_window, bg=self.bg_color, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(mgmt_window, orient="vertical", command=canvas.yview)
+        scrollable_frame = tk.Frame(canvas, bg=self.bg_color)
+
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Main options frame (inside scrollable canvas)
+        options_frame = scrollable_frame
+
+        # Option 1: Content Duplicates
+        content_frame = tk.LabelFrame(options_frame, text="Content Duplicates",
+                                     bg=self.bg_color, fg=self.fg_color,
+                                     font=("Arial", 10, "bold"), relief=tk.RIDGE, bd=1)
+        content_frame.pack(fill=tk.X, pady=5, padx=10)
+
+        tk.Label(content_frame, text="Files with identical content (same hash)",
+                bg=self.bg_color, fg=self.accent_color,
+                font=("Arial", 8)).pack(anchor=tk.W, padx=8, pady=2)
+
+        tk.Label(content_frame,
+                text="• SHA256 hash match • Keeps parent/lowest # • Moves to deleted/",
+                bg=self.bg_color, fg=self.fg_color,
+                font=("Arial", 8), justify=tk.LEFT).pack(anchor=tk.W, padx=15, pady=2)
+
+        tk.Button(content_frame, text="🗑️ Delete Content Duplicates",
+                 command=lambda: (mgmt_window.destroy(), self.delete_content_duplicates()),
+                 bg="#E65100", fg=self.fg_color,
+                 font=("Arial", 9, "bold"), width=28).pack(pady=5)
+
+        # Option 2: Name Duplicates
+        name_frame = tk.LabelFrame(options_frame, text="Name Duplicates",
+                                  bg=self.bg_color, fg=self.fg_color,
+                                  font=("Arial", 10, "bold"), relief=tk.RIDGE, bd=1)
+        name_frame.pack(fill=tk.X, pady=5, padx=10)
+
+        tk.Label(name_frame, text="Same base name but different content",
+                bg=self.bg_color, fg=self.accent_color,
+                font=("Arial", 8)).pack(anchor=tk.W, padx=8, pady=2)
+
+        tk.Label(name_frame,
+                text="• Renames to next available # • Keeps 1st • Updates file + internal",
+                bg=self.bg_color, fg=self.fg_color,
+                font=("Arial", 8), justify=tk.LEFT).pack(anchor=tk.W, padx=15, pady=2)
+
+        tk.Button(name_frame, text="✏️ Rename Name Duplicates",
+                 command=lambda: (mgmt_window.destroy(), self.rename_name_duplicates()),
+                 bg="#7B1FA2", fg=self.fg_color,
+                 font=("Arial", 9, "bold"), width=28).pack(pady=5)
+
+        # Option 3: Scan/Report Only
+        scan_frame = tk.LabelFrame(options_frame, text="Scan for Duplicates",
+                                  bg=self.bg_color, fg=self.fg_color,
+                                  font=("Arial", 10, "bold"), relief=tk.RIDGE, bd=1)
+        scan_frame.pack(fill=tk.X, pady=5, padx=10)
+
+        tk.Label(scan_frame, text="Report all duplicates (no changes)",
+                bg=self.bg_color, fg=self.accent_color,
+                font=("Arial", 8)).pack(anchor=tk.W, padx=8, pady=2)
+
+        tk.Label(scan_frame,
+                text="• Read-only • Content + Name • Safe preview of duplicates",
+                bg=self.bg_color, fg=self.fg_color,
+                font=("Arial", 8), justify=tk.LEFT).pack(anchor=tk.W, padx=15, pady=2)
+
+        tk.Button(scan_frame, text="🔍 Scan for Duplicates (Report Only)",
+                 command=lambda: (mgmt_window.destroy(), self.scan_for_duplicates()),
+                 bg="#1976D2", fg=self.fg_color,
+                 font=("Arial", 9, "bold"), width=28).pack(pady=5)
+
+        # Option 4: Delete REPEAT Status Files
+        repeat_frame = tk.LabelFrame(options_frame, text="REPEAT Status Files",
+                                    bg=self.bg_color, fg=self.fg_color,
+                                    font=("Arial", 10, "bold"), relief=tk.RIDGE, bd=1)
+        repeat_frame.pack(fill=tk.X, pady=5, padx=10)
+
+        tk.Label(repeat_frame, text="Files marked REPEAT by 'Find Repeats'",
+                bg=self.bg_color, fg=self.accent_color,
+                font=("Arial", 8)).pack(anchor=tk.W, padx=8, pady=2)
+
+        tk.Label(repeat_frame,
+                text="• validation_status='REPEAT' • Keeps parents • Moves to deleted/",
+                bg=self.bg_color, fg=self.fg_color,
+                font=("Arial", 8), justify=tk.LEFT).pack(anchor=tk.W, padx=15, pady=2)
+
+        button_frame = tk.Frame(repeat_frame, bg=self.bg_color)
+        button_frame.pack(pady=5)
+
+        tk.Button(button_frame, text="🔍 Re-scan",
+                 command=lambda: (mgmt_window.destroy(), self.rescan_repository_duplicates()),
+                 bg="#1976D2", fg=self.fg_color,
+                 font=("Arial", 8, "bold"), width=18).pack(side=tk.LEFT, padx=3)
+
+        tk.Button(button_frame, text="🗑️ Clean",
+                 command=lambda: (mgmt_window.destroy(), self.delete_repeat_status_files()),
+                 bg="#C62828", fg=self.fg_color,
+                 font=("Arial", 8, "bold"), width=18).pack(side=tk.LEFT, padx=3)
+
+        # Close button (outside scrollable frame)
+        close_frame = tk.Frame(mgmt_window, bg=self.bg_color)
+        close_frame.pack(side=tk.BOTTOM, pady=5)
+
+        tk.Button(close_frame, text="Cancel", command=mgmt_window.destroy,
+                 bg=self.button_bg, fg=self.fg_color,
+                 font=("Arial", 9), width=12).pack()
+
+    def rescan_repository_duplicates(self):
+        """Re-scan all repository files and update REPEAT status based on current duplicate detection"""
+        # Create progress window
+        progress_window = tk.Toplevel(self.root)
+        progress_window.title("Re-scan Repository for Duplicates")
+        progress_window.geometry("1000x700")
+        progress_window.configure(bg=self.bg_color)
+        progress_window.transient(self.root)
+
+        tk.Label(progress_window, text="🔍 Re-scan Repository for Duplicates",
+                font=("Arial", 14, "bold"), bg=self.bg_color, fg=self.fg_color).pack(pady=10)
+
+        # Progress text
+        text_frame = tk.Frame(progress_window, bg=self.bg_color)
+        text_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+
+        progress_text = tk.Text(text_frame, bg=self.input_bg, fg=self.fg_color,
+                               font=("Consolas", 9), wrap=tk.WORD)
+        scrollbar = ttk.Scrollbar(text_frame, orient=tk.VERTICAL, command=progress_text.yview)
+        progress_text.configure(yscrollcommand=scrollbar.set)
+
+        progress_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        progress_text.insert(tk.END, "Re-scanning repository files for duplicates...\n\n")
+        progress_text.insert(tk.END, "This will verify which files should have REPEAT status.\n\n")
+        progress_text.see(tk.END)
+        self.root.update()
+
+        try:
+            import hashlib
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            # Get all repository files
+            cursor.execute("""
+                SELECT program_number, file_path, title, duplicate_type, parent_file, validation_status
+                FROM programs
+                WHERE is_managed = 1
+                ORDER BY program_number
+            """)
+
+            all_files = cursor.fetchall()
+            progress_text.insert(tk.END, f"Found {len(all_files)} files in repository\n\n")
+            progress_text.see(tk.END)
+            self.root.update()
+
+            # Calculate hashes for all files to detect content duplicates
+            progress_text.insert(tk.END, "Step 1: Calculating file hashes for content analysis...\n")
+            progress_text.see(tk.END)
+            self.root.update()
+
+            file_hashes = {}  # hash -> [(prog_num, title, file_path, old_status), ...]
+            missing_files = []
+
+            for idx, (prog_num, file_path, title, dup_type, parent_file, val_status) in enumerate(all_files, 1):
+                if idx % 50 == 0:
+                    progress_text.insert(tk.END, f"  Processed {idx}/{len(all_files)} files...\n")
+                    progress_text.see(tk.END)
+                    self.root.update()
+
+                if file_path and os.path.exists(file_path):
+                    try:
+                        sha256_hash = hashlib.sha256()
+                        with open(file_path, 'rb') as f:
+                            for byte_block in iter(lambda: f.read(4096), b""):
+                                sha256_hash.update(byte_block)
+                        file_hash = sha256_hash.hexdigest()
+
+                        if file_hash not in file_hashes:
+                            file_hashes[file_hash] = []
+                        file_hashes[file_hash].append((prog_num, title, file_path, val_status, dup_type, parent_file))
+                    except Exception as e:
+                        progress_text.insert(tk.END, f"  ⚠️ Error reading {prog_num}: {e}\n")
+                else:
+                    missing_files.append(prog_num)
+
+            progress_text.insert(tk.END, f"\nCompleted hash calculation for {len(all_files) - len(missing_files)} files\n")
+            if missing_files:
+                progress_text.insert(tk.END, f"⚠️ Skipped {len(missing_files)} missing files\n")
+            progress_text.insert(tk.END, f"\n")
+            progress_text.see(tk.END)
+            self.root.update()
+
+            # Analyze duplicates
+            progress_text.insert(tk.END, "Step 2: Analyzing duplicates...\n\n")
+            progress_text.see(tk.END)
+            self.root.update()
+
+            content_duplicates = {h: files for h, files in file_hashes.items() if len(files) > 1}
+
+            progress_text.insert(tk.END, f"Found {len(content_duplicates)} groups with duplicate content\n")
+            progress_text.insert(tk.END, f"Total duplicate files: {sum(len(files) - 1 for files in content_duplicates.values())}\n\n")
+
+            # Determine which files should be marked as REPEAT
+            files_to_mark_repeat = []
+            files_to_clear_repeat = []
+
+            for file_hash, duplicates in content_duplicates.items():
+                # Sort by: parent files first, then by program number
+                parent_files = [f for f in duplicates if f[4] == 'parent']  # dup_type == 'parent'
+                child_files = [f for f in duplicates if f[4] != 'parent']
+
+                if parent_files:
+                    # Keep first parent, mark others as REPEAT
+                    keeper = sorted(parent_files, key=lambda x: x[0])[0]  # Lowest program number parent
+
+                    for dup in parent_files[1:] if len(parent_files) > 1 else []:
+                        if dup[3] != 'REPEAT':  # val_status
+                            files_to_mark_repeat.append((dup[0], keeper[0], 'duplicate parent'))
+
+                    for dup in child_files:
+                        if dup[3] != 'REPEAT':
+                            files_to_mark_repeat.append((dup[0], keeper[0], 'duplicate child'))
+                else:
+                    # No parent files, keep lowest program number
+                    keeper = sorted(duplicates, key=lambda x: x[0])[0]
+
+                    for dup in duplicates[1:]:
+                        if dup[3] != 'REPEAT':
+                            files_to_mark_repeat.append((dup[0], keeper[0], 'content duplicate'))
+
+            # Find files marked as REPEAT but are NOT duplicates anymore
+            for file_hash, files in file_hashes.items():
+                if len(files) == 1:  # Only one file with this hash
+                    prog_num, title, file_path, val_status, dup_type, parent_file = files[0]
+                    if val_status == 'REPEAT':
+                        files_to_clear_repeat.append(prog_num)
+
+            progress_text.insert(tk.END, f"{'='*90}\n")
+            progress_text.insert(tk.END, f"ANALYSIS RESULTS\n")
+            progress_text.insert(tk.END, f"{'='*90}\n\n")
+            progress_text.insert(tk.END, f"Files to mark as REPEAT: {len(files_to_mark_repeat)}\n")
+            progress_text.insert(tk.END, f"Files to clear REPEAT status: {len(files_to_clear_repeat)}\n\n")
+
+            # Show preview
+            if files_to_mark_repeat:
+                progress_text.insert(tk.END, f"Files to mark as REPEAT (first 30):\n")
+                for prog_num, parent, reason in files_to_mark_repeat[:30]:
+                    progress_text.insert(tk.END, f"  → {prog_num} ({reason} of {parent})\n")
+                if len(files_to_mark_repeat) > 30:
+                    progress_text.insert(tk.END, f"  ... and {len(files_to_mark_repeat) - 30} more\n")
+                progress_text.insert(tk.END, f"\n")
+
+            if files_to_clear_repeat:
+                progress_text.insert(tk.END, f"Files to clear REPEAT status (not duplicates):\n")
+                for prog_num in files_to_clear_repeat[:30]:
+                    progress_text.insert(tk.END, f"  ✓ {prog_num} (unique file)\n")
+                if len(files_to_clear_repeat) > 30:
+                    progress_text.insert(tk.END, f"  ... and {len(files_to_clear_repeat) - 30} more\n")
+
+            progress_text.insert(tk.END, f"\n")
+            progress_text.see(tk.END)
+            self.root.update()
+
+            # Confirmation buttons
+            def confirm_update():
+                progress_text.insert(tk.END, f"\n{'='*90}\n")
+                progress_text.insert(tk.END, f"UPDATING VALIDATION STATUS\n")
+                progress_text.insert(tk.END, f"{'='*90}\n\n")
+                progress_text.see(tk.END)
+
+                marked_count = 0
+                cleared_count = 0
+
+                # Mark files as REPEAT
+                for prog_num, parent, reason in files_to_mark_repeat:
+                    try:
+                        cursor.execute("""
+                            UPDATE programs
+                            SET validation_status = 'REPEAT',
+                                parent_file = ?,
+                                duplicate_type = 'child'
+                            WHERE program_number = ?
+                        """, (parent, prog_num))
+                        marked_count += 1
+
+                        if marked_count % 50 == 0:
+                            progress_text.insert(tk.END, f"  Marked {marked_count} files as REPEAT...\n")
+                            progress_text.see(tk.END)
+                            self.root.update()
+                    except Exception as e:
+                        progress_text.insert(tk.END, f"  ✗ ERROR marking {prog_num}: {e}\n")
+
+                # Clear REPEAT status from unique files
+                for prog_num in files_to_clear_repeat:
+                    try:
+                        # Reset to PASS status (or you could keep original status)
+                        cursor.execute("""
+                            UPDATE programs
+                            SET validation_status = 'PASS',
+                                parent_file = NULL,
+                                duplicate_type = NULL
+                            WHERE program_number = ?
+                        """, (prog_num,))
+                        cleared_count += 1
+
+                        if cleared_count % 50 == 0:
+                            progress_text.insert(tk.END, f"  Cleared {cleared_count} REPEAT statuses...\n")
+                            progress_text.see(tk.END)
+                            self.root.update()
+                    except Exception as e:
+                        progress_text.insert(tk.END, f"  ✗ ERROR clearing {prog_num}: {e}\n")
+
+                conn.commit()
+
+                progress_text.insert(tk.END, f"\n{'='*90}\n")
+                progress_text.insert(tk.END, f"COMPLETE\n")
+                progress_text.insert(tk.END, f"{'='*90}\n\n")
+                progress_text.insert(tk.END, f"✓ Marked as REPEAT: {marked_count} files\n")
+                progress_text.insert(tk.END, f"✓ Cleared REPEAT status: {cleared_count} files\n")
+                progress_text.see(tk.END)
+
+                # Log activity
+                self.log_activity('rescan_repository_duplicates', 'batch', {
+                    'marked_repeat': marked_count,
+                    'cleared_repeat': cleared_count
+                })
+
+                # Refresh the view
+                self.refresh_results()
+
+                # Close database connection
+                conn.close()
+
+                # Update button
+                btn_frame.pack_forget()
+                tk.Button(progress_window, text="Close", command=progress_window.destroy,
+                         bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold")).pack(pady=10)
+
+            def cancel_update():
+                conn.close()
+                progress_window.destroy()
+
+            # Button frame
+            btn_frame = tk.Frame(progress_window, bg=self.bg_color)
+            btn_frame.pack(pady=10)
+
+            tk.Button(btn_frame, text="✓ Update Status", command=confirm_update,
+                     bg="#1976D2", fg=self.fg_color, font=("Arial", 10, "bold"),
+                     width=18, height=2).pack(side=tk.LEFT, padx=10)
+
+            tk.Button(btn_frame, text="✗ Cancel", command=cancel_update,
+                     bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold"),
+                     width=18, height=2).pack(side=tk.LEFT, padx=10)
+
+        except Exception as e:
+            progress_text.insert(tk.END, f"\n\nERROR: {e}\n")
+            import traceback
+            progress_text.insert(tk.END, traceback.format_exc())
+            progress_text.see(tk.END)
+
+            tk.Button(progress_window, text="Close", command=progress_window.destroy,
+                     bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold")).pack(pady=10)
+
+    def delete_repeat_status_files(self):
+        """Remove files with REPEAT validation status from repository (moves to deleted folder)"""
+        # Create progress window
+        progress_window = tk.Toplevel(self.root)
+        progress_window.title("Clean REPEAT Status Files")
+        progress_window.geometry("900x700")
+        progress_window.configure(bg=self.bg_color)
+        progress_window.transient(self.root)
+
+        tk.Label(progress_window, text="🗑️ Clean REPEAT Status Files",
+                font=("Arial", 14, "bold"), bg=self.bg_color, fg=self.fg_color).pack(pady=10)
+
+        # Progress text
+        text_frame = tk.Frame(progress_window, bg=self.bg_color)
+        text_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+
+        progress_text = tk.Text(text_frame, bg=self.input_bg, fg=self.fg_color,
+                               font=("Consolas", 9), wrap=tk.WORD)
+        scrollbar = ttk.Scrollbar(text_frame, orient=tk.VERTICAL, command=progress_text.yview)
+        progress_text.configure(yscrollcommand=scrollbar.set)
+
+        progress_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        progress_text.insert(tk.END, "Analyzing REPEAT status files in repository...\n\n")
+        progress_text.see(tk.END)
+        self.root.update()
+
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            # Get all REPEAT status files from repository
+            cursor.execute("""
+                SELECT program_number, file_path, title, parent_file
+                FROM programs
+                WHERE is_managed = 1 AND validation_status = 'REPEAT'
+                ORDER BY program_number
+            """)
+
+            repeat_files = cursor.fetchall()
+            progress_text.insert(tk.END, f"Found {len(repeat_files)} REPEAT status files in repository\n\n")
+            progress_text.see(tk.END)
+            self.root.update()
+
+            if not repeat_files:
+                progress_text.insert(tk.END, "✓ No REPEAT status files found!\n\n")
+                progress_text.insert(tk.END, "All repository files have other validation statuses.\n")
+                progress_text.see(tk.END)
+
+                tk.Button(progress_window, text="Close", command=progress_window.destroy,
+                         bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold")).pack(pady=10)
+                return
+
+            # Show preview of what will be removed
+            progress_text.insert(tk.END, f"{'='*80}\n")
+            progress_text.insert(tk.END, f"REPEAT FILES TO BE REMOVED\n")
+            progress_text.insert(tk.END, f"{'='*80}\n\n")
+
+            for prog_num, file_path, title, parent_file in repeat_files[:50]:
+                progress_text.insert(tk.END, f"  ✗ REMOVE: {prog_num}")
+                if parent_file:
+                    progress_text.insert(tk.END, f" (child of {parent_file})")
+                progress_text.insert(tk.END, f"\n     Title: {title[:60]}\n")
+
+            if len(repeat_files) > 50:
+                progress_text.insert(tk.END, f"\n... and {len(repeat_files) - 50} more files\n")
+
+            progress_text.insert(tk.END, f"\n{'='*80}\n")
+            progress_text.insert(tk.END, f"SUMMARY\n")
+            progress_text.insert(tk.END, f"{'='*80}\n\n")
+            progress_text.insert(tk.END, f"Files to remove: {len(repeat_files)}\n")
+            progress_text.insert(tk.END, f"Action: Move to deleted/ folder\n\n")
+            progress_text.see(tk.END)
+            self.root.update()
+
+            # Confirmation buttons
+            def confirm_clean():
+                progress_text.insert(tk.END, f"\n{'='*80}\n")
+                progress_text.insert(tk.END, f"REMOVING REPEAT FILES\n")
+                progress_text.insert(tk.END, f"{'='*80}\n\n")
+                progress_text.see(tk.END)
+
+                removed_count = 0
+                error_count = 0
+
+                for prog_num, file_path, title, parent_file in repeat_files:
+                    try:
+                        # Move physical file to deleted folder
+                        if file_path and os.path.exists(file_path):
+                            import shutil, time
+                            filename = os.path.basename(file_path)
+                            deleted_file_path = os.path.join(self.deleted_path, filename)
+
+                            # If file already exists in deleted folder, add timestamp
+                            if os.path.exists(deleted_file_path):
+                                timestamp = time.strftime("%Y%m%d_%H%M%S")
+                                name, ext = os.path.splitext(filename)
+                                deleted_file_path = os.path.join(self.deleted_path, f"{name}_{timestamp}{ext}")
+
+                            shutil.move(file_path, deleted_file_path)
+
+                        # Remove from database
+                        cursor.execute("DELETE FROM programs WHERE program_number = ?", (prog_num,))
+
+                        progress_text.insert(tk.END, f"  ✓ Removed: {prog_num}\n")
+                        removed_count += 1
+
+                        if removed_count % 10 == 0:
+                            progress_text.see(tk.END)
+                            self.root.update()
+
+                    except Exception as e:
+                        progress_text.insert(tk.END, f"  ✗ ERROR removing {prog_num}: {e}\n")
+                        error_count += 1
+
+                conn.commit()
+
+                progress_text.insert(tk.END, f"\n{'='*80}\n")
+                progress_text.insert(tk.END, f"COMPLETE\n")
+                progress_text.insert(tk.END, f"{'='*80}\n\n")
+                progress_text.insert(tk.END, f"Successfully removed: {removed_count} files\n")
+                if error_count > 0:
+                    progress_text.insert(tk.END, f"Errors: {error_count} files\n")
+                progress_text.insert(tk.END, f"\nFiles moved to: deleted/\n")
+                progress_text.see(tk.END)
+
+                # Log activity
+                self.log_activity('delete_repeat_status_files', 'batch', {
+                    'removed_count': removed_count,
+                    'error_count': error_count
+                })
+
+                # Refresh the view
+                self.refresh_results()
+
+                # Close database connection
+                conn.close()
+
+                # Update button
+                btn_frame.pack_forget()
+                tk.Button(progress_window, text="Close", command=progress_window.destroy,
+                         bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold")).pack(pady=10)
+
+            def cancel_clean():
+                conn.close()
+                progress_window.destroy()
+
+            # Button frame
+            btn_frame = tk.Frame(progress_window, bg=self.bg_color)
+            btn_frame.pack(pady=10)
+
+            tk.Button(btn_frame, text="✓ Confirm Clean", command=confirm_clean,
+                     bg="#C62828", fg=self.fg_color, font=("Arial", 10, "bold"),
+                     width=18, height=2).pack(side=tk.LEFT, padx=10)
+
+            tk.Button(btn_frame, text="✗ Cancel", command=cancel_clean,
+                     bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold"),
+                     width=18, height=2).pack(side=tk.LEFT, padx=10)
+
+        except Exception as e:
+            progress_text.insert(tk.END, f"\n\nERROR: {e}\n")
+            import traceback
+            progress_text.insert(tk.END, traceback.format_exc())
+            progress_text.see(tk.END)
+
+            tk.Button(progress_window, text="Close", command=progress_window.destroy,
+                     bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold")).pack(pady=10)
+
+    def delete_content_duplicates(self):
+        """Find and delete files with duplicate content (same hash), keeping parent files"""
+        import hashlib
+
+        # Create progress window
+        progress_window = tk.Toplevel(self.root)
+        progress_window.title("Delete Content Duplicates")
+        progress_window.geometry("900x700")
+        progress_window.configure(bg=self.bg_color)
+        progress_window.transient(self.root)
+
+        tk.Label(progress_window, text="🧹 Delete Content Duplicates",
+                font=("Arial", 14, "bold"), bg=self.bg_color, fg=self.fg_color).pack(pady=10)
+
+        # Progress text
+        text_frame = tk.Frame(progress_window, bg=self.bg_color)
+        text_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+
+        progress_text = tk.Text(text_frame, bg=self.input_bg, fg=self.fg_color,
+                               font=("Consolas", 9), wrap=tk.WORD)
+        scrollbar = ttk.Scrollbar(text_frame, orient=tk.VERTICAL, command=progress_text.yview)
+        progress_text.configure(yscrollcommand=scrollbar.set)
+
+        progress_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        progress_text.insert(tk.END, "Analyzing repository files for content duplicates...\n\n")
+        progress_text.see(tk.END)
+        self.root.update()
+
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            # Get all managed files from repository
+            cursor.execute("""
+                SELECT program_number, file_path, duplicate_type, parent_file
+                FROM programs
+                WHERE is_managed = 1
+                ORDER BY program_number
+            """)
+
+            all_files = cursor.fetchall()
+            progress_text.insert(tk.END, f"Found {len(all_files)} files in repository\n\n")
+            progress_text.see(tk.END)
+            self.root.update()
+
+            # Calculate hashes for all files
+            progress_text.insert(tk.END, "Calculating file hashes...\n")
+            progress_text.see(tk.END)
+            self.root.update()
+
+            file_hashes = {}  # hash -> list of (program_number, file_path, duplicate_type, parent_file)
+            missing_files = []
+
+            for idx, (prog_num, file_path, dup_type, parent_file) in enumerate(all_files, 1):
+                if idx % 50 == 0:
+                    progress_text.insert(tk.END, f"  Processed {idx}/{len(all_files)} files...\n")
+                    progress_text.see(tk.END)
+                    self.root.update()
+
+                if not file_path or not os.path.exists(file_path):
+                    missing_files.append((prog_num, file_path))
+                    continue
+
+                try:
+                    # Calculate SHA256 hash
+                    sha256_hash = hashlib.sha256()
+                    with open(file_path, 'rb') as f:
+                        for byte_block in iter(lambda: f.read(4096), b""):
+                            sha256_hash.update(byte_block)
+                    file_hash = sha256_hash.hexdigest()
+
+                    if file_hash not in file_hashes:
+                        file_hashes[file_hash] = []
+                    file_hashes[file_hash].append((prog_num, file_path, dup_type, parent_file))
+                except Exception as e:
+                    progress_text.insert(tk.END, f"  ERROR reading {prog_num}: {e}\n")
+
+            progress_text.insert(tk.END, f"\nHash calculation complete!\n\n")
+            progress_text.see(tk.END)
+            self.root.update()
+
+            # Find duplicate groups (hashes with multiple files)
+            duplicate_groups = {h: files for h, files in file_hashes.items() if len(files) > 1}
+
+            progress_text.insert(tk.END, f"{'='*80}\n")
+            progress_text.insert(tk.END, f"DUPLICATE ANALYSIS\n")
+            progress_text.insert(tk.END, f"{'='*80}\n\n")
+            progress_text.insert(tk.END, f"Total files analyzed: {len(all_files)}\n")
+            progress_text.insert(tk.END, f"Unique content: {len(file_hashes)}\n")
+            progress_text.insert(tk.END, f"Duplicate groups: {len(duplicate_groups)}\n")
+
+            if missing_files:
+                progress_text.insert(tk.END, f"Missing files: {len(missing_files)}\n")
+
+            progress_text.insert(tk.END, f"\n")
+            progress_text.see(tk.END)
+            self.root.update()
+
+            if not duplicate_groups:
+                progress_text.insert(tk.END, "✓ No content duplicates found!\n\n")
+                progress_text.insert(tk.END, "All files in repository have unique content.\n")
+                progress_text.see(tk.END)
+                tk.Button(progress_window, text="Close", command=progress_window.destroy,
+                         bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold")).pack(pady=10)
+                conn.close()
+                return
+
+            # Analyze each duplicate group and determine what to delete
+            files_to_delete = []  # List of (program_number, file_path, reason)
+
+            progress_text.insert(tk.END, f"{'='*80}\n")
+            progress_text.insert(tk.END, f"DUPLICATE GROUPS\n")
+            progress_text.insert(tk.END, f"{'='*80}\n\n")
+
+            for hash_val, duplicates in duplicate_groups.items():
+                progress_text.insert(tk.END, f"Group ({len(duplicates)} files with identical content):\n")
+
+                # Sort by: parent files first, then by program number
+                # Parent files (duplicate_type = 'parent' or parent_file IS NULL) should be kept
+                parent_files = [f for f in duplicates if f[2] == 'parent' or not f[3]]
+                child_files = [f for f in duplicates if f[2] != 'parent' and f[3]]
+
+                if parent_files:
+                    # Keep the first parent (or lowest program number if multiple parents)
+                    parent_files_sorted = sorted(parent_files, key=lambda x: x[0])
+                    keeper = parent_files_sorted[0]
+                    progress_text.insert(tk.END, f"  ✓ KEEP: {keeper[0]} (parent/original)\n")
+
+                    # Mark other parents as duplicates to delete
+                    for dup in parent_files_sorted[1:]:
+                        files_to_delete.append((dup[0], dup[1], f"duplicate of parent {keeper[0]}"))
+                        progress_text.insert(tk.END, f"  ✗ DELETE: {dup[0]} (duplicate parent)\n")
+
+                    # Mark all children as duplicates to delete
+                    for dup in child_files:
+                        files_to_delete.append((dup[0], dup[1], f"duplicate of parent {keeper[0]}"))
+                        progress_text.insert(tk.END, f"  ✗ DELETE: {dup[0]} (duplicate child)\n")
+                else:
+                    # No parent files, keep the one with lowest program number
+                    duplicates_sorted = sorted(duplicates, key=lambda x: x[0])
+                    keeper = duplicates_sorted[0]
+                    progress_text.insert(tk.END, f"  ✓ KEEP: {keeper[0]} (lowest program number)\n")
+
+                    for dup in duplicates_sorted[1:]:
+                        files_to_delete.append((dup[0], dup[1], f"duplicate of {keeper[0]}"))
+                        progress_text.insert(tk.END, f"  ✗ DELETE: {dup[0]}\n")
+
+                progress_text.insert(tk.END, f"\n")
+                progress_text.see(tk.END)
+                self.root.update()
+
+            # Summary
+            progress_text.insert(tk.END, f"{'='*80}\n")
+            progress_text.insert(tk.END, f"SUMMARY\n")
+            progress_text.insert(tk.END, f"{'='*80}\n\n")
+            progress_text.insert(tk.END, f"Files to delete: {len(files_to_delete)}\n")
+            progress_text.insert(tk.END, f"Files to keep: {len(file_hashes)}\n\n")
+
+            if files_to_delete:
+                progress_text.insert(tk.END, f"Files marked for deletion:\n")
+                for prog_num, file_path, reason in files_to_delete[:20]:
+                    progress_text.insert(tk.END, f"  • {prog_num} - {reason}\n")
+                if len(files_to_delete) > 20:
+                    progress_text.insert(tk.END, f"  ... and {len(files_to_delete) - 20} more\n")
+
+            progress_text.insert(tk.END, f"\n")
+            progress_text.see(tk.END)
+            self.root.update()
+
+            # Confirmation buttons
+            def confirm_delete():
+                progress_text.insert(tk.END, f"\n{'='*80}\n")
+                progress_text.insert(tk.END, f"DELETING FILES\n")
+                progress_text.insert(tk.END, f"{'='*80}\n\n")
+                progress_text.see(tk.END)
+
+                deleted_count = 0
+                error_count = 0
+
+                for prog_num, file_path, reason in files_to_delete:
+                    try:
+                        # Move physical file to deleted folder instead of deleting
+                        if os.path.exists(file_path):
+                            import shutil
+                            filename = os.path.basename(file_path)
+                            deleted_file_path = os.path.join(self.deleted_path, filename)
+
+                            # If file already exists in deleted folder, add timestamp
+                            if os.path.exists(deleted_file_path):
+                                import time
+                                timestamp = time.strftime("%Y%m%d_%H%M%S")
+                                name, ext = os.path.splitext(filename)
+                                deleted_file_path = os.path.join(self.deleted_path, f"{name}_{timestamp}{ext}")
+
+                            shutil.move(file_path, deleted_file_path)
+
+                        # Remove from database
+                        cursor.execute("DELETE FROM programs WHERE program_number = ?", (prog_num,))
+
+                        progress_text.insert(tk.END, f"  ✓ Moved to deleted/: {prog_num}\n")
+                        deleted_count += 1
+
+                        if deleted_count % 10 == 0:
+                            progress_text.see(tk.END)
+                            self.root.update()
+
+                    except Exception as e:
+                        progress_text.insert(tk.END, f"  ✗ ERROR moving {prog_num}: {e}\n")
+                        error_count += 1
+
+                conn.commit()
+
+                progress_text.insert(tk.END, f"\n{'='*80}\n")
+                progress_text.insert(tk.END, f"COMPLETE\n")
+                progress_text.insert(tk.END, f"{'='*80}\n\n")
+                progress_text.insert(tk.END, f"Successfully deleted: {deleted_count} files\n")
+                if error_count > 0:
+                    progress_text.insert(tk.END, f"Errors: {error_count} files\n")
+                progress_text.see(tk.END)
+
+                # Log activity
+                self.log_activity('delete_content_duplicates', 'batch', {
+                    'deleted_count': deleted_count,
+                    'error_count': error_count
+                })
+
+                # Refresh the view
+                self.refresh_results()
+
+                # Close database connection
+                conn.close()
+
+                # Update button
+                btn_frame.pack_forget()
+                tk.Button(progress_window, text="Close", command=progress_window.destroy,
+                         bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold")).pack(pady=10)
+
+            def cancel_delete():
+                conn.close()
+                progress_window.destroy()
+
+            # Button frame
+            btn_frame = tk.Frame(progress_window, bg=self.bg_color)
+            btn_frame.pack(pady=10)
+
+            tk.Button(btn_frame, text="✓ Confirm Delete", command=confirm_delete,
+                     bg="#D32F2F", fg=self.fg_color, font=("Arial", 10, "bold"),
+                     width=18, height=2).pack(side=tk.LEFT, padx=10)
+
+            tk.Button(btn_frame, text="✗ Cancel", command=cancel_delete,
+                     bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold"),
+                     width=18, height=2).pack(side=tk.LEFT, padx=10)
+
+        except Exception as e:
+            progress_text.insert(tk.END, f"\n\nERROR: {e}\n")
+            import traceback
+            progress_text.insert(tk.END, traceback.format_exc())
+            progress_text.see(tk.END)
+
+            tk.Button(progress_window, text="Close", command=progress_window.destroy,
+                     bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold")).pack(pady=10)
+
+    def scan_for_duplicates(self):
+        """Scan repository for all types of duplicates and show report"""
+        import hashlib
+
+        # Create progress window
+        progress_window = tk.Toplevel(self.root)
+        progress_window.title("Duplicate Scan Report")
+        progress_window.geometry("1000x700")
+        progress_window.configure(bg=self.bg_color)
+        progress_window.transient(self.root)
+
+        tk.Label(progress_window, text="🔍 Duplicate Scan Report",
+                font=("Arial", 14, "bold"), bg=self.bg_color, fg=self.fg_color).pack(pady=10)
+
+        # Progress text
+        text_frame = tk.Frame(progress_window, bg=self.bg_color)
+        text_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+
+        progress_text = tk.Text(text_frame, bg=self.input_bg, fg=self.fg_color,
+                               font=("Consolas", 9), wrap=tk.WORD)
+        scrollbar = ttk.Scrollbar(text_frame, orient=tk.VERTICAL, command=progress_text.yview)
+        progress_text.configure(yscrollcommand=scrollbar.set)
+
+        progress_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        progress_text.insert(tk.END, "Scanning repository for duplicates...\n\n")
+        progress_text.see(tk.END)
+        self.root.update()
+
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            # Get all managed files from repository
+            cursor.execute("""
+                SELECT program_number, title, file_path
+                FROM programs
+                WHERE is_managed = 1
+                ORDER BY program_number
+            """)
+
+            all_files = cursor.fetchall()
+            progress_text.insert(tk.END, f"Found {len(all_files)} files in repository\n\n")
+            progress_text.see(tk.END)
+            self.root.update()
+
+            # Group by program number (name duplicates)
+            name_groups = {}
+            for prog_num, title, file_path in all_files:
+                # Extract base program number (remove suffixes like (1), (2))
+                import re
+                base_num = re.sub(r'\(\d+\)$', '', prog_num)
+
+                if base_num not in name_groups:
+                    name_groups[base_num] = []
+                name_groups[base_num].append((prog_num, title, file_path))
+
+            # Find name duplicates
+            name_duplicates = {k: v for k, v in name_groups.items() if len(v) > 1}
+
+            # Calculate hashes for content duplicates
+            progress_text.insert(tk.END, "Calculating file hashes for content analysis...\n")
+            progress_text.see(tk.END)
+            self.root.update()
+
+            file_hashes = {}
+            for idx, (prog_num, title, file_path) in enumerate(all_files, 1):
+                if idx % 50 == 0:
+                    progress_text.insert(tk.END, f"  Processed {idx}/{len(all_files)} files...\n")
+                    progress_text.see(tk.END)
+                    self.root.update()
+
+                if file_path and os.path.exists(file_path):
+                    try:
+                        sha256_hash = hashlib.sha256()
+                        with open(file_path, 'rb') as f:
+                            for byte_block in iter(lambda: f.read(4096), b""):
+                                sha256_hash.update(byte_block)
+                        file_hash = sha256_hash.hexdigest()
+
+                        if file_hash not in file_hashes:
+                            file_hashes[file_hash] = []
+                        file_hashes[file_hash].append((prog_num, title, file_path))
+                    except:
+                        pass
+
+            # Find content duplicates
+            content_duplicates = {h: files for h, files in file_hashes.items() if len(files) > 1}
+
+            # Generate report
+            progress_text.insert(tk.END, f"\n{'='*90}\n")
+            progress_text.insert(tk.END, f"DUPLICATE SCAN REPORT\n")
+            progress_text.insert(tk.END, f"{'='*90}\n\n")
+
+            progress_text.insert(tk.END, f"Total repository files: {len(all_files)}\n")
+            progress_text.insert(tk.END, f"Name duplicate groups: {len(name_duplicates)}\n")
+            progress_text.insert(tk.END, f"Content duplicate groups: {len(content_duplicates)}\n\n")
+
+            # Section 1: Name Duplicates
+            if name_duplicates:
+                progress_text.insert(tk.END, f"{'='*90}\n")
+                progress_text.insert(tk.END, f"NAME DUPLICATES (Same base program number, different titles/content)\n")
+                progress_text.insert(tk.END, f"{'='*90}\n\n")
+
+                for base_num, files in sorted(name_duplicates.items())[:20]:
+                    progress_text.insert(tk.END, f"Base: {base_num} ({len(files)} files)\n")
+                    for prog_num, title, file_path in files:
+                        progress_text.insert(tk.END, f"  • {prog_num}: {title[:50]}\n")
+                    progress_text.insert(tk.END, f"\n")
+
+                if len(name_duplicates) > 20:
+                    progress_text.insert(tk.END, f"... and {len(name_duplicates) - 20} more groups\n\n")
+            else:
+                progress_text.insert(tk.END, "✓ No name duplicates found\n\n")
+
+            # Section 2: Content Duplicates
+            if content_duplicates:
+                progress_text.insert(tk.END, f"{'='*90}\n")
+                progress_text.insert(tk.END, f"CONTENT DUPLICATES (Exact file content match)\n")
+                progress_text.insert(tk.END, f"{'='*90}\n\n")
+
+                for hash_val, files in list(content_duplicates.items())[:20]:
+                    progress_text.insert(tk.END, f"Group ({len(files)} files with identical content):\n")
+                    for prog_num, title, file_path in files:
+                        progress_text.insert(tk.END, f"  • {prog_num}: {title[:50]}\n")
+                    progress_text.insert(tk.END, f"\n")
+
+                if len(content_duplicates) > 20:
+                    progress_text.insert(tk.END, f"... and {len(content_duplicates) - 20} more groups\n\n")
+            else:
+                progress_text.insert(tk.END, "✓ No content duplicates found\n\n")
+
+            # Summary and recommendations
+            progress_text.insert(tk.END, f"{'='*90}\n")
+            progress_text.insert(tk.END, f"RECOMMENDATIONS\n")
+            progress_text.insert(tk.END, f"{'='*90}\n\n")
+
+            if name_duplicates:
+                progress_text.insert(tk.END, f"→ Name Duplicates: Use '✏️ Rename Name Duplicates' to consolidate\n")
+            if content_duplicates:
+                progress_text.insert(tk.END, f"→ Content Duplicates: Use '🧹 Delete Content Duplicates' to remove\n")
+
+            if not name_duplicates and not content_duplicates:
+                progress_text.insert(tk.END, f"✓ Repository is clean - no duplicates found!\n")
+
+            progress_text.see(tk.END)
+            conn.close()
+
+            # Close button
+            tk.Button(progress_window, text="Close", command=progress_window.destroy,
+                     bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold")).pack(pady=10)
+
+        except Exception as e:
+            progress_text.insert(tk.END, f"\n\nERROR: {e}\n")
+            import traceback
+            progress_text.insert(tk.END, traceback.format_exc())
+            progress_text.see(tk.END)
+
+            tk.Button(progress_window, text="Close", command=progress_window.destroy,
+                     bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold")).pack(pady=10)
+
+    def rename_name_duplicates(self):
+        """Rename files with same base name but different content/title"""
+        # Create progress window
+        progress_window = tk.Toplevel(self.root)
+        progress_window.title("Rename Name Duplicates")
+        progress_window.geometry("900x700")
+        progress_window.configure(bg=self.bg_color)
+        progress_window.transient(self.root)
+
+        tk.Label(progress_window, text="✏️ Rename Name Duplicates",
+                font=("Arial", 14, "bold"), bg=self.bg_color, fg=self.fg_color).pack(pady=10)
+
+        # Progress text
+        text_frame = tk.Frame(progress_window, bg=self.bg_color)
+        text_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+
+        progress_text = tk.Text(text_frame, bg=self.input_bg, fg=self.fg_color,
+                               font=("Consolas", 9), wrap=tk.WORD)
+        scrollbar = ttk.Scrollbar(text_frame, orient=tk.VERTICAL, command=progress_text.yview)
+        progress_text.configure(yscrollcommand=scrollbar.set)
+
+        progress_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        progress_text.insert(tk.END, "Analyzing name duplicates...\n\n")
+        progress_text.see(tk.END)
+        self.root.update()
+
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            # Get all managed files from repository
+            cursor.execute("""
+                SELECT program_number, title, file_path
+                FROM programs
+                WHERE is_managed = 1
+                ORDER BY program_number
+            """)
+
+            all_files = cursor.fetchall()
+            progress_text.insert(tk.END, f"Found {len(all_files)} files in repository\n\n")
+            progress_text.see(tk.END)
+            self.root.update()
+
+            # Group by base program number (remove suffixes like (1), (2))
+            import re
+            name_groups = {}
+            for prog_num, title, file_path in all_files:
+                base_num = re.sub(r'\(\d+\)$', '', prog_num)
+
+                if base_num not in name_groups:
+                    name_groups[base_num] = []
+                name_groups[base_num].append((prog_num, title, file_path))
+
+            # Find name duplicates (multiple files with same base number)
+            name_duplicates = {k: v for k, v in name_groups.items() if len(v) > 1}
+
+            progress_text.insert(tk.END, f"{'='*80}\n")
+            progress_text.insert(tk.END, f"NAME DUPLICATE ANALYSIS\n")
+            progress_text.insert(tk.END, f"{'='*80}\n\n")
+            progress_text.insert(tk.END, f"Name duplicate groups found: {len(name_duplicates)}\n\n")
+
+            if not name_duplicates:
+                progress_text.insert(tk.END, "✓ No name duplicates found!\n\n")
+                progress_text.insert(tk.END, "All files have unique base program numbers.\n")
+                progress_text.see(tk.END)
+                tk.Button(progress_window, text="Close", command=progress_window.destroy,
+                         bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold")).pack(pady=10)
+                conn.close()
+                return
+
+            # Show duplicates and prepare rename suggestions
+            renames_to_apply = []  # (old_prog_num, new_prog_num)
+
+            progress_text.insert(tk.END, f"{'='*80}\n")
+            progress_text.insert(tk.END, f"DUPLICATE GROUPS (Will keep first, rename others)\n")
+            progress_text.insert(tk.END, f"{'='*80}\n\n")
+
+            for base_num, files in sorted(name_duplicates.items())[:30]:
+                progress_text.insert(tk.END, f"Base: {base_num} ({len(files)} files)\n")
+
+                # Keep first file, rename others
+                for idx, (prog_num, title, file_path) in enumerate(files):
+                    if idx == 0:
+                        progress_text.insert(tk.END, f"  ✓ KEEP: {prog_num} - {title[:40]}\n")
+                    else:
+                        # Find next available number by incrementing
+                        cursor.execute("SELECT MAX(CAST(REPLACE(program_number, 'o', '') AS INTEGER)) FROM programs WHERE program_number LIKE 'o%'")
+                        result = cursor.fetchone()
+                        try:
+                            max_num = int(result[0]) if result[0] else 0
+                            new_num = max_num + 1 + len(renames_to_apply)
+                            new_prog_num = f"o{new_num}"
+                        except:
+                            new_prog_num = f"{prog_num}_renamed"
+
+                        renames_to_apply.append((prog_num, new_prog_num))
+                        progress_text.insert(tk.END, f"  ✏️ RENAME: {prog_num} → {new_prog_num} - {title[:40]}\n")
+
+                progress_text.insert(tk.END, f"\n")
+                progress_text.see(tk.END)
+                self.root.update()
+
+            if len(name_duplicates) > 30:
+                progress_text.insert(tk.END, f"... and {len(name_duplicates) - 30} more groups\n\n")
+
+            # Summary
+            progress_text.insert(tk.END, f"{'='*80}\n")
+            progress_text.insert(tk.END, f"SUMMARY\n")
+            progress_text.insert(tk.END, f"{'='*80}\n\n")
+            progress_text.insert(tk.END, f"Files to rename: {len(renames_to_apply)}\n\n")
+
+            if renames_to_apply:
+                progress_text.insert(tk.END, f"Rename list (first 20):\n")
+                for old_num, new_num in renames_to_apply[:20]:
+                    progress_text.insert(tk.END, f"  • {old_num} → {new_num}\n")
+                if len(renames_to_apply) > 20:
+                    progress_text.insert(tk.END, f"  ... and {len(renames_to_apply) - 20} more\n")
+
+            progress_text.insert(tk.END, f"\n")
+            progress_text.see(tk.END)
+            self.root.update()
+
+            # Confirmation buttons
+            def confirm_rename():
+                progress_text.insert(tk.END, f"\n{'='*80}\n")
+                progress_text.insert(tk.END, f"RENAMING FILES\n")
+                progress_text.insert(tk.END, f"{'='*80}\n\n")
+                progress_text.see(tk.END)
+
+                renamed_count = 0
+                error_count = 0
+
+                for old_num, new_num in renames_to_apply:
+                    try:
+                        # Get current file path
+                        cursor.execute("SELECT file_path FROM programs WHERE program_number = ?", (old_num,))
+                        result = cursor.fetchone()
+                        if not result or not result[0]:
+                            progress_text.insert(tk.END, f"  ✗ ERROR: No file path for {old_num}\n")
+                            error_count += 1
+                            continue
+
+                        old_file_path = result[0]
+
+                        # Skip if file doesn't exist
+                        if not os.path.exists(old_file_path):
+                            progress_text.insert(tk.END, f"  ⚠️ SKIP: File not found for {old_num}\n")
+                            error_count += 1
+                            continue
+
+                        # Generate new file path
+                        old_dir = os.path.dirname(old_file_path)
+                        old_filename = os.path.basename(old_file_path)
+
+                        # Create new filename (replace program number, keep extension)
+                        new_filename = f"{new_num}.nc"
+                        new_file_path = os.path.join(old_dir, new_filename)
+
+                        # Read file content and update internal program number
+                        with open(old_file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                            content = f.read()
+
+                        # Replace first line program number (e.g., O12345 -> O12346)
+                        import re
+                        # Match O-number at start of line (case insensitive)
+                        old_num_numeric = old_num.replace('o', '').replace('O', '')
+                        new_num_numeric = new_num.replace('o', '').replace('O', '')
+
+                        # Replace O-number in first line
+                        lines = content.split('\n')
+                        if lines and re.match(r'^[oO]\d+', lines[0].strip()):
+                            lines[0] = re.sub(r'^[oO]\d+', f'O{new_num_numeric}', lines[0].strip())
+                            content = '\n'.join(lines)
+
+                        # Write to new file
+                        with open(new_file_path, 'w', encoding='utf-8') as f:
+                            f.write(content)
+
+                        # Delete old file
+                        os.remove(old_file_path)
+
+                        # Update database with new program number and file path
+                        cursor.execute("UPDATE programs SET program_number = ?, file_path = ? WHERE program_number = ?",
+                                     (new_num, new_file_path, old_num))
+
+                        progress_text.insert(tk.END, f"  ✓ Renamed: {old_num} → {new_num} (file + internal)\n")
+                        renamed_count += 1
+
+                        if renamed_count % 10 == 0:
+                            progress_text.see(tk.END)
+                            self.root.update()
+
+                    except Exception as e:
+                        progress_text.insert(tk.END, f"  ✗ ERROR renaming {old_num}: {e}\n")
+                        error_count += 1
+
+                conn.commit()
+
+                progress_text.insert(tk.END, f"\n{'='*80}\n")
+                progress_text.insert(tk.END, f"COMPLETE\n")
+                progress_text.insert(tk.END, f"{'='*80}\n\n")
+                progress_text.insert(tk.END, f"Successfully renamed: {renamed_count} files\n")
+                if error_count > 0:
+                    progress_text.insert(tk.END, f"Errors: {error_count} files\n")
+                progress_text.see(tk.END)
+
+                # Log activity
+                self.log_activity('rename_name_duplicates', 'batch', {
+                    'renamed_count': renamed_count,
+                    'error_count': error_count
+                })
+
+                # Refresh the view
+                self.refresh_results()
+
+                # Close database connection
+                conn.close()
+
+                # Update button
+                btn_frame.pack_forget()
+                tk.Button(progress_window, text="Close", command=progress_window.destroy,
+                         bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold")).pack(pady=10)
+
+            def cancel_rename():
+                conn.close()
+                progress_window.destroy()
+
+            # Button frame
+            btn_frame = tk.Frame(progress_window, bg=self.bg_color)
+            btn_frame.pack(pady=10)
+
+            tk.Button(btn_frame, text="✓ Confirm Rename", command=confirm_rename,
+                     bg="#7B1FA2", fg=self.fg_color, font=("Arial", 10, "bold"),
+                     width=18, height=2).pack(side=tk.LEFT, padx=10)
+
+            tk.Button(btn_frame, text="✗ Cancel", command=cancel_rename,
+                     bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold"),
+                     width=18, height=2).pack(side=tk.LEFT, padx=10)
+
+        except Exception as e:
+            progress_text.insert(tk.END, f"\n\nERROR: {e}\n")
+            import traceback
+            progress_text.insert(tk.END, traceback.format_exc())
+            progress_text.see(tk.END)
+
+            tk.Button(progress_window, text="Close", command=progress_window.destroy,
+                     bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold")).pack(pady=10)
+
 
 class EditEntryWindow:
     """Window for adding/editing entries"""
@@ -6300,7 +9495,7 @@ class EditEntryWindow:
                      datetime.now().isoformat(), file_path, program_number))
             else:  # Insert
                 cursor.execute('''
-                    INSERT INTO programs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO programs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (program_number, None,  # title
                      spacer_type, outer_diameter, thickness, None,  # thickness_display
                      center_bore, hub_height, hub_diameter, cb_diameter, cb_depth,
@@ -6309,7 +9504,8 @@ class EditEntryWindow:
                      None, None, None, None, None,  # detection_confidence, detection_method, validation_status, validation_issues, validation_warnings
                      None, None,  # bore_warnings, dimensional_issues
                      None, None, None,  # cb_from_gcode, ob_from_gcode, lathe
-                     None, None, None))  # duplicate_type, parent_file, duplicate_group
+                     None, None, None,  # duplicate_type, parent_file, duplicate_group
+                     1, self.parent.current_username, 0))  # current_version, modified_by, is_managed
             
             conn.commit()
             messagebox.showinfo("Success", "Entry saved successfully")
@@ -6392,7 +9588,62 @@ class DetailsWindow:
 
             # Validation status
             status = self.record[19] if self.record[19] else "N/A"
-            text.insert(tk.END, f"\nValidation Status: {status}\n\n")
+            text.insert(tk.END, f"\nValidation Status: {status}\n")
+
+            # If REPEAT status, show parent file information
+            if status == 'REPEAT':
+                text.insert(tk.END, "\n" + "="*50 + "\n")
+                text.insert(tk.END, "  DUPLICATE INFORMATION\n")
+                text.insert(tk.END, "="*50 + "\n\n")
+
+                # Get parent_file and duplicate_type from record
+                parent_file = self.record[28] if len(self.record) > 28 and self.record[28] else None
+                duplicate_type = self.record[27] if len(self.record) > 27 and self.record[27] else None
+
+                if duplicate_type:
+                    text.insert(tk.END, f"Duplicate Type: {duplicate_type}\n")
+
+                if parent_file:
+                    text.insert(tk.END, f"Parent Program: {parent_file}\n\n")
+
+                    # Fetch parent program details from database
+                    try:
+                        conn = sqlite3.connect(self.parent.db_path)
+                        cursor = conn.cursor()
+                        cursor.execute("""
+                            SELECT program_number, title, outer_diameter, thickness, center_bore,
+                                   file_path, validation_status
+                            FROM programs
+                            WHERE program_number = ?
+                        """, (parent_file,))
+                        parent_record = cursor.fetchone()
+                        conn.close()
+
+                        if parent_record:
+                            text.insert(tk.END, "Parent Program Details:\n")
+                            text.insert(tk.END, f"  Program: {parent_record[0]}\n")
+                            if parent_record[1]:
+                                text.insert(tk.END, f"  Title: {parent_record[1]}\n")
+                            if parent_record[2]:
+                                text.insert(tk.END, f"  OD: {parent_record[2]}in\n")
+                            if parent_record[3]:
+                                text.insert(tk.END, f"  Thickness: {parent_record[3]}in\n")
+                            if parent_record[4]:
+                                text.insert(tk.END, f"  CB: {parent_record[4]}mm\n")
+                            if parent_record[5]:
+                                text.insert(tk.END, f"  Location: {parent_record[5]}\n")
+                            if parent_record[6]:
+                                text.insert(tk.END, f"  Status: {parent_record[6]}\n")
+                        else:
+                            text.insert(tk.END, f"  ⚠️ Parent program not found in database\n")
+                    except Exception as e:
+                        text.insert(tk.END, f"  ⚠️ Error loading parent details: {e}\n")
+                else:
+                    text.insert(tk.END, "  ⚠️ No parent program recorded\n")
+
+                text.insert(tk.END, "\n")
+            else:
+                text.insert(tk.END, "\n")
 
             # G-code dimensions
             if len(self.record) > 22 and self.record[22]:  # cb_from_gcode (index 22)
@@ -6698,29 +9949,75 @@ class FileComparisonWindow:
                 text_widget.insert(tk.END, line + "\n")
 
     def highlight_differences(self, text_widget, content1, content2):
-        """Highlight differences between two file contents"""
-        text_widget.tag_configure("diff", background="#4d2600")  # Brown background for differences
+        """Highlight differences between two file contents with color coding"""
+        import difflib
+
+        # Configure tags for different types of changes
+        text_widget.tag_configure("changed", background="#5a3a00", foreground="#ffcc80")  # Orange for changed lines
+        text_widget.tag_configure("added", background="#1b5e20", foreground="#a5d6a7")     # Green for added lines
+        text_widget.tag_configure("deleted", background="#7f0000", foreground="#ef9a9a")  # Red for deleted lines
+        text_widget.tag_configure("diff_marker", foreground="#ff9800", font=("Arial", 9, "bold"))
+
+        if content1 == content2:
+            return  # No differences
 
         lines1 = content1.split('\n')
         lines2 = content2.split('\n')
 
-        import difflib
-        diff = difflib.unified_diff(lines2, lines1, lineterm='')
-        diff_lines = set()
+        # Use SequenceMatcher to find differences
+        matcher = difflib.SequenceMatcher(None, lines2, lines1)
 
-        for line in diff:
-            if line.startswith('@@'):
-                # Parse line numbers from unified diff format
-                import re
-                match = re.search(r'\+(\d+)', line)
-                if match:
-                    diff_lines.add(int(match.group(1)) - 1)
+        # Track changes by line number
+        changed_lines = set()
+        added_lines = set()
+        deleted_lines = set()
 
-        # Highlight different lines (basic implementation)
-        # For now, just mark if files are different
-        if content1 != content2:
-            text_widget.tag_configure("diff_marker", foreground="#ff9800")
-            text_widget.insert("1.0", "⚠ Differences detected\n", "diff_marker")
+        for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+            if tag == 'replace':
+                # Lines were changed
+                for line_num in range(j1, j2):
+                    changed_lines.add(line_num)
+            elif tag == 'insert':
+                # Lines were added (exist in content1 but not content2)
+                for line_num in range(j1, j2):
+                    added_lines.add(line_num)
+            elif tag == 'delete':
+                # Lines were deleted (exist in content2 but not content1)
+                # Mark where they would have been
+                if j1 < len(lines1):
+                    deleted_lines.add(j1)
+
+        # Apply highlighting to the text widget
+        # We need to re-enable the widget temporarily
+        text_widget.config(state=tk.NORMAL)
+
+        # Add difference summary at top
+        total_changes = len(changed_lines) + len(added_lines) + len(deleted_lines)
+        if total_changes > 0:
+            summary = f"⚠ {total_changes} difference(s): {len(changed_lines)} changed, {len(added_lines)} added, {len(deleted_lines)} removed\n"
+            text_widget.insert("1.0", summary, "diff_marker")
+            text_widget.insert("1.0", "\n")  # Add blank line after summary
+
+        # Highlight changed lines
+        for line_num in changed_lines:
+            start_idx = f"{line_num + 3}.0"  # +3 because we added 2 lines at top (blank + summary)
+            end_idx = f"{line_num + 3}.end"
+            text_widget.tag_add("changed", start_idx, end_idx)
+
+        # Highlight added lines
+        for line_num in added_lines:
+            start_idx = f"{line_num + 3}.0"
+            end_idx = f"{line_num + 3}.end"
+            text_widget.tag_add("added", start_idx, end_idx)
+
+        # Highlight deleted line markers
+        for line_num in deleted_lines:
+            start_idx = f"{line_num + 3}.0"
+            end_idx = f"{line_num + 3}.end"
+            text_widget.tag_add("deleted", start_idx, end_idx)
+
+        # Re-disable the widget
+        text_widget.config(state=tk.DISABLED)
 
     def update_summary(self):
         """Update the summary label with current action counts"""
@@ -6849,6 +10146,275 @@ class FileComparisonWindow:
 
         self.window.wait_window(dialog)
         return result[0]
+
+    # ===== Multi-File Comparison Tool =====
+
+    def compare_files(self):
+        """Launch multi-file comparison tool with difference highlighting"""
+        import difflib
+
+        # Get selected programs from tree
+        selected_items = self.tree.selection()
+
+        if len(selected_items) < 2:
+            messagebox.showwarning("Selection Required",
+                                 "Please select at least 2 files to compare.\n\n"
+                                 "Tip: Hold Ctrl and click to select multiple files.")
+            return
+
+        if len(selected_items) > 10:
+            messagebox.showwarning("Too Many Files",
+                                 "Please select no more than 10 files to compare.\n"
+                                 f"Currently selected: {len(selected_items)}")
+            return
+
+        # Get file information
+        files_to_compare = []
+        for item in selected_items:
+            values = self.tree.item(item)['values']
+            if values:
+                program_number = values[0]
+                title = values[1] if len(values) > 1 else ""
+
+                # Get file path
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                cursor.execute("SELECT file_path FROM programs WHERE program_number = ?", (program_number,))
+                result = cursor.fetchone()
+                conn.close()
+
+                if result and result[0] and os.path.exists(result[0]):
+                    files_to_compare.append({
+                        'program_number': program_number,
+                        'title': title,
+                        'file_path': result[0]
+                    })
+                else:
+                    messagebox.showerror("File Not Found",
+                                       f"Could not find file for {program_number}")
+                    return
+
+        # Create comparison window
+        comp_window = tk.Toplevel(self.root)
+        comp_window.title(f"Compare {len(files_to_compare)} Files - Difference Viewer")
+        comp_window.geometry("1400x900")
+        comp_window.configure(bg=self.bg_color)
+
+        # Header frame
+        header_frame = tk.Frame(comp_window, bg=self.bg_color)
+        header_frame.pack(fill=tk.X, padx=10, pady=10)
+
+        tk.Label(header_frame, text=f"Comparing {len(files_to_compare)} Files",
+                bg=self.bg_color, fg=self.fg_color,
+                font=("Arial", 14, "bold")).pack()
+
+        # Control frame
+        control_frame = tk.Frame(comp_window, bg=self.bg_color)
+        control_frame.pack(fill=tk.X, padx=10, pady=5)
+
+        tk.Label(control_frame, text="Select files to compare:",
+                bg=self.bg_color, fg=self.fg_color,
+                font=("Arial", 10)).pack(side=tk.LEFT, padx=5)
+
+        # File selection dropdowns
+        file1_var = tk.StringVar(value=files_to_compare[0]['program_number'])
+        file2_var = tk.StringVar(value=files_to_compare[1]['program_number'] if len(files_to_compare) > 1 else files_to_compare[0]['program_number'])
+
+        file_options = [f"{f['program_number']} - {f['title']}" for f in files_to_compare]
+
+        tk.Label(control_frame, text="File 1:",
+                bg=self.bg_color, fg=self.fg_color).pack(side=tk.LEFT, padx=5)
+        file1_combo = ttk.Combobox(control_frame, textvariable=file1_var,
+                                  values=file_options, width=40, state='readonly')
+        file1_combo.pack(side=tk.LEFT, padx=5)
+
+        tk.Label(control_frame, text="File 2:",
+                bg=self.bg_color, fg=self.fg_color).pack(side=tk.LEFT, padx=5)
+        file2_combo = ttk.Combobox(control_frame, textvariable=file2_var,
+                                  values=file_options, width=40, state='readonly')
+        file2_combo.pack(side=tk.LEFT, padx=5)
+
+        # Stats frame
+        stats_frame = tk.Frame(comp_window, bg=self.bg_color)
+        stats_frame.pack(fill=tk.X, padx=10, pady=5)
+
+        stats_label = tk.Label(stats_frame, text="", bg=self.bg_color,
+                              fg=self.accent_color, font=("Arial", 10, "bold"))
+        stats_label.pack()
+
+        # Main comparison frame (side-by-side)
+        main_frame = tk.Frame(comp_window, bg=self.bg_color)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+
+        # Left panel
+        left_frame = tk.LabelFrame(main_frame, text="File 1", bg=self.bg_color,
+                                  fg=self.fg_color, font=("Arial", 10, "bold"))
+        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5)
+
+        left_text = tk.Text(left_frame, wrap=tk.NONE, bg=self.input_bg,
+                           fg=self.fg_color, font=("Courier New", 9))
+        left_scroll_y = tk.Scrollbar(left_frame, command=left_text.yview)
+        left_scroll_x = tk.Scrollbar(left_frame, orient=tk.HORIZONTAL, command=left_text.xview)
+        left_text.config(yscrollcommand=left_scroll_y.set, xscrollcommand=left_scroll_x.set)
+
+        left_scroll_y.pack(side=tk.RIGHT, fill=tk.Y)
+        left_scroll_x.pack(side=tk.BOTTOM, fill=tk.X)
+        left_text.pack(fill=tk.BOTH, expand=True)
+
+        # Right panel
+        right_frame = tk.LabelFrame(main_frame, text="File 2", bg=self.bg_color,
+                                   fg=self.fg_color, font=("Arial", 10, "bold"))
+        right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=5)
+
+        right_text = tk.Text(right_frame, wrap=tk.NONE, bg=self.input_bg,
+                            fg=self.fg_color, font=("Courier New", 9))
+        right_scroll_y = tk.Scrollbar(right_frame, command=right_text.yview)
+        right_scroll_x = tk.Scrollbar(right_frame, orient=tk.HORIZONTAL, command=right_text.xview)
+        right_text.config(yscrollcommand=right_scroll_y.set, xscrollcommand=right_scroll_x.set)
+
+        right_scroll_y.pack(side=tk.RIGHT, fill=tk.Y)
+        right_scroll_x.pack(side=tk.BOTTOM, fill=tk.X)
+        right_text.pack(fill=tk.BOTH, expand=True)
+
+        # Configure tags for highlighting
+        # Green for additions, Red for deletions, Yellow for changes
+        left_text.tag_config("delete", background="#5D1F1A", foreground="#FF6B6B")
+        left_text.tag_config("change", background="#5D4A1F", foreground="#FFD93D")
+        left_text.tag_config("equal", background=self.input_bg, foreground=self.fg_color)
+
+        right_text.tag_config("insert", background="#1F4D2A", foreground="#6BCF7F")
+        right_text.tag_config("change", background="#5D4A1F", foreground="#FFD93D")
+        right_text.tag_config("equal", background=self.input_bg, foreground=self.fg_color)
+
+        # Sync scrolling
+        def sync_scroll(*args):
+            left_text.yview_moveto(args[0])
+            right_text.yview_moveto(args[0])
+
+        left_scroll_y.config(command=sync_scroll)
+        right_scroll_y.config(command=sync_scroll)
+
+        def perform_comparison():
+            """Perform the actual file comparison"""
+            # Get selected file indices
+            file1_idx = file1_combo.current()
+            file2_idx = file2_combo.current()
+
+            if file1_idx == file2_idx:
+                messagebox.showwarning("Same File", "Please select two different files to compare.")
+                return
+
+            file1_info = files_to_compare[file1_idx]
+            file2_info = files_to_compare[file2_idx]
+
+            # Read files
+            try:
+                with open(file1_info['file_path'], 'r', encoding='utf-8', errors='ignore') as f:
+                    file1_lines = f.readlines()
+                with open(file2_info['file_path'], 'r', encoding='utf-8', errors='ignore') as f:
+                    file2_lines = f.readlines()
+            except Exception as e:
+                messagebox.showerror("Read Error", f"Could not read files: {e}")
+                return
+
+            # Clear previous content
+            left_text.delete('1.0', tk.END)
+            right_text.delete('1.0', tk.END)
+
+            # Update labels
+            left_frame.config(text=f"File 1: {file1_info['program_number']} - {file1_info['title']}")
+            right_frame.config(text=f"File 2: {file2_info['program_number']} - {file2_info['title']}")
+
+            # Generate diff using difflib
+            differ = difflib.Differ()
+            diff = list(differ.compare(file1_lines, file2_lines))
+
+            # Count differences
+            additions = sum(1 for line in diff if line.startswith('+ '))
+            deletions = sum(1 for line in diff if line.startswith('- '))
+            changes = min(additions, deletions)
+
+            stats_label.config(text=f"Differences: {deletions} deletions, {additions} additions, ~{changes} changes")
+
+            # Process diff and display with highlighting
+            left_line_num = 0
+            right_line_num = 0
+
+            i = 0
+            while i < len(diff):
+                line = diff[i]
+
+                if line.startswith('  '):  # Equal line
+                    # Show in both panels
+                    left_line_num += 1
+                    right_line_num += 1
+                    content = line[2:]
+                    left_text.insert(tk.END, f"{left_line_num:4d} | {content}", "equal")
+                    right_text.insert(tk.END, f"{right_line_num:4d} | {content}", "equal")
+                    i += 1
+
+                elif line.startswith('- '):  # Deletion (in file1, not in file2)
+                    left_line_num += 1
+                    content = line[2:]
+                    left_text.insert(tk.END, f"{left_line_num:4d} - {content}", "delete")
+
+                    # Check if next line is an addition (change)
+                    if i + 1 < len(diff) and diff[i + 1].startswith('+ '):
+                        right_line_num += 1
+                        right_content = diff[i + 1][2:]
+                        right_text.insert(tk.END, f"{right_line_num:4d} + {right_content}", "change")
+                        left_text.delete(f"{left_text.index('end-1c linestart')}", f"{left_text.index('end-1c lineend')}")
+                        left_text.insert(f"{left_text.index('end-1c linestart')}", f"{left_line_num:4d} ~ {content}", "change")
+                        i += 2
+                    else:
+                        right_text.insert(tk.END, f"     | \n", "equal")
+                        i += 1
+
+                elif line.startswith('+ '):  # Addition (in file2, not in file1)
+                    right_line_num += 1
+                    content = line[2:]
+                    right_text.insert(tk.END, f"{right_line_num:4d} + {content}", "insert")
+                    left_text.insert(tk.END, f"     | \n", "equal")
+                    i += 1
+
+                elif line.startswith('? '):  # Diff hint (ignore)
+                    i += 1
+
+                else:
+                    i += 1
+
+            # Make read-only
+            left_text.config(state=tk.DISABLED)
+            right_text.config(state=tk.DISABLED)
+
+            # Re-enable for next comparison
+            comp_window.after(100, lambda: (left_text.config(state=tk.NORMAL), right_text.config(state=tk.NORMAL)))
+
+        # Compare button
+        tk.Button(control_frame, text="🔄 Compare", command=perform_comparison,
+                 bg=self.accent_color, fg=self.fg_color,
+                 font=("Arial", 10, "bold"), width=12).pack(side=tk.LEFT, padx=10)
+
+        # Legend frame
+        legend_frame = tk.Frame(comp_window, bg=self.bg_color)
+        legend_frame.pack(fill=tk.X, padx=10, pady=5)
+
+        tk.Label(legend_frame, text="Legend:", bg=self.bg_color,
+                fg=self.fg_color, font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=5)
+        tk.Label(legend_frame, text="  Green = Added  ", bg="#1F4D2A",
+                fg="#6BCF7F", font=("Arial", 9)).pack(side=tk.LEFT, padx=2)
+        tk.Label(legend_frame, text="  Red = Deleted  ", bg="#5D1F1A",
+                fg="#FF6B6B", font=("Arial", 9)).pack(side=tk.LEFT, padx=2)
+        tk.Label(legend_frame, text="  Yellow = Changed  ", bg="#5D4A1F",
+                fg="#FFD93D", font=("Arial", 9)).pack(side=tk.LEFT, padx=2)
+
+        # Close button
+        tk.Button(comp_window, text="Close", command=comp_window.destroy,
+                 bg=self.button_bg, fg=self.fg_color,
+                 font=("Arial", 10), width=15).pack(pady=10)
+
+        # Perform initial comparison
+        perform_comparison()
 
 
 def main():
