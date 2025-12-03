@@ -37,33 +37,48 @@ Example:
 
 ### **Step 3: Sync Registry** 🔄
 **What:** Update program number registry with newly scanned programs
-**How:** Run `populate_registry.py` script
+**Where:** Workflow tab → "🔄 Sync Registry" button
 **Why:** Registry needs to know which program numbers are now in use
 
-```bash
-python populate_registry.py
-```
+**How it works:**
+- Click the button
+- Confirm the operation
+- Watch live progress window
+- See completion summary
 
 **Takes:** ~0.4 seconds
 **Updates:** Marks scanned program numbers as IN_USE
+
+**Alternative:** You can still run the command-line script if preferred:
+```bash
+python populate_registry.py
+```
 
 ---
 
 ### **Step 4: Detect Round Sizes** 🎯
 **What:** Detect round sizes for all programs
-**How:** Run batch detection
+**Where:** Workflow tab → "🎯 Detect Round Sizes" button
 **Why:** Needed to identify out-of-range programs
 
+**How it works:**
+- Click the button
+- Confirm the operation
+- Watch progress bar as it processes programs
+- See real-time detection statistics
+- View completion summary
+
+**Results:**
+- 92.4% detected from titles (HIGH confidence)
+- 7.5% detected from G-code/dimensions (MEDIUM/LOW confidence)
+- 0.1% need manual input
+
+**Updates:** Programs table with round_size, confidence, source, in_correct_range
+
+**Alternative:** You can still run the command-line script if preferred:
 ```bash
 python run_batch_detection.py
 ```
-
-**Results:**
-- 92.4% detected from titles
-- 7.5% detected from dimensions
-- 0.1% need manual input
-
-**Updates:** Programs table with round_size, confidence, source
 
 ---
 
@@ -162,7 +177,7 @@ python run_batch_detection.py
 ### **Step 10: Final Sync** ✅
 **What:** Final registry update
 **When:** After all renames and duplicates handled
-**How:** Run `populate_registry.py` one more time
+**Where:** Workflow tab → "🔄 Sync Registry" button
 
 **Result:** Registry perfectly in sync with database
 
@@ -173,11 +188,11 @@ python run_batch_detection.py
 For most users, the minimal workflow is:
 
 ```
-1. Scan Folder           (External tab)
+1. Scan Folder           (Files tab → Scan Folder)
    ↓
-2. Sync Registry         (python populate_registry.py)
+2. Sync Registry         (Workflow tab → 🔄 Sync Registry)
    ↓
-3. Detect Round Sizes    (python run_batch_detection.py)
+3. Detect Round Sizes    (Workflow tab → 🎯 Detect Round Sizes)
    ↓
 4. Add to Repository     (External tab → Add Selected)
    ↓
@@ -185,6 +200,8 @@ For most users, the minimal workflow is:
    ↓
 6. Done!
 ```
+
+**All 6 steps can be done entirely in the UI - no command line needed!**
 
 ---
 
@@ -255,11 +272,21 @@ For most users, the minimal workflow is:
 
 ---
 
-## ⚙️ Automation Ideas
+## ⚙️ Workflow Tips
 
-### **Batch Script for Post-Scan Workflow**
+### **Post-Scan Workflow (All in UI)**
 
-Create `post_scan_workflow.bat`:
+After scanning new files:
+1. Click "🔄 Sync Registry" button (Workflow tab)
+2. Click "🎯 Detect Round Sizes" button (Workflow tab)
+3. Click "📊 Round Size Stats" to see results (Workflow tab)
+4. Review out-of-range programs in Repository tab
+
+**No scripts needed - everything is in the UI!**
+
+### **Alternative: Command-Line Script (Optional)**
+
+If you prefer automation, create `post_scan_workflow.bat`:
 ```batch
 @echo off
 echo === Post-Scan Workflow ===
@@ -276,7 +303,7 @@ echo Next: Review out-of-range programs in the app
 pause
 ```
 
-**Usage:** Run this after every scan session
+**Usage:** Run this after every scan session (alternative to UI buttons)
 
 ---
 

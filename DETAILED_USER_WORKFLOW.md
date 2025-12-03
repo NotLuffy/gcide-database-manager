@@ -114,39 +114,37 @@ Click "Close"
 
 ---
 
-### **Step 5: Sync the Registry (MANUAL STEP)**
+### **Step 5: Sync the Registry**
 
-**IMPORTANT:** This does NOT happen automatically!
+**IMPORTANT:** This does NOT happen automatically after scanning!
 
 **Why needed:** The registry tracks all 98,001 possible program numbers. After scanning, it needs to know which numbers are now in use.
 
 **How to sync:**
 
-1. **Option A: Using Command Line (Recommended)**
-   ```bash
-   python populate_registry.py
-   ```
+1. **Option A: Using UI Button (Recommended)**
+
+   - Click the **"🔄 Workflow"** tab at the top
+   - Click **"🔄 Sync Registry"** button
+   - Click **"Yes"** to confirm
+   - Watch the progress window with live log
+   - See completion summary
 
    You'll see:
    ```
-   Step 1: Clearing existing registry...
-   Step 2: Loading existing programs from database...
-     Found 12,046 existing programs
-   Step 3: Generating all 98,001 program numbers...
-     6.25: 524/2,500 in use (32.8%)
-     7.0: 231/5,000 in use (43.1%)
-     ...
-
-   REGISTRY POPULATION COMPLETE
-   Total: 98,001 numbers
-   In Use: 12,046 (12.3%)
-   Available: 85,955 (87.7%)
+   ✅ REGISTRY SYNC COMPLETE
+   Total numbers: 97,001
+   In use: 12,046
+   Available: 84,955
+   Duplicates: 0
    ```
 
-   **Time:** About 0.5 seconds
+   **Time:** About 0.4 seconds
 
-2. **Option B: No Button Available**
-   Currently there is NO button in the UI to sync the registry. You **must** use the command line script.
+2. **Option B: Using Command Line (Alternative)**
+   ```bash
+   python populate_registry.py
+   ```
 
 **When to sync:**
 - After every scan session
@@ -155,7 +153,7 @@ Click "Close"
 
 ---
 
-### **Step 6: Detect Round Sizes (MANUAL STEP)**
+### **Step 6: Detect Round Sizes**
 
 **IMPORTANT:** This does NOT happen automatically during scan!
 
@@ -163,14 +161,36 @@ Click "Close"
 
 **How to detect:**
 
-1. **Option A: Using Command Line (Recommended)**
+1. **Option A: Using UI Button (Recommended)**
+
+   - Stay on the **"🔄 Workflow"** tab
+   - Click **"🎯 Detect Round Sizes"** button
+   - Click **"Yes"** to confirm
+   - Watch progress bar as it processes all programs
+   - See real-time detection statistics
+   - View completion summary
+
+   You'll see:
+   ```
+   ✅ DETECTION COMPLETE
+   Total processed: 12,046
+   Detected from title: 11,134 (92.4%)
+   Detected from G-code: 803 (6.7%)
+   Detected from dimensions: 97 (0.8%)
+   Manual input needed: 12 (0.1%)
+
+   In correct range: 10,523
+   Out of range: 1,511
+   ```
+
+   **Time:** 10-30 seconds depending on number of programs
+
+2. **Option B: Using Command Line (Alternative)**
    ```bash
    python run_batch_detection.py
    ```
 
-   You'll see:
-   ```
-   BATCH ROUND SIZE DETECTION
+   You'll see similar output in the terminal
 
    Processing 12,046 programs...
 
@@ -431,15 +451,15 @@ When you scan more files after the initial setup:
 
 ```
 1. Scan Folder
-   External tab → Scan Folder → Choose Repository
+   Files tab → Scan Folder → Choose Repository
    Result: New files added to repository
 
-2. Sync Registry (command line)
-   python populate_registry.py
+2. Sync Registry
+   Workflow tab → 🔄 Sync Registry button
    Result: Registry updated with new program numbers
 
-3. Detect Round Sizes (command line)
-   python run_batch_detection.py
+3. Detect Round Sizes
+   Workflow tab → 🎯 Detect Round Sizes button
    Result: Round sizes detected for new programs
 
 4. Check Out-of-Range
@@ -456,6 +476,8 @@ When you scan more files after the initial setup:
 
 **Time:** 5-10 minutes depending on file count
 
+**All done in the UI - no command line needed!**
+
 ---
 
 ## 📂 EXTERNAL WORKFLOW (Read-Only Catalog)
@@ -466,23 +488,26 @@ Use this if you just want to catalog files without moving or renaming them.
 
 ```
 1. Scan Folder
-   External tab → Scan Folder → Choose EXTERNAL
+   Files tab → Scan Folder → Choose EXTERNAL
    Result: Files referenced in place (not copied)
 
-2. Sync Registry (command line)
-   python populate_registry.py
+2. Sync Registry
+   Workflow tab → 🔄 Sync Registry button
    Result: Registry updated
 
-3. Detect Round Sizes (command line)
-   python run_batch_detection.py
+3. Detect Round Sizes
+   Workflow tab → 🎯 Detect Round Sizes button
    Result: Round sizes detected
 
 4. Review Statistics
-   External tab → Stats button
+   Workflow tab → 📊 Round Size Stats button
+   OR External tab → Stats button
    Result: See what you have
 
 5. Done!
 ```
+
+**All done in the UI - no command line needed!**
 
 **What you CAN do:**
 - View all programs in database
@@ -502,12 +527,14 @@ Use this if you just want to catalog files without moving or renaming them.
 
 ```
 1. Scan Folder → Choose EXTERNAL
-2. python populate_registry.py
-3. python run_batch_detection.py
-4. Review stats
+2. Workflow tab → 🔄 Sync Registry button
+3. Workflow tab → 🎯 Detect Round Sizes button
+4. Workflow tab → 📊 Round Size Stats button
 ```
 
 **Time:** 2-3 minutes
+
+**All done in the UI - no command line needed!**
 
 ---
 
