@@ -10380,10 +10380,10 @@ For more documentation, see project README files in the application directory.
             if stats:
                 log("-" * 60)
                 log("✅ REGISTRY SYNC COMPLETE")
-                log(f"Total numbers: {stats['total_numbers']:,}")
+                log(f"Total numbers: {stats['total_generated']:,}")
                 log(f"In use: {stats['in_use']:,}")
                 log(f"Available: {stats['available']:,}")
-                log(f"Reserved: {stats['reserved']:,}")
+                log(f"Duplicates: {stats['duplicates']}")
                 log("")
                 log("Registry is now up to date!")
 
@@ -10398,7 +10398,7 @@ For more documentation, see project README files in the application directory.
                     f"Registry synced successfully!\n\n"
                     f"In use: {stats['in_use']:,}\n"
                     f"Available: {stats['available']:,}\n"
-                    f"Total: {stats['total_numbers']:,}"
+                    f"Total: {stats['total_generated']:,}"
                 )
             else:
                 log("❌ Sync failed!")
