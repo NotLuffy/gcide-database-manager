@@ -976,11 +976,33 @@ class GCodeDatabaseGUI:
             return ranges[round_size][:2]  # Return (start, end)
 
         # Find closest match (for slight variations like 6.24 → 6.25)
-        closest_size = min(ranges.keys(), key=lambda x: abs(x - round_size) if x > 0 else float('inf'))
-        tolerance = 0.1
+        # Only consider positive round sizes (exclude free ranges)
+        positive_ranges = {k: v for k, v in ranges.items() if k > 0}
 
-        if abs(closest_size - round_size) <= tolerance:
+        if not positive_ranges:
+            return None
+
+        closest_size = min(positive_ranges.keys(), key=lambda x: abs(x - round_size))
+
+        # Tight tolerance for very close matches (6.24 → 6.25)
+        tight_tolerance = 0.1
+        if abs(closest_size - round_size) <= tight_tolerance:
             return ranges[closest_size][:2]
+
+        # Smart fallback for orphaned round sizes (like 5.0, 5.5, etc.)
+        # Use a more generous tolerance to find the nearest logical range
+        smart_fallback_tolerance = 1.0
+        if abs(closest_size - round_size) <= smart_fallback_tolerance:
+            return ranges[closest_size][:2]
+
+        # If still no match, try to find the nearest range boundary
+        # Example: 5.0" → use 5.75" range (smallest available)
+        # Example: 11.0" → use 10.25/10.50" range (nearest)
+        if round_size > 0:
+            # Find the nearest range by distance
+            nearest = min(positive_ranges.items(),
+                         key=lambda x: abs(x[0] - round_size))
+            return nearest[1][:2]
 
         return None
 
