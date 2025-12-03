@@ -486,9 +486,10 @@ class ImprovedGCodeParser:
 
         # Extract all comments from G-code file
         if lines:
-            for line in lines[:100]:  # Scan first 100 lines for comments
+            for line in lines:  # Scan ALL lines for comments (not just first 100)
                 # G-code comments are in parentheses or after semicolon
                 # Example: (2PC STUD) or ; 2PC LUG
+                # Also: (LUG PLATE) or (STUD PLATE) or just (LUG) or (STUD)
                 if '(' in line:
                     # Extract text between parentheses
                     comment_match = re.findall(r'\(([^)]+)\)', line)
@@ -552,6 +553,32 @@ class ImprovedGCodeParser:
                 # 2PC without specifying LUG or STUD
                 confidence = 'MEDIUM' if found_in_title else 'LOW'
                 return '2PC UNSURE', confidence
+
+        # Standalone LUG/STUD detection (even without "2PC" keyword)
+        # Some files have "LUG PLATE", "STUD PLATE", or just "LUG"/"STUD" in comments
+        # Look for these patterns anywhere in the file
+        lug_patterns = ['LUG PLATE', 'LUG', 'LUGS']
+        stud_patterns = ['STUD PLATE', 'STUD', 'STUDS']
+
+        # Check for LUG patterns
+        for pattern in lug_patterns:
+            if pattern in combined_upper:
+                # Make sure it's not part of another word (e.g., "PLUG")
+                if re.search(r'\b' + pattern + r'\b', combined_upper):
+                    found_in_title = pattern in title_upper
+                    # If found in title, high confidence; if in comments, medium
+                    confidence = 'HIGH' if found_in_title else 'MEDIUM'
+                    return '2PC LUG', confidence
+
+        # Check for STUD patterns
+        for pattern in stud_patterns:
+            if pattern in combined_upper:
+                # Make sure it's not part of another word
+                if re.search(r'\b' + pattern + r'\b', combined_upper):
+                    found_in_title = pattern in title_upper
+                    # If found in title, high confidence; if in comments, medium
+                    confidence = 'HIGH' if found_in_title else 'MEDIUM'
+                    return '2PC STUD', confidence
 
         # Thin hub centric indicator
         if 'THIN' in combined_upper and 'HC' in combined_upper:
