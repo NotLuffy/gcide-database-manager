@@ -347,6 +347,34 @@ class GCodeDatabaseGUI:
             cursor.execute("ALTER TABLE programs ADD COLUMN is_managed INTEGER DEFAULT 0")  # 1 if in repository, 0 if external
         except:
             pass
+        try:
+            cursor.execute("ALTER TABLE programs ADD COLUMN round_size REAL")  # Detected round size (e.g., 6.25, 10.5)
+        except:
+            pass
+        try:
+            cursor.execute("ALTER TABLE programs ADD COLUMN round_size_confidence TEXT")  # 'HIGH', 'MEDIUM', 'LOW', 'NONE'
+        except:
+            pass
+        try:
+            cursor.execute("ALTER TABLE programs ADD COLUMN round_size_source TEXT")  # 'TITLE', 'GCODE', 'DIMENSION', 'MANUAL'
+        except:
+            pass
+        try:
+            cursor.execute("ALTER TABLE programs ADD COLUMN in_correct_range INTEGER DEFAULT 1")  # 1 if program number matches round size range
+        except:
+            pass
+        try:
+            cursor.execute("ALTER TABLE programs ADD COLUMN legacy_names TEXT")  # JSON array of previous program numbers
+        except:
+            pass
+        try:
+            cursor.execute("ALTER TABLE programs ADD COLUMN last_renamed_date TEXT")  # ISO timestamp of last rename
+        except:
+            pass
+        try:
+            cursor.execute("ALTER TABLE programs ADD COLUMN rename_reason TEXT")  # Why it was renamed
+        except:
+            pass
 
         # Create users table
         cursor.execute('''
@@ -450,6 +478,37 @@ class GCodeDatabaseGUI:
                 quality_notes TEXT,
                 operator TEXT,
                 FOREIGN KEY (version_id) REFERENCES program_versions(version_id)
+            )
+        ''')
+
+        # Create program_number_registry table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS program_number_registry (
+                program_number TEXT PRIMARY KEY,
+                round_size REAL,
+                range_start INTEGER,
+                range_end INTEGER,
+                status TEXT DEFAULT 'AVAILABLE',
+                file_path TEXT,
+                duplicate_count INTEGER DEFAULT 0,
+                last_checked TEXT,
+                notes TEXT
+            )
+        ''')
+
+        # Create duplicate_resolutions table for tracking resolution history
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS duplicate_resolutions (
+                resolution_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                resolution_date TEXT,
+                duplicate_type TEXT,
+                program_numbers TEXT,
+                action_taken TEXT,
+                files_affected TEXT,
+                old_values TEXT,
+                new_values TEXT,
+                user_override INTEGER DEFAULT 0,
+                notes TEXT
             )
         ''')
 
@@ -884,6 +943,237 @@ class GCodeDatabaseGUI:
 
         except Exception as e:
             print(f"[Version] Error comparing versions: {e}")
+            return None
+
+    # ==================== ROUND SIZE DETECTION & RANGE MANAGEMENT ====================
+
+    def get_round_size_ranges(self):
+        """Return dictionary of round size to program number ranges"""
+        return {
+            10.25: (10000, 12999, "10.25 & 10.50"),
+            10.50: (10000, 12999, "10.25 & 10.50"),
+            13.0:  (13000, 13999, "13.0"),
+            5.75:  (50000, 59999, "5.75"),
+            6.0:   (60000, 62499, "6.0"),
+            6.25:  (62500, 64999, "6.25"),
+            6.5:   (65000, 69999, "6.5"),
+            7.0:   (70000, 74999, "7.0"),
+            7.5:   (75000, 79000, "7.5"),
+            8.0:   (80000, 84999, "8.0"),
+            8.5:   (85000, 89999, "8.5"),
+            9.5:   (90000, 99999, "9.5"),
+            # Free ranges (use when specific range is full)
+            0.0:   (1000, 9999, "Free Range 1"),
+            -1.0:  (14000, 49999, "Free Range 2")
+        }
+
+    def get_range_for_round_size(self, round_size):
+        """Get program number range for a round size"""
+        ranges = self.get_round_size_ranges()
+
+        # Exact match
+        if round_size in ranges:
+            return ranges[round_size][:2]  # Return (start, end)
+
+        # Find closest match (for slight variations like 6.24 → 6.25)
+        closest_size = min(ranges.keys(), key=lambda x: abs(x - round_size) if x > 0 else float('inf'))
+        tolerance = 0.1
+
+        if abs(closest_size - round_size) <= tolerance:
+            return ranges[closest_size][:2]
+
+        return None
+
+    def detect_round_size_from_title(self, title):
+        """Extract round size from title string"""
+        if not title:
+            return None
+
+        import re
+
+        # Pattern: Look for numbers followed by optional decimal and "OD" or "rnd"
+        # Examples: "6.25 OD", "10.5 rnd", "7.0OD", "625OD"
+        patterns = [
+            r'(\d+\.?\d*)\s*(?:OD|od|rnd|RND|round)',  # 6.25 OD, 10.5 rnd
+            r'(\d+)\.(\d+)',  # 6.25, 10.50
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, title)
+            if match:
+                try:
+                    if len(match.groups()) == 2:
+                        # Decimal number split into groups
+                        round_size = float(f"{match.group(1)}.{match.group(2)}")
+                    else:
+                        round_size = float(match.group(1))
+
+                    # Validate it's in a reasonable range
+                    if 5.0 <= round_size <= 15.0:
+                        return round_size
+                except:
+                    continue
+
+        return None
+
+    def detect_round_size_from_gcode(self, program_number):
+        """Get round size from ob_from_gcode field"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            cursor.execute("SELECT ob_from_gcode FROM programs WHERE program_number = ?",
+                          (program_number,))
+            result = cursor.fetchone()
+            conn.close()
+
+            if result and result[0]:
+                ob_value = result[0]
+                # ob_from_gcode is the outer bore/diameter
+                if 5.0 <= ob_value <= 15.0:
+                    return ob_value
+        except Exception as e:
+            print(f"[RoundSize] Error getting from gcode: {e}")
+
+        return None
+
+    def detect_round_size_from_dimension(self, program_number):
+        """Get round size from outer_diameter field"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            cursor.execute("SELECT outer_diameter FROM programs WHERE program_number = ?",
+                          (program_number,))
+            result = cursor.fetchone()
+            conn.close()
+
+            if result and result[0]:
+                od_value = result[0]
+                if 5.0 <= od_value <= 15.0:
+                    return od_value
+        except Exception as e:
+            print(f"[RoundSize] Error getting from dimension: {e}")
+
+        return None
+
+    def detect_round_size(self, program_number, title=None):
+        """
+        Detect round size using multiple methods with priority order.
+        Returns: (round_size, confidence, source)
+        confidence: 'HIGH', 'MEDIUM', 'LOW', 'NONE'
+        source: 'TITLE', 'GCODE', 'DIMENSION', 'MANUAL'
+        """
+        # Method 1: Parse title (most reliable if present)
+        if title:
+            title_match = self.detect_round_size_from_title(title)
+            if title_match:
+                return (title_match, 'HIGH', 'TITLE')
+
+        # Method 2: Get from G-code OB (high confidence)
+        gcode_match = self.detect_round_size_from_gcode(program_number)
+        if gcode_match:
+            return (gcode_match, 'HIGH', 'GCODE')
+
+        # Method 3: Get from database dimension (medium confidence)
+        dimension_match = self.detect_round_size_from_dimension(program_number)
+        if dimension_match:
+            return (dimension_match, 'MEDIUM', 'DIMENSION')
+
+        # Method 4: Manual required
+        return (None, 'NONE', 'MANUAL')
+
+    def is_in_correct_range(self, program_number, round_size):
+        """Check if program number is in correct range for its round size"""
+        if not round_size:
+            return True  # Can't validate without round size
+
+        # Extract numeric part of program number
+        try:
+            prog_num = int(str(program_number).replace('o', '').replace('O', ''))
+        except:
+            return False
+
+        # Get range for this round size
+        range_info = self.get_range_for_round_size(round_size)
+        if not range_info:
+            return False
+
+        range_start, range_end = range_info
+        return range_start <= prog_num <= range_end
+
+    def update_round_size_for_program(self, program_number, round_size=None, confidence=None,
+                                     source=None, manual_override=False):
+        """Update round size fields for a program"""
+        try:
+            # Auto-detect if not provided
+            if round_size is None and not manual_override:
+                round_size, confidence, source = self.detect_round_size(program_number)
+
+            # Check if in correct range
+            in_correct_range = 1 if self.is_in_correct_range(program_number, round_size) else 0
+
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                UPDATE programs
+                SET round_size = ?,
+                    round_size_confidence = ?,
+                    round_size_source = ?,
+                    in_correct_range = ?
+                WHERE program_number = ?
+            """, (round_size, confidence, source, in_correct_range, program_number))
+
+            conn.commit()
+            conn.close()
+
+            return True
+        except Exception as e:
+            print(f"[RoundSize] Error updating: {e}")
+            return False
+
+    def batch_detect_round_sizes(self, program_numbers=None):
+        """Detect and update round sizes for multiple programs"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            # Get programs to process
+            if program_numbers:
+                placeholders = ','.join('?' * len(program_numbers))
+                query = f"SELECT program_number, title FROM programs WHERE program_number IN ({placeholders})"
+                cursor.execute(query, program_numbers)
+            else:
+                cursor.execute("SELECT program_number, title FROM programs")
+
+            programs = cursor.fetchall()
+            conn.close()
+
+            results = {
+                'processed': 0,
+                'detected': 0,
+                'failed': 0,
+                'manual_needed': 0
+            }
+
+            for program_number, title in programs:
+                round_size, confidence, source = self.detect_round_size(program_number, title)
+
+                if round_size:
+                    if self.update_round_size_for_program(program_number, round_size,
+                                                         confidence, source):
+                        results['detected'] += 1
+                    else:
+                        results['failed'] += 1
+                else:
+                    results['manual_needed'] += 1
+
+                results['processed'] += 1
+
+            return results
+        except Exception as e:
+            print(f"[RoundSize] Batch detection error: {e}")
             return None
 
     def load_config(self):
@@ -4693,19 +4983,44 @@ class GCodeDatabaseGUI:
         if not selected:
             messagebox.showwarning("No Selection", "Please select a program to view")
             return
-        
+
         program_number = self.tree.item(selected[0])['values'][0]
-        
+
         # Get full record
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM programs WHERE program_number = ?", (program_number,))
         result = cursor.fetchone()
         conn.close()
-        
+
         if result:
             DetailsWindow(self, result)
-            
+
+    def show_version_history_window(self):
+        """Show version history window for selected program"""
+        selected = self.tree.selection()
+        if not selected:
+            messagebox.showwarning("No Selection", "Please select a program to view version history")
+            return
+
+        program_number = self.tree.item(selected[0])['values'][0]
+
+        # Get file path for the program
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT file_path FROM programs WHERE program_number = ?", (program_number,))
+        result = cursor.fetchone()
+        conn.close()
+
+        if not result or not result[0]:
+            messagebox.showerror("Error", "File path not found for this program.")
+            return
+
+        file_path = result[0]
+
+        # Open version history window
+        VersionHistoryWindow(self.root, self, program_number, file_path)
+
     def export_csv(self):
         """Export database to Excel with separate sheets for each round size"""
         try:
@@ -6444,6 +6759,8 @@ class GCodeDatabaseGUI:
             menu.add_command(label="Open File", command=self.open_file)
             menu.add_command(label="Edit Entry", command=self.edit_entry)
             menu.add_command(label="View Details", command=self.view_details)
+            menu.add_separator()
+            menu.add_command(label="View Version History", command=self.show_version_history_window)
             menu.add_separator()
             menu.add_command(label="Delete Entry", command=self.delete_entry)
 
@@ -10415,6 +10732,261 @@ class FileComparisonWindow:
 
         # Perform initial comparison
         perform_comparison()
+
+class VersionHistoryWindow:
+    """Window to display and compare version history of a program"""
+
+    def __init__(self, parent, db_manager, program_number, current_file_path):
+        self.window = tk.Toplevel(parent)
+        self.db_manager = db_manager
+        self.program_number = program_number
+        self.current_file_path = current_file_path
+
+        # Get colors from parent
+        self.bg_color = db_manager.bg_color
+        self.fg_color = db_manager.fg_color
+        self.input_bg = db_manager.input_bg
+        self.button_bg = db_manager.button_bg
+        self.accent_color = db_manager.accent_color
+
+        self.window.title(f"Version History - {program_number}")
+        self.window.geometry("900x600")
+        self.window.configure(bg=self.bg_color)
+
+        self.setup_ui()
+        self.load_versions()
+
+    def setup_ui(self):
+        """Setup the UI components"""
+        # Title
+        title_label = tk.Label(self.window,
+                              text=f"Version History for {self.program_number}",
+                              font=("Arial", 14, "bold"),
+                              bg=self.bg_color, fg=self.fg_color)
+        title_label.pack(pady=10)
+
+        # Info label
+        info_label = tk.Label(self.window,
+                             text="Select a version and click 'Compare to Current' to see differences",
+                             font=("Arial", 9, "italic"),
+                             bg=self.bg_color, fg="#888888")
+        info_label.pack(pady=(0, 10))
+
+        # Frame for treeview
+        tree_frame = tk.Frame(self.window, bg=self.bg_color)
+        tree_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # Scrollbars
+        vsb = tk.Scrollbar(tree_frame, orient="vertical")
+        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+
+        hsb = tk.Scrollbar(tree_frame, orient="horizontal")
+        hsb.pack(side=tk.BOTTOM, fill=tk.X)
+
+        # Treeview for versions
+        columns = ("version", "tag", "date", "created_by", "summary")
+        self.tree = ttk.Treeview(tree_frame, columns=columns, show="headings",
+                                yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+
+        vsb.config(command=self.tree.yview)
+        hsb.config(command=self.tree.xview)
+
+        # Configure columns
+        self.tree.heading("version", text="Version")
+        self.tree.heading("tag", text="Tag")
+        self.tree.heading("date", text="Date Created")
+        self.tree.heading("created_by", text="Created By")
+        self.tree.heading("summary", text="Change Summary")
+
+        self.tree.column("version", width=80, anchor="center")
+        self.tree.column("tag", width=100)
+        self.tree.column("date", width=150)
+        self.tree.column("created_by", width=120)
+        self.tree.column("summary", width=350)
+
+        self.tree.pack(fill=tk.BOTH, expand=True)
+
+        # Button frame
+        btn_frame = tk.Frame(self.window, bg=self.bg_color)
+        btn_frame.pack(fill=tk.X, pady=10, padx=10)
+
+        # Compare button
+        compare_btn = tk.Button(btn_frame, text="Compare to Current",
+                               command=self.compare_to_current,
+                               bg=self.accent_color, fg=self.fg_color,
+                               font=("Arial", 10, "bold"), width=20)
+        compare_btn.pack(side=tk.LEFT, padx=5)
+
+        # Restore version button
+        restore_btn = tk.Button(btn_frame, text="Restore This Version",
+                               command=self.restore_version,
+                               bg=self.button_bg, fg=self.fg_color,
+                               font=("Arial", 10, "bold"), width=20)
+        restore_btn.pack(side=tk.LEFT, padx=5)
+
+        # Close button
+        close_btn = tk.Button(btn_frame, text="Close",
+                             command=self.window.destroy,
+                             bg=self.button_bg, fg=self.fg_color,
+                             font=("Arial", 10, "bold"), width=15)
+        close_btn.pack(side=tk.RIGHT, padx=5)
+
+    def load_versions(self):
+        """Load version history into the treeview"""
+        # Clear existing items
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+
+        # Get versions from database
+        versions = self.db_manager.get_version_history(self.program_number)
+
+        if not versions:
+            # Show message if no versions found
+            self.tree.insert("", tk.END, values=("No versions found", "", "", "", ""))
+            return
+
+        # Insert versions into tree
+        for version in versions:
+            version_id, version_number, version_tag, date_created, created_by, change_summary = version
+
+            # Format date
+            if date_created:
+                try:
+                    from datetime import datetime
+                    date_obj = datetime.fromisoformat(date_created)
+                    date_str = date_obj.strftime("%Y-%m-%d %H:%M:%S")
+                except:
+                    date_str = date_created
+            else:
+                date_str = ""
+
+            # Insert into tree
+            self.tree.insert("", tk.END,
+                           values=(f"v{version_number}",
+                                  version_tag or "",
+                                  date_str,
+                                  created_by or "",
+                                  change_summary or ""),
+                           tags=(version_id,))
+
+    def compare_to_current(self):
+        """Compare selected version to current file"""
+        # Get selected item
+        selection = self.tree.selection()
+        if not selection:
+            messagebox.showwarning("No Selection", "Please select a version to compare.")
+            return
+
+        # Get version_id from tags
+        item = selection[0]
+        tags = self.tree.item(item, "tags")
+        if not tags:
+            messagebox.showerror("Error", "No version data found.")
+            return
+
+        version_id = tags[0]
+        version_number = self.tree.item(item, "values")[0]
+
+        try:
+            # Get version content from database
+            conn = sqlite3.connect(self.db_manager.db_path)
+            cursor = conn.cursor()
+
+            cursor.execute("SELECT file_content FROM program_versions WHERE version_id = ?",
+                          (version_id,))
+            result = cursor.fetchone()
+            conn.close()
+
+            if not result or not result[0]:
+                messagebox.showerror("Error", "Version content not found in database.")
+                return
+
+            version_content = result[0]
+
+            # Read current file content
+            if not os.path.exists(self.current_file_path):
+                messagebox.showerror("Error",
+                    f"Current file not found:\n{self.current_file_path}")
+                return
+
+            with open(self.current_file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                current_content = f.read()
+
+            # Create comparison data structure
+            files_to_compare = [
+                (f"{self.program_number} (Current)", current_content),
+                (f"{self.program_number} ({version_number})", version_content)
+            ]
+
+            # Open file comparison window
+            FileComparisonWindow(self.window, self.db_manager, files_to_compare)
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to compare versions:\n{str(e)}")
+
+    def restore_version(self):
+        """Restore selected version as current file"""
+        # Get selected item
+        selection = self.tree.selection()
+        if not selection:
+            messagebox.showwarning("No Selection", "Please select a version to restore.")
+            return
+
+        # Get version_id from tags
+        item = selection[0]
+        tags = self.tree.item(item, "tags")
+        if not tags:
+            messagebox.showerror("Error", "No version data found.")
+            return
+
+        version_id = tags[0]
+        version_number = self.tree.item(item, "values")[0]
+
+        # Confirm restoration
+        confirm = messagebox.askyesno("Confirm Restore",
+            f"Are you sure you want to restore {version_number}?\n\n"
+            f"This will:\n"
+            f"1. Create a backup of the current file as a new version\n"
+            f"2. Replace the current file with {version_number}\n\n"
+            f"This action cannot be undone.",
+            icon='warning')
+
+        if not confirm:
+            return
+
+        try:
+            # Get version content from database
+            conn = sqlite3.connect(self.db_manager.db_path)
+            cursor = conn.cursor()
+
+            cursor.execute("SELECT file_content FROM program_versions WHERE version_id = ?",
+                          (version_id,))
+            result = cursor.fetchone()
+            conn.close()
+
+            if not result or not result[0]:
+                messagebox.showerror("Error", "Version content not found in database.")
+                return
+
+            version_content = result[0]
+
+            # Create backup of current file first
+            self.db_manager.create_version(self.program_number,
+                                          f"Backup before restoring {version_number}")
+
+            # Write restored content to current file
+            with open(self.current_file_path, 'w', encoding='utf-8') as f:
+                f.write(version_content)
+
+            messagebox.showinfo("Success",
+                f"Successfully restored {version_number}\n\n"
+                f"A backup of the previous version has been saved.")
+
+            # Reload versions to show the new backup
+            self.load_versions()
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to restore version:\n{str(e)}")
 
 
 def main():
