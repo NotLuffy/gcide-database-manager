@@ -112,10 +112,42 @@ python run_batch_detection.py
 
 ---
 
-### **Step 7: Batch Rename Out-of-Range Programs** 🔧
+### **Step 7: Manage Duplicates FIRST** 🔎
+**What:** Consolidate duplicate programs BEFORE renaming
+**Where:** Repository tab → "🔍 Manage Duplicates"
+**Why First:** Prevents renaming duplicate copies that should be deleted
+
+**Types:**
+- **Type 1:** Same name, different content (created during scan with suffixes)
+  - Example: o12345, o12345(1), o12345(2)
+  - These are often out-of-range and would ALL be renamed
+  - **Action:** Review and keep only the correct version, delete duplicates
+
+- **Type 2:** Same name, same content (exact copies)
+  - Keep newest/best version
+  - Delete duplicates
+
+- **Type 3:** Different name, same content (content duplicates)
+  - Keep lowest program number or preferred version
+  - Delete other copies
+
+**IMPORTANT:** Do this BEFORE batch rename to avoid wasting program numbers on files you'll delete anyway!
+
+**Workflow:**
+1. Click "🔍 Manage Duplicates" button
+2. Review each duplicate group
+3. Select which to keep vs delete
+4. Confirm deletion
+5. Result: Only unique programs remain
+
+---
+
+### **Step 8: Batch Rename Out-of-Range Programs** 🔧
 **What:** Automatically rename programs to correct ranges
 **Where:** Repository tab → "🔧 Resolve Out-of-Range (Batch Rename)"
-**Prerequisites:** Programs must be in repository (is_managed=1)
+**Prerequisites:**
+- Programs must be in repository (is_managed=1)
+- **Duplicates already handled** (Step 7 completed)
 
 **Workflow:**
 1. **Preview First:**
@@ -145,7 +177,7 @@ python run_batch_detection.py
 
 ---
 
-### **Step 8: Handle Remaining Issues** 🔍
+### **Step 9: Handle Remaining Issues** 🔍
 **What:** Deal with programs that couldn't be auto-renamed
 **Examples:**
 - Invalid round sizes (6.4355, 7.2934)
@@ -156,21 +188,6 @@ python run_batch_detection.py
 1. Manually assign round sizes
 2. Use free ranges (o1000-o9999, o14000-o49999)
 3. Keep as-is if external files
-
----
-
-### **Step 9: Manage Duplicates** 🔎
-**What:** Handle duplicate programs
-**Where:** Repository tab → "🔍 Manage Duplicates"
-**Types:**
-- **Type 1:** Same name, different content (now fixed by rename)
-- **Type 2:** Same name, same content (keep newest)
-- **Type 3:** Different name, same content (keep lowest number)
-
-**Actions:**
-- Review duplicates
-- Keep or delete
-- Merge if needed
 
 ---
 
@@ -196,12 +213,16 @@ For most users, the minimal workflow is:
    ↓
 4. Add to Repository     (External tab → Add Selected)
    ↓
-5. Batch Rename          (Repository tab → Resolve Out-of-Range)
+5. Manage Duplicates     (Repository tab → 🔍 Manage Duplicates) ⚠️ DO THIS FIRST!
    ↓
-6. Done!
+6. Batch Rename          (Repository tab → Resolve Out-of-Range)
+   ↓
+7. Done!
 ```
 
-**All 6 steps can be done entirely in the UI - no command line needed!**
+**All 7 steps can be done entirely in the UI - no command line needed!**
+
+**⚠️ IMPORTANT:** Step 5 (Manage Duplicates) must happen BEFORE Step 6 (Batch Rename) to avoid renaming files you'll delete anyway!
 
 ---
 
@@ -228,12 +249,14 @@ For most users, the minimal workflow is:
 2. Sync Registry
 3. Detect Round Sizes
 4. Add to Repository
-5. Batch Rename
-6. Manage Duplicates
+5. Manage Duplicates  ⚠️ Before renaming!
+6. Batch Rename
 7. Final Sync
 ```
 
 **Use Case:** Full program number management with renames
+
+**⚠️ Critical:** Always manage duplicates (step 5) BEFORE batch rename (step 6)!
 
 ---
 

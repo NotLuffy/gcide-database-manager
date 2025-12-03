@@ -466,17 +466,26 @@ When you scan more files after the initial setup:
    Repository tab → ⚠️ Out-of-Range Programs
    Result: See how many new programs need renaming
 
-5. Batch Rename (if needed)
+5. Manage Duplicates FIRST ⚠️
+   Repository tab → 🔍 Manage Duplicates
+   Review programs with suffixes like o12345(1), o12345(2)
+   Delete duplicate copies, keep only correct versions
+   Result: Only unique programs remain
+
+6. Batch Rename (after duplicates removed)
    Repository tab → 🔧 Resolve Out-of-Range
    Preview → Execute
    Result: Programs renamed to correct ranges
 
-6. Done!
+7. Done!
 ```
 
 **Time:** 5-10 minutes depending on file count
 
 **All done in the UI - no command line needed!**
+
+**⚠️ CRITICAL:** Step 5 (Manage Duplicates) MUST happen before Step 6 (Batch Rename).
+If you skip this, you'll waste program numbers renaming files you're going to delete!
 
 ---
 
