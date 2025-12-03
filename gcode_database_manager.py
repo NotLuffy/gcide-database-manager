@@ -1729,11 +1729,57 @@ class GCodeDatabaseGUI:
                 out_of_range = out_of_range[:limit]
 
             preview = []
+            # Track which numbers we've already assigned in this batch
+            # to prevent conflicts where multiple programs get assigned the same number
+            assigned_in_batch = set()
+
             for prog_num, round_size, current_range, correct_range, title in out_of_range:
                 # Find what the new number would be
                 new_number = self.find_next_available_number(round_size)
 
+                # If this number was already assigned in this batch, find the next one
+                while new_number and new_number in assigned_in_batch:
+                    # Get the numeric part of the new_number
+                    try:
+                        current_num = int(new_number.replace('o', '').replace('O', ''))
+                        range_info = self.get_range_for_round_size(round_size)
+                        if not range_info:
+                            new_number = None
+                            break
+
+                        range_start, range_end = range_info
+
+                        # Try the next sequential number
+                        next_num = current_num + 1
+                        if next_num > range_end:
+                            # Range is full
+                            new_number = None
+                            break
+
+                        # Check if this next number is available in the registry
+                        conn = sqlite3.connect(self.db_path)
+                        cursor = conn.cursor()
+                        cursor.execute("""
+                            SELECT status FROM program_number_registry
+                            WHERE program_number = ?
+                        """, (f"o{next_num}",))
+                        result = cursor.fetchone()
+                        conn.close()
+
+                        if result and result[0] == 'AVAILABLE':
+                            new_number = f"o{next_num}"
+                        else:
+                            # This number is also taken, keep searching
+                            current_num = next_num
+                            new_number = f"o{current_num}"
+                    except Exception:
+                        new_number = None
+                        break
+
                 if new_number:
+                    # Mark this number as assigned in this batch
+                    assigned_in_batch.add(new_number)
+
                     preview.append({
                         'old_number': prog_num,
                         'new_number': new_number,
