@@ -117,28 +117,52 @@ python run_batch_detection.py
 **Where:** Repository tab → "🔍 Manage Duplicates"
 **Why First:** Prevents renaming duplicate copies that should be deleted
 
-**Types:**
-- **Type 1:** Same name, different content (created during scan with suffixes)
-  - Example: o12345, o12345(1), o12345(2)
-  - These are often out-of-range and would ALL be renamed
-  - **Action:** Review and keep only the correct version, delete duplicates
+**⚠️ CRITICAL: Process duplicates in this order!**
 
-- **Type 2:** Same name, same content (exact copies)
-  - Keep newest/best version
-  - Delete duplicates
+### **Step 7a: Type 2 First - Exact Duplicates** (Fastest)
+- **What:** Same name, same content (identical files)
+- **Example:** o12345 appears 3 times with identical content
+- **Action:** Keep one (first/newest), delete the rest
+- **Why First:** Easy to identify, no decision needed, clears most duplicates
+- **Automation:** ✅ Can automate (same hash = definitely duplicate)
 
-- **Type 3:** Different name, same content (content duplicates)
-  - Keep lowest program number or preferred version
-  - Delete other copies
+### **Step 7b: Type 3 Second - Content Duplicates** (Saves Numbers)
+- **What:** Different names, same content
+- **Example:** o62000 and o62500 have identical content
+- **Action:** Keep the one in correct range, delete the other
+- **Why Second:** Consolidates program numbers (one part = one number)
+- **Benefit:** If o62500 is already in correct range, delete o62000 instead of renaming it!
+- **Automation:** ⚠️ Semi-automatic (keep lowest number or one in correct range)
 
-**IMPORTANT:** Do this BEFORE batch rename to avoid wasting program numbers on files you'll delete anyway!
+### **Step 7c: Type 1 Last - Name Conflicts** (Needs Review)
+- **What:** Same name, different content (versions/revisions)
+- **Example:** o12345, o12345(1), o12345(2) with different dimensions
+- **Action:** Review each, keep current version, delete old versions
+- **Why Last:** Requires human judgment to determine correct version
+- **Automation:** ❌ Manual review required
 
-**Workflow:**
+**Detailed Workflow:**
 1. Click "🔍 Manage Duplicates" button
-2. Review each duplicate group
-3. Select which to keep vs delete
-4. Confirm deletion
-5. Result: Only unique programs remain
+2. **First Pass:** Delete Type 2 (exact copies)
+   - Same hash = definitely duplicates
+   - Keep one, delete rest
+3. **Second Pass:** Delete Type 3 (content duplicates)
+   - Different numbers, same content
+   - Keep one in correct range or lowest number
+4. **Third Pass:** Delete Type 1 (name conflicts)
+   - Review each group
+   - Keep correct/current version
+   - Delete outdated versions
+5. Result: Only unique programs remain, ready for rename
+
+**Impact Example:**
+```
+200 files scanned → 150 duplicates
+Wrong order (rename first): Uses 180 program numbers, wastes 150
+Right order (dedupe first): Uses only 50 program numbers, saves 130!
+```
+
+See [DUPLICATE_MANAGEMENT_ORDER.md](DUPLICATE_MANAGEMENT_ORDER.md) for detailed explanation.
 
 ---
 
