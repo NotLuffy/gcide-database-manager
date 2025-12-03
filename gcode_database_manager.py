@@ -3368,7 +3368,7 @@ class GCodeDatabaseGUI:
 
                         # Insert new
                         cursor.execute('''
-                            INSERT INTO programs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            INSERT INTO programs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ''', (record.program_number, record.title, record.spacer_type, record.outer_diameter,
                              record.thickness, record.thickness_display, record.center_bore, record.hub_height,
                              record.hub_diameter, record.counter_bore_diameter,
@@ -3380,7 +3380,9 @@ class GCodeDatabaseGUI:
                              record.bore_warnings, record.dimensional_issues,
                              record.cb_from_gcode, record.ob_from_gcode, record.lathe,
                              None, None, None,  # duplicate_type, parent_file, duplicate_group
-                             None, self.current_username, is_managed_file))  # current_version, modified_by, is_managed
+                             None, self.current_username, is_managed_file,  # current_version, modified_by, is_managed
+                             None, None, None, None,  # round_size, round_size_confidence, round_size_source, in_correct_range
+                             None, None, None))  # legacy_names, last_renamed_date, rename_reason
                         added += 1
                         
                 except Exception as e:
@@ -10429,7 +10431,7 @@ class EditEntryWindow:
                      datetime.now().isoformat(), file_path, program_number))
             else:  # Insert
                 cursor.execute('''
-                    INSERT INTO programs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO programs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (program_number, None,  # title
                      spacer_type, outer_diameter, thickness, None,  # thickness_display
                      center_bore, hub_height, hub_diameter, cb_diameter, cb_depth,
@@ -10439,7 +10441,9 @@ class EditEntryWindow:
                      None, None,  # bore_warnings, dimensional_issues
                      None, None, None,  # cb_from_gcode, ob_from_gcode, lathe
                      None, None, None,  # duplicate_type, parent_file, duplicate_group
-                     1, self.parent.current_username, 0))  # current_version, modified_by, is_managed
+                     1, self.parent.current_username, 0,  # current_version, modified_by, is_managed
+                     None, None, None, None,  # round_size, round_size_confidence, round_size_source, in_correct_range
+                     None, None, None))  # legacy_names, last_renamed_date, rename_reason
             
             conn.commit()
             messagebox.showinfo("Success", "Entry saved successfully")
