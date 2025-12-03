@@ -10211,6 +10211,20 @@ For more documentation, see project README files in the application directory.
             tk.Button(progress_window, text="Close", command=progress_window.destroy,
                      bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold")).pack(pady=10)
 
+    # ===== Program Number Registry Management =====
+
+    def show_registry_window(self):
+        """Show the program number registry statistics window"""
+        RegistryStatisticsWindow(self.root, self)
+
+    def show_out_of_range_window(self):
+        """Show the out-of-range programs window"""
+        OutOfRangeWindow(self.root, self)
+
+    def show_batch_rename_window(self):
+        """Show the batch rename resolution window"""
+        BatchRenameWindow(self.root, self)
+
 
 class EditEntryWindow:
     """Window for adding/editing entries"""
@@ -11336,6 +11350,7 @@ class FileComparisonWindow:
         # Perform initial comparison
         perform_comparison()
 
+
 class VersionHistoryWindow:
     """Window to display and compare version history of a program"""
 
@@ -11590,19 +11605,6 @@ class VersionHistoryWindow:
 
         except Exception as e:
             messagebox.showerror("Error", f"Failed to restore version:\n{str(e)}")
-
-
-    def show_registry_window(self):
-        """Show the program number registry statistics window"""
-        RegistryStatisticsWindow(self.root, self)
-
-    def show_out_of_range_window(self):
-        """Show the out-of-range programs window"""
-        OutOfRangeWindow(self.root, self)
-
-    def show_batch_rename_window(self):
-        """Show the batch rename resolution window"""
-        BatchRenameWindow(self.root, self)
 
 
 class RegistryStatisticsWindow:
