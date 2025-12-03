@@ -1464,6 +1464,302 @@ class GCodeDatabaseGUI:
             messagebox.showerror("Registry Error", f"Failed to get out-of-range programs:\n{str(e)}")
             return []
 
+    def rename_to_correct_range(self, program_number, dry_run=False):
+        """
+        Rename a program to the correct range for its round size.
+        This is the core function for Type 1 duplicate resolution.
+
+        Args:
+            program_number: Program to rename (e.g., 'o62000')
+            dry_run: If True, only simulate the rename without making changes
+
+        Returns:
+            dict: Result with keys:
+                - success: bool
+                - old_number: str
+                - new_number: str
+                - round_size: float
+                - file_path: str
+                - legacy_name_added: bool
+                - error: str (if failed)
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            # Get program info
+            cursor.execute("""
+                SELECT round_size, file_path, title, legacy_names
+                FROM programs
+                WHERE program_number = ?
+            """, (program_number,))
+
+            result = cursor.fetchone()
+            if not result:
+                return {'success': False, 'error': f'Program {program_number} not found'}
+
+            round_size, file_path, title, legacy_names = result
+
+            if not round_size:
+                return {'success': False, 'error': f'Program {program_number} has no detected round size'}
+
+            # Check if already in correct range
+            if self.is_in_correct_range(program_number, round_size):
+                return {'success': False, 'error': f'Program {program_number} is already in correct range'}
+
+            # Find next available number in correct range
+            new_number = self.find_next_available_number(round_size)
+            if not new_number:
+                return {'success': False, 'error': f'No available numbers in range for round size {round_size}'}
+
+            if dry_run:
+                conn.close()
+                return {
+                    'success': True,
+                    'dry_run': True,
+                    'old_number': program_number,
+                    'new_number': new_number,
+                    'round_size': round_size,
+                    'file_path': file_path,
+                    'title': title
+                }
+
+            # Update legacy names
+            if legacy_names:
+                try:
+                    legacy_list = json.loads(legacy_names)
+                except:
+                    legacy_list = []
+            else:
+                legacy_list = []
+
+            legacy_list.append({
+                'old_number': program_number,
+                'renamed_date': datetime.now().isoformat(),
+                'reason': 'Out of range - moved to correct range'
+            })
+
+            # Read file content
+            if not os.path.exists(file_path):
+                conn.close()
+                return {'success': False, 'error': f'File not found: {file_path}'}
+
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+
+            # Update program number in file content
+            old_num_plain = program_number.replace('o', '').replace('O', '')
+            new_num_plain = new_number.replace('o', '').replace('O', '')
+
+            # Replace program number (common patterns)
+            updated_content = content
+
+            # Pattern 1: O12345 or o12345 at start of line
+            import re
+            updated_content = re.sub(
+                rf'^[oO]{old_num_plain}\b',
+                new_number.upper(),
+                updated_content,
+                flags=re.MULTILINE
+            )
+
+            # Pattern 2: In program number comments
+            updated_content = re.sub(
+                rf'\b[oO]{old_num_plain}\b',
+                new_number.upper(),
+                updated_content
+            )
+
+            # Add legacy comment at top of file (after first line if it's a program number)
+            lines = updated_content.split('\n')
+            legacy_comment = f"(RENAMED FROM {program_number.upper()} ON {datetime.now().strftime('%Y-%m-%d')} - OUT OF RANGE)"
+
+            # Insert after the program number line
+            if len(lines) > 0:
+                lines.insert(1, legacy_comment)
+            else:
+                lines.insert(0, legacy_comment)
+
+            updated_content = '\n'.join(lines)
+
+            # Write updated file
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(updated_content)
+
+            # Update database - programs table
+            cursor.execute("""
+                UPDATE programs
+                SET program_number = ?,
+                    legacy_names = ?,
+                    last_renamed_date = ?,
+                    rename_reason = 'Out of range correction',
+                    in_correct_range = 1
+                WHERE program_number = ?
+            """, (new_number, json.dumps(legacy_list), datetime.now().isoformat(), program_number))
+
+            # Update registry - mark old number as available
+            cursor.execute("""
+                UPDATE program_number_registry
+                SET status = 'AVAILABLE',
+                    file_path = NULL
+                WHERE program_number = ?
+            """, (program_number,))
+
+            # Update registry - mark new number as in use
+            cursor.execute("""
+                UPDATE program_number_registry
+                SET status = 'IN_USE',
+                    file_path = ?
+                WHERE program_number = ?
+            """, (file_path, new_number))
+
+            # Log resolution in duplicate_resolutions table
+            cursor.execute("""
+                INSERT INTO duplicate_resolutions
+                (resolution_date, duplicate_type, program_numbers, action_taken,
+                 files_affected, old_values, new_values, notes)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                datetime.now().isoformat(),
+                'TYPE_1_OUT_OF_RANGE',
+                json.dumps([program_number, new_number]),
+                'RENAME',
+                json.dumps([file_path]),
+                json.dumps({'program_number': program_number, 'round_size': round_size}),
+                json.dumps({'program_number': new_number, 'round_size': round_size}),
+                f'Renamed from {program_number} to {new_number} - out of range correction'
+            ))
+
+            conn.commit()
+            conn.close()
+
+            return {
+                'success': True,
+                'old_number': program_number,
+                'new_number': new_number,
+                'round_size': round_size,
+                'file_path': file_path,
+                'title': title,
+                'legacy_name_added': True
+            }
+
+        except Exception as e:
+            return {'success': False, 'error': f'Rename failed: {str(e)}'}
+
+    def batch_resolve_out_of_range(self, program_numbers=None, dry_run=False, progress_callback=None):
+        """
+        Batch rename programs that are out of range.
+
+        Args:
+            program_numbers: List of specific programs to rename, or None for all out-of-range
+            dry_run: If True, simulate without making changes
+            progress_callback: Function to call with progress updates
+
+        Returns:
+            dict: Statistics about the batch operation
+        """
+        try:
+            # Get programs to process
+            if program_numbers:
+                programs_to_process = program_numbers
+            else:
+                out_of_range = self.get_out_of_range_programs()
+                programs_to_process = [prog[0] for prog in out_of_range]  # Extract program numbers
+
+            total = len(programs_to_process)
+            stats = {
+                'total': total,
+                'successful': 0,
+                'failed': 0,
+                'skipped': 0,
+                'errors': [],
+                'renames': []
+            }
+
+            for i, prog_num in enumerate(programs_to_process):
+                if progress_callback:
+                    progress_callback(i + 1, total, prog_num)
+
+                result = self.rename_to_correct_range(prog_num, dry_run=dry_run)
+
+                if result['success']:
+                    stats['successful'] += 1
+                    stats['renames'].append({
+                        'old': result['old_number'],
+                        'new': result['new_number'],
+                        'round_size': result['round_size'],
+                        'file': result.get('file_path', '')
+                    })
+                elif 'already in correct range' in result.get('error', ''):
+                    stats['skipped'] += 1
+                else:
+                    stats['failed'] += 1
+                    stats['errors'].append({
+                        'program': prog_num,
+                        'error': result.get('error', 'Unknown error')
+                    })
+
+            return stats
+
+        except Exception as e:
+            return {
+                'total': 0,
+                'successful': 0,
+                'failed': 0,
+                'skipped': 0,
+                'errors': [{'program': 'BATCH', 'error': str(e)}],
+                'renames': []
+            }
+
+    def preview_rename_plan(self, limit=None):
+        """
+        Preview what would happen if we renamed all out-of-range programs.
+        This is a dry-run of the batch resolution.
+
+        Args:
+            limit: Maximum number of programs to preview (None = all)
+
+        Returns:
+            list: Preview data with old number, new number, round size, title
+        """
+        try:
+            out_of_range = self.get_out_of_range_programs()
+
+            if limit:
+                out_of_range = out_of_range[:limit]
+
+            preview = []
+            for prog_num, round_size, current_range, correct_range, title in out_of_range:
+                # Find what the new number would be
+                new_number = self.find_next_available_number(round_size)
+
+                if new_number:
+                    preview.append({
+                        'old_number': prog_num,
+                        'new_number': new_number,
+                        'round_size': round_size,
+                        'current_range': current_range,
+                        'correct_range': correct_range,
+                        'title': title,
+                        'status': 'Ready'
+                    })
+                else:
+                    preview.append({
+                        'old_number': prog_num,
+                        'new_number': 'NO SPACE',
+                        'round_size': round_size,
+                        'current_range': current_range,
+                        'correct_range': correct_range,
+                        'title': title,
+                        'status': 'Error: No available numbers'
+                    })
+
+            return preview
+
+        except Exception as e:
+            messagebox.showerror("Preview Error", f"Failed to generate preview:\n{str(e)}")
+            return []
+
     def load_config(self):
         """Load configuration from file"""
         default_config = {
@@ -1693,6 +1989,11 @@ class GCodeDatabaseGUI:
                  command=self.show_out_of_range_window,
                  bg="#C41E3A", fg=self.fg_color, font=("Arial", 9, "bold"),
                  width=25, height=1).pack(side=tk.LEFT, padx=3)
+
+        tk.Button(repo_buttons3, text="🔧 Resolve Out-of-Range (Batch Rename)",
+                 command=self.show_batch_rename_window,
+                 bg="#9B59B6", fg=self.fg_color, font=("Arial", 9, "bold"),
+                 width=35, height=1).pack(side=tk.LEFT, padx=3)
 
     def setup_external_tab(self):
         """Setup the External/Scanned tab (external files only)"""
@@ -11299,6 +11600,10 @@ class VersionHistoryWindow:
         """Show the out-of-range programs window"""
         OutOfRangeWindow(self.root, self)
 
+    def show_batch_rename_window(self):
+        """Show the batch rename resolution window"""
+        BatchRenameWindow(self.root, self)
+
 
 class RegistryStatisticsWindow:
     """Window to display program number registry statistics"""
@@ -11533,6 +11838,334 @@ is in the wrong range. They should be renamed to match their round size."""
         """Refresh the display"""
         self.window.destroy()
         OutOfRangeWindow(self.window.master, self.db_manager)
+
+
+class BatchRenameWindow:
+    """Window to preview and execute batch rename of out-of-range programs"""
+
+    def __init__(self, parent, db_manager):
+        self.window = tk.Toplevel(parent)
+        self.db_manager = db_manager
+        self.window.title("Batch Rename Out-of-Range Programs")
+        self.window.geometry("1200x800")
+        self.window.configure(bg=db_manager.bg_color)
+
+        # Title
+        tk.Label(self.window, text="🔧 Batch Rename Resolution - Type 1 Duplicates",
+                bg=db_manager.bg_color, fg="#9B59B6",
+                font=("Arial", 14, "bold")).pack(pady=10)
+
+        # Info
+        info_frame = tk.Frame(self.window, bg=db_manager.bg_color)
+        info_frame.pack(fill=tk.X, padx=20, pady=5)
+
+        info_text = """This will rename programs that are in wrong ranges to match their round size.
+Each program will be renamed to the next available number in the correct range.
+Legacy names will be tracked in the database and added as comments in the files."""
+
+        tk.Label(info_frame, text=info_text,
+                bg=db_manager.bg_color, fg=db_manager.fg_color,
+                font=("Arial", 10), justify=tk.LEFT).pack()
+
+        # Preview section
+        preview_frame = tk.LabelFrame(self.window, text="Rename Preview",
+                                     bg=db_manager.bg_color, fg=db_manager.fg_color,
+                                     font=("Arial", 11, "bold"))
+        preview_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+
+        # Generate preview button
+        preview_button_frame = tk.Frame(preview_frame, bg=db_manager.bg_color)
+        preview_button_frame.pack(fill=tk.X, padx=10, pady=5)
+
+        tk.Button(preview_button_frame, text="Generate Preview",
+                 command=self.generate_preview,
+                 bg=db_manager.accent_color, fg=db_manager.fg_color,
+                 font=("Arial", 10, "bold"), width=20).pack(side=tk.LEFT, padx=5)
+
+        self.preview_limit_var = tk.StringVar(value="50")
+        tk.Label(preview_button_frame, text="Limit:",
+                bg=db_manager.bg_color, fg=db_manager.fg_color,
+                font=("Arial", 9)).pack(side=tk.LEFT, padx=5)
+        tk.Entry(preview_button_frame, textvariable=self.preview_limit_var,
+                font=("Arial", 9), width=8).pack(side=tk.LEFT)
+
+        tk.Label(preview_button_frame, text="(use 'all' for no limit)",
+                bg=db_manager.bg_color, fg=db_manager.fg_color,
+                font=("Arial", 8, "italic")).pack(side=tk.LEFT, padx=5)
+
+        # Create treeview for preview
+        tree_frame = tk.Frame(preview_frame, bg=db_manager.bg_color)
+        tree_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # Scrollbars
+        vsb = ttk.Scrollbar(tree_frame, orient="vertical")
+        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+
+        hsb = ttk.Scrollbar(tree_frame, orient="horizontal")
+        hsb.pack(side=tk.BOTTOM, fill=tk.X)
+
+        # Create treeview
+        columns = ("Old #", "New #", "Round Size", "Current Range", "Correct Range", "Title", "Status")
+        self.tree = ttk.Treeview(tree_frame, columns=columns, show="headings",
+                                yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        vsb.config(command=self.tree.yview)
+        hsb.config(command=self.tree.xview)
+
+        # Configure columns
+        self.tree.heading("Old #", text="Old #")
+        self.tree.heading("New #", text="New #")
+        self.tree.heading("Round Size", text="Round Size")
+        self.tree.heading("Current Range", text="Current Range")
+        self.tree.heading("Correct Range", text="Correct Range")
+        self.tree.heading("Title", text="Title")
+        self.tree.heading("Status", text="Status")
+
+        self.tree.column("Old #", width=80)
+        self.tree.column("New #", width=80)
+        self.tree.column("Round Size", width=90)
+        self.tree.column("Current Range", width=150)
+        self.tree.column("Correct Range", width=120)
+        self.tree.column("Title", width=350)
+        self.tree.column("Status", width=100)
+
+        self.tree.pack(fill=tk.BOTH, expand=True)
+
+        # Stats label
+        self.stats_label = tk.Label(self.window, text="No preview generated yet",
+                                   bg=db_manager.bg_color, fg="#FFA500",
+                                   font=("Arial", 10, "bold"))
+        self.stats_label.pack(pady=5)
+
+        # Action buttons
+        button_frame = tk.Frame(self.window, bg=db_manager.bg_color)
+        button_frame.pack(fill=tk.X, padx=20, pady=10)
+
+        self.execute_button = tk.Button(button_frame, text="⚠️ EXECUTE BATCH RENAME ⚠️",
+                                        command=self.execute_batch_rename,
+                                        bg="#C41E3A", fg="white",
+                                        font=("Arial", 11, "bold"), width=30,
+                                        state=tk.DISABLED)
+        self.execute_button.pack(side=tk.LEFT, padx=5)
+
+        tk.Button(button_frame, text="Export Preview to CSV",
+                 command=self.export_preview,
+                 bg=db_manager.accent_color, fg=db_manager.fg_color,
+                 font=("Arial", 10, "bold"), width=20).pack(side=tk.LEFT, padx=5)
+
+        tk.Button(button_frame, text="Close",
+                 command=self.window.destroy,
+                 bg=db_manager.button_bg, fg=db_manager.fg_color,
+                 font=("Arial", 10, "bold"), width=15).pack(side=tk.RIGHT, padx=5)
+
+        # Store preview data
+        self.preview_data = []
+
+    def generate_preview(self):
+        """Generate preview of what will be renamed"""
+        try:
+            # Clear existing tree
+            for item in self.tree.get_children():
+                self.tree.delete(item)
+
+            # Get limit
+            limit_str = self.preview_limit_var.get().strip().lower()
+            limit = None if limit_str == 'all' else int(limit_str)
+
+            # Generate preview
+            self.stats_label.config(text="Generating preview...", fg="orange")
+            self.window.update()
+
+            self.preview_data = self.db_manager.preview_rename_plan(limit=limit)
+
+            # Populate tree
+            for item in self.preview_data:
+                values = (
+                    item['old_number'],
+                    item['new_number'],
+                    item['round_size'],
+                    item['current_range'],
+                    item['correct_range'],
+                    item['title'] or "(No title)",
+                    item['status']
+                )
+                self.tree.insert("", tk.END, values=values)
+
+            # Update stats
+            total = len(self.preview_data)
+            ready = sum(1 for item in self.preview_data if item['status'] == 'Ready')
+            errors = total - ready
+
+            self.stats_label.config(
+                text=f"Preview: {total:,} programs | {ready:,} ready | {errors} errors",
+                fg="green" if errors == 0 else "orange"
+            )
+
+            # Enable execute button if we have valid renames
+            if ready > 0:
+                self.execute_button.config(state=tk.NORMAL)
+            else:
+                self.execute_button.config(state=tk.DISABLED)
+
+        except ValueError:
+            messagebox.showerror("Invalid Input", "Limit must be a number or 'all'")
+        except Exception as e:
+            messagebox.showerror("Preview Error", f"Failed to generate preview:\n{str(e)}")
+            self.stats_label.config(text="Preview generation failed", fg="red")
+
+    def execute_batch_rename(self):
+        """Execute the batch rename operation"""
+        if not self.preview_data:
+            messagebox.showwarning("No Preview", "Please generate a preview first")
+            return
+
+        # Count how many will be renamed
+        ready_count = sum(1 for item in self.preview_data if item['status'] == 'Ready')
+
+        # Confirm with user
+        confirm = messagebox.askyesno(
+            "Confirm Batch Rename",
+            f"This will rename {ready_count:,} programs.\n\n"
+            "Each program will:\n"
+            "  - Get a new number in the correct range\n"
+            "  - Have legacy name added to database\n"
+            "  - Have comment added to file\n"
+            "  - Be logged in resolution audit table\n\n"
+            "This operation cannot be easily undone.\n\n"
+            "Do you want to proceed?",
+            icon='warning'
+        )
+
+        if not confirm:
+            return
+
+        # Create progress window
+        progress_window = tk.Toplevel(self.window)
+        progress_window.title("Batch Rename Progress")
+        progress_window.geometry("600x400")
+        progress_window.configure(bg=self.db_manager.bg_color)
+
+        tk.Label(progress_window, text="🔧 Renaming Programs...",
+                bg=self.db_manager.bg_color, fg=self.db_manager.fg_color,
+                font=("Arial", 12, "bold")).pack(pady=10)
+
+        # Progress bar
+        progress_var = tk.DoubleVar()
+        progress_bar = ttk.Progressbar(progress_window, variable=progress_var,
+                                      maximum=100, length=500)
+        progress_bar.pack(pady=10, padx=20)
+
+        # Status label
+        status_label = tk.Label(progress_window, text="Starting...",
+                               bg=self.db_manager.bg_color, fg=self.db_manager.fg_color,
+                               font=("Arial", 10))
+        status_label.pack(pady=5)
+
+        # Log text
+        log_frame = tk.Frame(progress_window, bg=self.db_manager.bg_color)
+        log_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+
+        log_scroll = ttk.Scrollbar(log_frame)
+        log_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+        log_text = tk.Text(log_frame, height=15, yscrollcommand=log_scroll.set,
+                          bg="#2B2B2B", fg="#FFFFFF", font=("Consolas", 9))
+        log_scroll.config(command=log_text.yview)
+        log_text.pack(fill=tk.BOTH, expand=True)
+
+        def log(message):
+            log_text.insert(tk.END, message + "\n")
+            log_text.see(tk.END)
+            progress_window.update()
+
+        # Progress callback
+        def progress_callback(current, total, prog_num):
+            progress_var.set((current / total) * 100)
+            status_label.config(text=f"Processing {current}/{total}: {prog_num}")
+            log(f"[{current}/{total}] Processing {prog_num}...")
+
+        # Get programs to rename (only those with 'Ready' status)
+        programs_to_rename = [item['old_number'] for item in self.preview_data if item['status'] == 'Ready']
+
+        log(f"Starting batch rename of {len(programs_to_rename):,} programs...")
+        log("-" * 60)
+
+        # Execute batch rename
+        stats = self.db_manager.batch_resolve_out_of_range(
+            program_numbers=programs_to_rename,
+            dry_run=False,
+            progress_callback=progress_callback
+        )
+
+        # Show results
+        log("-" * 60)
+        log("BATCH RENAME COMPLETE")
+        log(f"Total: {stats['total']}")
+        log(f"Successful: {stats['successful']}")
+        log(f"Failed: {stats['failed']}")
+        log(f"Skipped: {stats['skipped']}")
+
+        if stats['errors']:
+            log("\nErrors:")
+            for error in stats['errors'][:10]:  # Show first 10 errors
+                log(f"  - {error['program']}: {error['error']}")
+            if len(stats['errors']) > 10:
+                log(f"  ... and {len(stats['errors']) - 10} more errors")
+
+        status_label.config(text="Complete!")
+        progress_var.set(100)
+
+        # Add close button
+        tk.Button(progress_window, text="Close",
+                 command=progress_window.destroy,
+                 bg=self.db_manager.button_bg, fg=self.db_manager.fg_color,
+                 font=("Arial", 10, "bold")).pack(pady=10)
+
+        # Show summary message
+        messagebox.showinfo(
+            "Batch Rename Complete",
+            f"Batch rename completed!\n\n"
+            f"Successful: {stats['successful']:,}\n"
+            f"Failed: {stats['failed']}\n"
+            f"Skipped: {stats['skipped']}\n\n"
+            f"Check the log for details."
+        )
+
+        # Refresh preview
+        self.generate_preview()
+
+    def export_preview(self):
+        """Export preview data to CSV"""
+        if not self.preview_data:
+            messagebox.showwarning("No Preview", "Please generate a preview first")
+            return
+
+        try:
+            filepath = filedialog.asksaveasfilename(
+                title="Export Rename Preview",
+                defaultextension=".csv",
+                filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
+            )
+
+            if filepath:
+                import csv
+                with open(filepath, 'w', newline='', encoding='utf-8') as f:
+                    writer = csv.writer(f)
+                    writer.writerow(["Old Number", "New Number", "Round Size",
+                                   "Current Range", "Correct Range", "Title", "Status"])
+                    for item in self.preview_data:
+                        writer.writerow([
+                            item['old_number'],
+                            item['new_number'],
+                            item['round_size'],
+                            item['current_range'],
+                            item['correct_range'],
+                            item['title'] or "(No title)",
+                            item['status']
+                        ])
+
+                messagebox.showinfo("Success", f"Exported {len(self.preview_data):,} items to:\n{filepath}")
+        except Exception as e:
+            messagebox.showerror("Export Error", f"Failed to export:\n{str(e)}")
 
 
 def main():
