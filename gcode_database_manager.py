@@ -1176,6 +1176,294 @@ class GCodeDatabaseGUI:
             print(f"[RoundSize] Batch detection error: {e}")
             return None
 
+    def populate_program_registry(self):
+        """
+        Populate the program_number_registry table with all 97,001 program numbers.
+        Marks existing programs as 'IN_USE' and tracks duplicates.
+
+        Returns:
+            dict: Statistics about registry population
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            # Get all round size ranges
+            ranges = self.get_round_size_ranges()
+
+            # Clear existing registry (fresh start)
+            cursor.execute("DELETE FROM program_number_registry")
+
+            # Get all existing programs from database
+            cursor.execute("SELECT program_number, file_path FROM programs")
+            existing_programs = {row[0]: row[1] for row in cursor.fetchall()}
+
+            # Track statistics
+            stats = {
+                'total_generated': 0,
+                'in_use': 0,
+                'available': 0,
+                'duplicates': 0,
+                'by_range': {}
+            }
+
+            # Generate all program numbers for each range
+            # Track which ranges we've already processed to avoid duplicates (e.g., 10.25 and 10.50 share same range)
+            processed_ranges = set()
+
+            for round_size, (range_start, range_end, range_name) in ranges.items():
+                # Skip if we've already processed this range
+                range_key = (range_start, range_end)
+                if range_key in processed_ranges:
+                    continue
+                processed_ranges.add(range_key)
+
+                range_stats = {
+                    'total': 0,
+                    'in_use': 0,
+                    'available': 0
+                }
+
+                for prog_num in range(range_start, range_end + 1):
+                    program_number = f"o{prog_num}"
+
+                    # Check if this program exists in database
+                    if program_number in existing_programs:
+                        status = 'IN_USE'
+                        file_path = existing_programs[program_number]
+                        stats['in_use'] += 1
+                        range_stats['in_use'] += 1
+                    else:
+                        status = 'AVAILABLE'
+                        file_path = None
+                        stats['available'] += 1
+                        range_stats['available'] += 1
+
+                    # Insert into registry
+                    cursor.execute("""
+                        INSERT INTO program_number_registry
+                        (program_number, round_size, range_start, range_end, status, file_path, last_checked)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """, (program_number, round_size, range_start, range_end, status, file_path,
+                          datetime.now().isoformat()))
+
+                    stats['total_generated'] += 1
+                    range_stats['total'] += 1
+
+                stats['by_range'][range_name] = range_stats
+
+            # Find duplicates (programs with same number but different content)
+            cursor.execute("""
+                SELECT program_number, COUNT(*) as count
+                FROM programs
+                GROUP BY program_number
+                HAVING count > 1
+            """)
+
+            duplicate_programs = cursor.fetchall()
+            for prog_num, count in duplicate_programs:
+                cursor.execute("""
+                    UPDATE program_number_registry
+                    SET duplicate_count = ?,
+                        notes = 'WARNING: Multiple files with this program number'
+                    WHERE program_number = ?
+                """, (count, prog_num))
+                stats['duplicates'] += 1
+
+            conn.commit()
+            conn.close()
+
+            return stats
+
+        except Exception as e:
+            messagebox.showerror("Registry Error", f"Failed to populate program registry:\n{str(e)}")
+            return None
+
+    def find_next_available_number(self, round_size, preferred_number=None):
+        """
+        Find the next available program number for a given round size.
+
+        Args:
+            round_size: The round size (e.g., 6.25, 10.5)
+            preferred_number: Optional preferred number to try first
+
+        Returns:
+            str: Next available program number (e.g., 'o62500') or None if range full
+        """
+        try:
+            # Get the range for this round size
+            range_info = self.get_range_for_round_size(round_size)
+            if not range_info:
+                return None
+
+            range_start, range_end = range_info
+
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            # If preferred number provided, check if it's available
+            if preferred_number:
+                try:
+                    pref_num = int(str(preferred_number).replace('o', '').replace('O', ''))
+                    if range_start <= pref_num <= range_end:
+                        cursor.execute("""
+                            SELECT status FROM program_number_registry
+                            WHERE program_number = ?
+                        """, (f"o{pref_num}",))
+                        result = cursor.fetchone()
+                        if result and result[0] == 'AVAILABLE':
+                            conn.close()
+                            return f"o{pref_num}"
+                except:
+                    pass
+
+            # Find first available number in range
+            cursor.execute("""
+                SELECT program_number
+                FROM program_number_registry
+                WHERE round_size = ?
+                AND status = 'AVAILABLE'
+                ORDER BY program_number
+                LIMIT 1
+            """, (round_size,))
+
+            result = cursor.fetchone()
+            conn.close()
+
+            if result:
+                return result[0]
+            else:
+                return None  # Range is full
+
+        except Exception as e:
+            messagebox.showerror("Registry Error", f"Failed to find available number:\n{str(e)}")
+            return None
+
+    def get_registry_statistics(self):
+        """
+        Get statistics about the program number registry.
+
+        Returns:
+            dict: Statistics about each range and overall usage
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            stats = {
+                'total_numbers': 0,
+                'in_use': 0,
+                'available': 0,
+                'reserved': 0,
+                'duplicates': 0,
+                'by_range': {}
+            }
+
+            # Get overall statistics
+            cursor.execute("""
+                SELECT status, COUNT(*) as count
+                FROM program_number_registry
+                GROUP BY status
+            """)
+
+            for status, count in cursor.fetchall():
+                stats['total_numbers'] += count
+                if status == 'IN_USE':
+                    stats['in_use'] = count
+                elif status == 'AVAILABLE':
+                    stats['available'] = count
+                elif status == 'RESERVED':
+                    stats['reserved'] = count
+
+            # Get duplicate count
+            cursor.execute("""
+                SELECT COUNT(*) FROM program_number_registry
+                WHERE duplicate_count > 0
+            """)
+            stats['duplicates'] = cursor.fetchone()[0]
+
+            # Get statistics by range
+            ranges = self.get_round_size_ranges()
+            for round_size, (range_start, range_end, range_name) in ranges.items():
+                cursor.execute("""
+                    SELECT
+                        COUNT(*) as total,
+                        SUM(CASE WHEN status = 'IN_USE' THEN 1 ELSE 0 END) as in_use,
+                        SUM(CASE WHEN status = 'AVAILABLE' THEN 1 ELSE 0 END) as available,
+                        SUM(CASE WHEN duplicate_count > 0 THEN 1 ELSE 0 END) as duplicates
+                    FROM program_number_registry
+                    WHERE round_size = ?
+                """, (round_size,))
+
+                row = cursor.fetchone()
+                stats['by_range'][range_name] = {
+                    'round_size': round_size,
+                    'range': f"o{range_start}-o{range_end}",
+                    'total': row[0] or 0,
+                    'in_use': row[1] or 0,
+                    'available': row[2] or 0,
+                    'duplicates': row[3] or 0,
+                    'usage_percent': (row[1] or 0) / (row[0] or 1) * 100
+                }
+
+            conn.close()
+            return stats
+
+        except Exception as e:
+            messagebox.showerror("Registry Error", f"Failed to get registry statistics:\n{str(e)}")
+            return None
+
+    def get_out_of_range_programs(self):
+        """
+        Get all programs that are in the wrong range for their round size.
+
+        Returns:
+            list: List of tuples (program_number, round_size, current_range, correct_range, title)
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                SELECT program_number, round_size, round_size_source, title
+                FROM programs
+                WHERE in_correct_range = 0
+                AND round_size IS NOT NULL
+                ORDER BY round_size, program_number
+            """)
+
+            out_of_range = []
+            for prog_num, round_size, source, title in cursor.fetchall():
+                # Get current range
+                try:
+                    num = int(str(prog_num).replace('o', '').replace('O', ''))
+                    current_range = None
+                    ranges = self.get_round_size_ranges()
+                    for rs, (start, end, name) in ranges.items():
+                        if start <= num <= end:
+                            current_range = f"o{start}-o{end} ({name})"
+                            break
+                    if not current_range:
+                        current_range = "Unknown"
+                except:
+                    current_range = "Invalid"
+
+                # Get correct range
+                correct_range_info = self.get_range_for_round_size(round_size)
+                if correct_range_info:
+                    correct_range = f"o{correct_range_info[0]}-o{correct_range_info[1]}"
+                else:
+                    correct_range = "No range defined"
+
+                out_of_range.append((prog_num, round_size, current_range, correct_range, title))
+
+            conn.close()
+            return out_of_range
+
+        except Exception as e:
+            messagebox.showerror("Registry Error", f"Failed to get out-of-range programs:\n{str(e)}")
+            return []
+
     def load_config(self):
         """Load configuration from file"""
         default_config = {
@@ -1391,6 +1679,20 @@ class GCodeDatabaseGUI:
                  command=self.manage_duplicates,
                  bg="#FF6B00", fg=self.fg_color, font=("Arial", 10, "bold"),
                  width=40, height=2).pack(side=tk.LEFT, padx=3)
+
+        # Repository management buttons - Row 3 (Program Number Management)
+        repo_buttons3 = tk.Frame(self.repository_tab, bg=self.bg_color)
+        repo_buttons3.pack(fill=tk.X, pady=5, padx=10)
+
+        tk.Button(repo_buttons3, text="📋 Program Number Registry",
+                 command=self.show_registry_window,
+                 bg="#6B5B93", fg=self.fg_color, font=("Arial", 9, "bold"),
+                 width=25, height=1).pack(side=tk.LEFT, padx=3)
+
+        tk.Button(repo_buttons3, text="⚠️ Out-of-Range Programs",
+                 command=self.show_out_of_range_window,
+                 bg="#C41E3A", fg=self.fg_color, font=("Arial", 9, "bold"),
+                 width=25, height=1).pack(side=tk.LEFT, padx=3)
 
     def setup_external_tab(self):
         """Setup the External/Scanned tab (external files only)"""
@@ -10987,6 +11289,250 @@ class VersionHistoryWindow:
 
         except Exception as e:
             messagebox.showerror("Error", f"Failed to restore version:\n{str(e)}")
+
+
+    def show_registry_window(self):
+        """Show the program number registry statistics window"""
+        RegistryStatisticsWindow(self.root, self)
+
+    def show_out_of_range_window(self):
+        """Show the out-of-range programs window"""
+        OutOfRangeWindow(self.root, self)
+
+
+class RegistryStatisticsWindow:
+    """Window to display program number registry statistics"""
+
+    def __init__(self, parent, db_manager):
+        self.window = tk.Toplevel(parent)
+        self.db_manager = db_manager
+        self.window.title("Program Number Registry Statistics")
+        self.window.geometry("900x700")
+        self.window.configure(bg=db_manager.bg_color)
+
+        # Title
+        tk.Label(self.window, text="📋 Program Number Registry Statistics",
+                bg=db_manager.bg_color, fg=db_manager.fg_color,
+                font=("Arial", 14, "bold")).pack(pady=10)
+
+        # Get registry statistics
+        stats = db_manager.get_registry_statistics()
+
+        if not stats:
+            tk.Label(self.window, text="Failed to load registry statistics",
+                    bg=db_manager.bg_color, fg="red",
+                    font=("Arial", 12)).pack(pady=20)
+            return
+
+        # Overall statistics frame
+        overall_frame = tk.LabelFrame(self.window, text="Overall Statistics",
+                                     bg=db_manager.bg_color, fg=db_manager.fg_color,
+                                     font=("Arial", 11, "bold"))
+        overall_frame.pack(fill=tk.X, padx=20, pady=10)
+
+        stats_text = f"""
+Total Program Numbers: {stats['total_numbers']:,}
+In Use: {stats['in_use']:,} ({stats['in_use']/stats['total_numbers']*100:.2f}%)
+Available: {stats['available']:,} ({stats['available']/stats['total_numbers']*100:.2f}%)
+Reserved: {stats['reserved']:,}
+Duplicates: {stats['duplicates']:,}
+"""
+
+        tk.Label(overall_frame, text=stats_text,
+                bg=db_manager.bg_color, fg=db_manager.fg_color,
+                font=("Arial", 10), justify=tk.LEFT).pack(padx=10, pady=10)
+
+        # Range statistics
+        range_frame = tk.LabelFrame(self.window, text="Range Statistics",
+                                   bg=db_manager.bg_color, fg=db_manager.fg_color,
+                                   font=("Arial", 11, "bold"))
+        range_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+
+        # Create treeview for ranges
+        tree_frame = tk.Frame(range_frame, bg=db_manager.bg_color)
+        tree_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # Scrollbars
+        vsb = ttk.Scrollbar(tree_frame, orient="vertical")
+        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Create treeview
+        columns = ("Range", "Round Size", "Total", "In Use", "Available", "Usage %", "Duplicates")
+        tree = ttk.Treeview(tree_frame, columns=columns, show="headings",
+                           yscrollcommand=vsb.set, height=15)
+        vsb.config(command=tree.yview)
+
+        # Configure columns
+        tree.heading("Range", text="Range")
+        tree.heading("Round Size", text="Round Size")
+        tree.heading("Total", text="Total")
+        tree.heading("In Use", text="In Use")
+        tree.heading("Available", text="Available")
+        tree.heading("Usage %", text="Usage %")
+        tree.heading("Duplicates", text="Duplicates")
+
+        tree.column("Range", width=150)
+        tree.column("Round Size", width=80)
+        tree.column("Total", width=80)
+        tree.column("In Use", width=80)
+        tree.column("Available", width=100)
+        tree.column("Usage %", width=80)
+        tree.column("Duplicates", width=80)
+
+        # Populate tree
+        for range_name, range_stats in stats['by_range'].items():
+            values = (
+                range_stats['range'],
+                range_stats['round_size'],
+                f"{range_stats['total']:,}",
+                f"{range_stats['in_use']:,}",
+                f"{range_stats['available']:,}",
+                f"{range_stats['usage_percent']:.1f}%",
+                range_stats['duplicates']
+            )
+            tree.insert("", tk.END, values=values)
+
+        tree.pack(fill=tk.BOTH, expand=True)
+
+        # Buttons
+        button_frame = tk.Frame(self.window, bg=db_manager.bg_color)
+        button_frame.pack(fill=tk.X, padx=20, pady=10)
+
+        tk.Button(button_frame, text="Refresh",
+                 command=lambda: self.refresh_stats(),
+                 bg=db_manager.accent_color, fg=db_manager.fg_color,
+                 font=("Arial", 10, "bold"), width=15).pack(side=tk.LEFT, padx=5)
+
+        tk.Button(button_frame, text="Close",
+                 command=self.window.destroy,
+                 bg=db_manager.button_bg, fg=db_manager.fg_color,
+                 font=("Arial", 10, "bold"), width=15).pack(side=tk.RIGHT, padx=5)
+
+    def refresh_stats(self):
+        """Refresh the statistics display"""
+        self.window.destroy()
+        RegistryStatisticsWindow(self.window.master, self.db_manager)
+
+
+class OutOfRangeWindow:
+    """Window to display programs that are in wrong ranges for their round size"""
+
+    def __init__(self, parent, db_manager):
+        self.window = tk.Toplevel(parent)
+        self.db_manager = db_manager
+        self.window.title("Out-of-Range Programs")
+        self.window.geometry("1100x700")
+        self.window.configure(bg=db_manager.bg_color)
+
+        # Title
+        tk.Label(self.window, text="⚠️ Programs in Wrong Ranges",
+                bg=db_manager.bg_color, fg="#FF6B6B",
+                font=("Arial", 14, "bold")).pack(pady=10)
+
+        # Info
+        info_text = """These programs have a detected round size but their program number
+is in the wrong range. They should be renamed to match their round size."""
+
+        tk.Label(self.window, text=info_text,
+                bg=db_manager.bg_color, fg=db_manager.fg_color,
+                font=("Arial", 10), justify=tk.CENTER).pack(pady=5)
+
+        # Get out-of-range programs
+        out_of_range = db_manager.get_out_of_range_programs()
+
+        # Count label
+        tk.Label(self.window, text=f"Found {len(out_of_range):,} programs in wrong ranges",
+                bg=db_manager.bg_color, fg="#FFA500",
+                font=("Arial", 11, "bold")).pack(pady=5)
+
+        # Create treeview
+        tree_frame = tk.Frame(self.window, bg=db_manager.bg_color)
+        tree_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+
+        # Scrollbars
+        vsb = ttk.Scrollbar(tree_frame, orient="vertical")
+        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+
+        hsb = ttk.Scrollbar(tree_frame, orient="horizontal")
+        hsb.pack(side=tk.BOTTOM, fill=tk.X)
+
+        # Create treeview
+        columns = ("Program #", "Round Size", "Current Range", "Correct Range", "Title")
+        self.tree = ttk.Treeview(tree_frame, columns=columns, show="headings",
+                                yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        vsb.config(command=self.tree.yview)
+        hsb.config(command=self.tree.xview)
+
+        # Configure columns
+        self.tree.heading("Program #", text="Program #")
+        self.tree.heading("Round Size", text="Round Size")
+        self.tree.heading("Current Range", text="Current Range")
+        self.tree.heading("Correct Range", text="Correct Range")
+        self.tree.heading("Title", text="Title")
+
+        self.tree.column("Program #", width=100)
+        self.tree.column("Round Size", width=100)
+        self.tree.column("Current Range", width=200)
+        self.tree.column("Correct Range", width=150)
+        self.tree.column("Title", width=400)
+
+        # Populate tree
+        for prog_num, round_size, current_range, correct_range, title in out_of_range:
+            values = (
+                prog_num,
+                round_size,
+                current_range,
+                correct_range,
+                title or "(No title)"
+            )
+            self.tree.insert("", tk.END, values=values)
+
+        self.tree.pack(fill=tk.BOTH, expand=True)
+
+        # Buttons
+        button_frame = tk.Frame(self.window, bg=db_manager.bg_color)
+        button_frame.pack(fill=tk.X, padx=20, pady=10)
+
+        tk.Button(button_frame, text="Export to CSV",
+                 command=lambda: self.export_to_csv(out_of_range),
+                 bg=db_manager.accent_color, fg=db_manager.fg_color,
+                 font=("Arial", 10, "bold"), width=15).pack(side=tk.LEFT, padx=5)
+
+        tk.Button(button_frame, text="Refresh",
+                 command=lambda: self.refresh_data(),
+                 bg=db_manager.accent_color, fg=db_manager.fg_color,
+                 font=("Arial", 10, "bold"), width=15).pack(side=tk.LEFT, padx=5)
+
+        tk.Button(button_frame, text="Close",
+                 command=self.window.destroy,
+                 bg=db_manager.button_bg, fg=db_manager.fg_color,
+                 font=("Arial", 10, "bold"), width=15).pack(side=tk.RIGHT, padx=5)
+
+    def export_to_csv(self, data):
+        """Export out-of-range programs to CSV"""
+        try:
+            filepath = filedialog.asksaveasfilename(
+                title="Export Out-of-Range Programs",
+                defaultextension=".csv",
+                filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
+            )
+
+            if filepath:
+                import csv
+                with open(filepath, 'w', newline='', encoding='utf-8') as f:
+                    writer = csv.writer(f)
+                    writer.writerow(["Program Number", "Round Size", "Current Range", "Correct Range", "Title"])
+                    for row in data:
+                        writer.writerow(row)
+
+                messagebox.showinfo("Success", f"Exported {len(data):,} programs to:\n{filepath}")
+        except Exception as e:
+            messagebox.showerror("Export Error", f"Failed to export:\n{str(e)}")
+
+    def refresh_data(self):
+        """Refresh the display"""
+        self.window.destroy()
+        OutOfRangeWindow(self.window.master, self.db_manager)
 
 
 def main():
