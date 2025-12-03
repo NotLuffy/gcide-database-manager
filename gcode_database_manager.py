@@ -2252,7 +2252,30 @@ class GCodeDatabaseGUI:
                  bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
                  width=14, height=2).pack(side=tk.LEFT, padx=3)
 
-        # Tab 5: Maintenance
+        # Tab 5: Workflow
+        tab_workflow = tk.Frame(ribbon, bg=self.bg_color)
+        ribbon.add(tab_workflow, text='🔄 Workflow')
+
+        workflow_group = tk.Frame(tab_workflow, bg=self.bg_color)
+        workflow_group.pack(fill=tk.X, padx=5, pady=5)
+
+        tk.Button(workflow_group, text="🔄 Sync Registry", command=self.sync_registry_ui,
+                 bg="#9C27B0", fg=self.fg_color, font=("Arial", 9, "bold"),
+                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+
+        tk.Button(workflow_group, text="🎯 Detect Round Sizes", command=self.detect_round_sizes_ui,
+                 bg="#673AB7", fg=self.fg_color, font=("Arial", 9, "bold"),
+                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+
+        tk.Button(workflow_group, text="📊 Round Size Stats", command=self.show_round_size_stats,
+                 bg="#3F51B5", fg=self.fg_color, font=("Arial", 9, "bold"),
+                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+
+        tk.Button(workflow_group, text="📘 Workflow Guide", command=self.show_workflow_guide,
+                 bg="#2196F3", fg=self.fg_color, font=("Arial", 9, "bold"),
+                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+
+        # Tab 6: Maintenance
         tab_maint = tk.Frame(ribbon, bg=self.bg_color)
         ribbon.add(tab_maint, text='⚙️ Maintenance')
 
@@ -10294,6 +10317,478 @@ For more documentation, see project README files in the application directory.
     def show_batch_rename_window(self):
         """Show the batch rename resolution window"""
         BatchRenameWindow(self.root, self)
+
+    # ===== Workflow UI Methods =====
+
+    def sync_registry_ui(self):
+        """UI wrapper for syncing the program number registry"""
+        # Confirm with user
+        confirm = messagebox.askyesno(
+            "Sync Program Number Registry",
+            "This will update the program number registry with all current programs.\n\n"
+            "What it does:\n"
+            "  • Marks all existing program numbers as IN_USE\n"
+            "  • Marks all unused numbers as AVAILABLE\n"
+            "  • Takes about 0.4 seconds\n\n"
+            "When to run:\n"
+            "  • After scanning new folders\n"
+            "  • After deleting programs\n"
+            "  • Before batch rename operations\n\n"
+            "Do you want to sync the registry now?",
+            icon='question'
+        )
+
+        if not confirm:
+            return
+
+        # Create progress window
+        progress_window = tk.Toplevel(self.root)
+        progress_window.title("Syncing Registry")
+        progress_window.geometry("600x400")
+        progress_window.configure(bg=self.bg_color)
+        progress_window.transient(self.root)
+        progress_window.grab_set()
+
+        tk.Label(progress_window, text="🔄 Syncing Program Number Registry...",
+                bg=self.bg_color, fg=self.fg_color,
+                font=("Arial", 12, "bold")).pack(pady=10)
+
+        # Log text
+        log_frame = tk.Frame(progress_window, bg=self.bg_color)
+        log_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+
+        log_scroll = ttk.Scrollbar(log_frame)
+        log_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+        log_text = tk.Text(log_frame, height=20, yscrollcommand=log_scroll.set,
+                          bg="#2B2B2B", fg="#FFFFFF", font=("Consolas", 9))
+        log_scroll.config(command=log_text.yview)
+        log_text.pack(fill=tk.BOTH, expand=True)
+
+        def log(message):
+            log_text.insert(tk.END, message + "\n")
+            log_text.see(tk.END)
+            progress_window.update()
+
+        # Run sync
+        try:
+            log("Starting registry sync...")
+            log("-" * 60)
+
+            stats = self.populate_program_registry()
+
+            if stats:
+                log("-" * 60)
+                log("✅ REGISTRY SYNC COMPLETE")
+                log(f"Total numbers: {stats['total_numbers']:,}")
+                log(f"In use: {stats['in_use']:,}")
+                log(f"Available: {stats['available']:,}")
+                log(f"Reserved: {stats['reserved']:,}")
+                log("")
+                log("Registry is now up to date!")
+
+                # Add close button
+                tk.Button(progress_window, text="Close",
+                         command=progress_window.destroy,
+                         bg=self.button_bg, fg=self.fg_color,
+                         font=("Arial", 10, "bold")).pack(pady=10)
+
+                messagebox.showinfo(
+                    "Sync Complete",
+                    f"Registry synced successfully!\n\n"
+                    f"In use: {stats['in_use']:,}\n"
+                    f"Available: {stats['available']:,}\n"
+                    f"Total: {stats['total_numbers']:,}"
+                )
+            else:
+                log("❌ Sync failed!")
+                tk.Button(progress_window, text="Close",
+                         command=progress_window.destroy,
+                         bg=self.button_bg, fg=self.fg_color,
+                         font=("Arial", 10, "bold")).pack(pady=10)
+
+        except Exception as e:
+            log(f"❌ Error: {str(e)}")
+            tk.Button(progress_window, text="Close",
+                     command=progress_window.destroy,
+                     bg=self.button_bg, fg=self.fg_color,
+                     font=("Arial", 10, "bold")).pack(pady=10)
+            messagebox.showerror("Sync Error", f"Failed to sync registry:\n{str(e)}")
+
+    def detect_round_sizes_ui(self):
+        """UI wrapper for detecting round sizes in all programs"""
+        # Confirm with user
+        confirm = messagebox.askyesno(
+            "Detect Round Sizes",
+            "This will detect round sizes for all programs in the database.\n\n"
+            "Detection methods (in priority order):\n"
+            "  1. Title - looks for patterns like '6.25 OD', '10.5 rnd'\n"
+            "  2. G-code - uses ob_from_gcode field\n"
+            "  3. Dimensions - uses outer_diameter field\n\n"
+            "This will update the database with:\n"
+            "  • round_size\n"
+            "  • round_size_confidence (HIGH/MEDIUM/LOW)\n"
+            "  • round_size_source (title/gcode/dimension)\n"
+            "  • in_correct_range (0 or 1)\n\n"
+            "Do you want to detect round sizes now?",
+            icon='question'
+        )
+
+        if not confirm:
+            return
+
+        # Create progress window
+        progress_window = tk.Toplevel(self.root)
+        progress_window.title("Detecting Round Sizes")
+        progress_window.geometry("700x500")
+        progress_window.configure(bg=self.bg_color)
+        progress_window.transient(self.root)
+        progress_window.grab_set()
+
+        tk.Label(progress_window, text="🎯 Detecting Round Sizes...",
+                bg=self.bg_color, fg=self.fg_color,
+                font=("Arial", 12, "bold")).pack(pady=10)
+
+        # Progress bar
+        progress_var = tk.DoubleVar()
+        progress_bar = ttk.Progressbar(progress_window, variable=progress_var,
+                                      maximum=100, length=600)
+        progress_bar.pack(pady=10, padx=20)
+
+        # Status label
+        status_label = tk.Label(progress_window, text="Starting...",
+                               bg=self.bg_color, fg=self.fg_color,
+                               font=("Arial", 10))
+        status_label.pack(pady=5)
+
+        # Log text
+        log_frame = tk.Frame(progress_window, bg=self.bg_color)
+        log_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+
+        log_scroll = ttk.Scrollbar(log_frame)
+        log_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+        log_text = tk.Text(log_frame, height=20, yscrollcommand=log_scroll.set,
+                          bg="#2B2B2B", fg="#FFFFFF", font=("Consolas", 9))
+        log_scroll.config(command=log_text.yview)
+        log_text.pack(fill=tk.BOTH, expand=True)
+
+        def log(message):
+            log_text.insert(tk.END, message + "\n")
+            log_text.see(tk.END)
+            progress_window.update()
+
+        # Run detection
+        try:
+            import time
+            start_time = time.time()
+
+            log("Fetching all programs...")
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute("SELECT program_number, title, ob_from_gcode, outer_diameter FROM programs")
+            programs = cursor.fetchall()
+
+            total = len(programs)
+            log(f"Found {total:,} programs to process")
+            log("-" * 60)
+
+            results = {
+                'processed': 0,
+                'detected_title': 0,
+                'detected_gcode': 0,
+                'detected_dimension': 0,
+                'manual_needed': 0,
+                'in_correct_range': 0,
+                'out_of_range': 0,
+                'errors': 0
+            }
+
+            for i, (program_number, title, ob_from_gcode, outer_diameter) in enumerate(programs):
+                try:
+                    # Update progress
+                    if i % 100 == 0:
+                        progress_var.set((i / total) * 100)
+                        status_label.config(text=f"Processing {i+1}/{total}: {program_number}")
+                        progress_window.update()
+
+                    # Detect round size using priority order
+                    round_size = None
+                    confidence = 'NONE'
+                    source = 'MANUAL'
+
+                    # Method 1: Title
+                    if title:
+                        title_match = self.detect_round_size_from_title(title)
+                        if title_match:
+                            round_size = title_match
+                            confidence = 'HIGH'
+                            source = 'title'
+                            results['detected_title'] += 1
+
+                    # Method 2: G-code (if title didn't work)
+                    if not round_size and ob_from_gcode:
+                        if 5.0 <= ob_from_gcode <= 15.0:
+                            round_size = ob_from_gcode
+                            confidence = 'MEDIUM'
+                            source = 'gcode'
+                            results['detected_gcode'] += 1
+
+                    # Method 3: Dimensions (if others didn't work)
+                    if not round_size and outer_diameter:
+                        if 5.0 <= outer_diameter <= 15.0:
+                            round_size = outer_diameter
+                            confidence = 'LOW'
+                            source = 'dimension'
+                            results['detected_dimension'] += 1
+
+                    # Check if in correct range
+                    in_correct_range = 1 if round_size and self.is_in_correct_range(program_number, round_size) else 0
+
+                    if not round_size:
+                        results['manual_needed'] += 1
+                    elif in_correct_range:
+                        results['in_correct_range'] += 1
+                    else:
+                        results['out_of_range'] += 1
+
+                    # Update database
+                    cursor.execute("""
+                        UPDATE programs
+                        SET round_size = ?,
+                            round_size_confidence = ?,
+                            round_size_source = ?,
+                            in_correct_range = ?
+                        WHERE program_number = ?
+                    """, (round_size, confidence, source, in_correct_range, program_number))
+
+                    results['processed'] += 1
+
+                except Exception as e:
+                    results['errors'] += 1
+                    if results['errors'] <= 5:  # Only log first 5 errors
+                        log(f"Error processing {program_number}: {str(e)}")
+
+            conn.commit()
+            conn.close()
+
+            elapsed = time.time() - start_time
+
+            # Show results
+            progress_var.set(100)
+            status_label.config(text="Complete!")
+            log("-" * 60)
+            log("✅ DETECTION COMPLETE")
+            log(f"Total processed: {results['processed']:,}")
+            log(f"Detected from title: {results['detected_title']:,} ({results['detected_title']/total*100:.1f}%)")
+            log(f"Detected from G-code: {results['detected_gcode']:,} ({results['detected_gcode']/total*100:.1f}%)")
+            log(f"Detected from dimensions: {results['detected_dimension']:,} ({results['detected_dimension']/total*100:.1f}%)")
+            log(f"Manual input needed: {results['manual_needed']:,} ({results['manual_needed']/total*100:.1f}%)")
+            log("")
+            log(f"In correct range: {results['in_correct_range']:,}")
+            log(f"Out of range: {results['out_of_range']:,}")
+            log(f"Errors: {results['errors']}")
+            log(f"Time elapsed: {elapsed:.2f} seconds")
+
+            # Add close button
+            tk.Button(progress_window, text="Close",
+                     command=progress_window.destroy,
+                     bg=self.button_bg, fg=self.fg_color,
+                     font=("Arial", 10, "bold")).pack(pady=10)
+
+            messagebox.showinfo(
+                "Detection Complete",
+                f"Round size detection completed!\n\n"
+                f"Detected: {results['detected_title'] + results['detected_gcode'] + results['detected_dimension']:,}\n"
+                f"Manual needed: {results['manual_needed']:,}\n"
+                f"Out of range: {results['out_of_range']:,}\n\n"
+                f"Time: {elapsed:.2f} seconds"
+            )
+
+            # Refresh the view to show updated data
+            self.refresh_results()
+
+        except Exception as e:
+            log(f"❌ Error: {str(e)}")
+            tk.Button(progress_window, text="Close",
+                     command=progress_window.destroy,
+                     bg=self.button_bg, fg=self.fg_color,
+                     font=("Arial", 10, "bold")).pack(pady=10)
+            messagebox.showerror("Detection Error", f"Failed to detect round sizes:\n{str(e)}")
+
+    def show_round_size_stats(self):
+        """Show statistics about round size detection"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            # Get overall stats
+            cursor.execute("""
+                SELECT
+                    COUNT(*) as total,
+                    SUM(CASE WHEN round_size IS NOT NULL THEN 1 ELSE 0 END) as detected,
+                    SUM(CASE WHEN round_size IS NULL THEN 1 ELSE 0 END) as not_detected,
+                    SUM(CASE WHEN in_correct_range = 1 THEN 1 ELSE 0 END) as in_range,
+                    SUM(CASE WHEN in_correct_range = 0 AND round_size IS NOT NULL THEN 1 ELSE 0 END) as out_of_range
+                FROM programs
+            """)
+            overall = cursor.fetchone()
+
+            # Get stats by source
+            cursor.execute("""
+                SELECT round_size_source, COUNT(*) as count
+                FROM programs
+                WHERE round_size IS NOT NULL
+                GROUP BY round_size_source
+            """)
+            by_source = cursor.fetchall()
+
+            # Get stats by round size
+            cursor.execute("""
+                SELECT
+                    round_size,
+                    COUNT(*) as count,
+                    SUM(CASE WHEN in_correct_range = 1 THEN 1 ELSE 0 END) as in_range,
+                    SUM(CASE WHEN in_correct_range = 0 THEN 1 ELSE 0 END) as out_of_range
+                FROM programs
+                WHERE round_size IS NOT NULL
+                GROUP BY round_size
+                ORDER BY round_size
+            """)
+            by_size = cursor.fetchall()
+
+            conn.close()
+
+            # Create window
+            stats_window = tk.Toplevel(self.root)
+            stats_window.title("Round Size Statistics")
+            stats_window.geometry("800x700")
+            stats_window.configure(bg=self.bg_color)
+
+            tk.Label(stats_window, text="📊 Round Size Detection Statistics",
+                    bg=self.bg_color, fg="#9B59B6",
+                    font=("Arial", 14, "bold")).pack(pady=10)
+
+            # Create notebook for tabs
+            notebook = ttk.Notebook(stats_window)
+            notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+            # Tab 1: Overall Stats
+            overall_frame = tk.Frame(notebook, bg=self.bg_color)
+            notebook.add(overall_frame, text="Overall")
+
+            total, detected, not_detected, in_range, out_of_range = overall
+
+            stats_text = f"""
+Total Programs: {total:,}
+
+Detection Results:
+  ✅ Detected: {detected:,} ({detected/total*100:.1f}%)
+  ❌ Not detected: {not_detected:,} ({not_detected/total*100:.1f}%)
+
+Range Validation:
+  ✅ In correct range: {in_range:,} ({in_range/total*100:.1f}%)
+  ⚠️ Out of range: {out_of_range:,} ({out_of_range/total*100:.1f}%)
+  ❓ No round size: {not_detected:,}
+"""
+
+            tk.Label(overall_frame, text=stats_text,
+                    bg=self.bg_color, fg=self.fg_color,
+                    font=("Consolas", 11), justify=tk.LEFT).pack(pady=20, padx=20)
+
+            # Tab 2: By Source
+            source_frame = tk.Frame(notebook, bg=self.bg_color)
+            notebook.add(source_frame, text="By Source")
+
+            source_text = "Detection Sources:\n\n"
+            for source, count in by_source:
+                source_text += f"  {source or 'MANUAL'}: {count:,}\n"
+
+            tk.Label(source_frame, text=source_text,
+                    bg=self.bg_color, fg=self.fg_color,
+                    font=("Consolas", 11), justify=tk.LEFT).pack(pady=20, padx=20)
+
+            # Tab 3: By Round Size
+            size_frame = tk.Frame(notebook, bg=self.bg_color)
+            notebook.add(size_frame, text="By Round Size")
+
+            # Create treeview
+            tree_frame = tk.Frame(size_frame, bg=self.bg_color)
+            tree_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+            vsb = ttk.Scrollbar(tree_frame, orient="vertical")
+            vsb.pack(side=tk.RIGHT, fill=tk.Y)
+
+            columns = ("Round Size", "Total", "In Range", "Out of Range", "% Out of Range")
+            tree = ttk.Treeview(tree_frame, columns=columns, show="headings",
+                               yscrollcommand=vsb.set)
+            vsb.config(command=tree.yview)
+
+            for col in columns:
+                tree.heading(col, text=col)
+                tree.column(col, width=120)
+
+            for size, count, in_range, out in by_size:
+                pct_out = (out / count * 100) if count > 0 else 0
+                tree.insert("", tk.END, values=(
+                    f"{size:.2f}\"",
+                    count,
+                    in_range,
+                    out,
+                    f"{pct_out:.1f}%"
+                ))
+
+            tree.pack(fill=tk.BOTH, expand=True)
+
+            tk.Button(stats_window, text="Close",
+                     command=stats_window.destroy,
+                     bg=self.button_bg, fg=self.fg_color,
+                     font=("Arial", 10, "bold")).pack(pady=10)
+
+        except Exception as e:
+            messagebox.showerror("Statistics Error", f"Failed to get statistics:\n{str(e)}")
+
+    def show_workflow_guide(self):
+        """Show the workflow guide"""
+        try:
+            # Try to open RECOMMENDED_WORKFLOW.md or DETAILED_USER_WORKFLOW.md
+            workflow_files = [
+                "RECOMMENDED_WORKFLOW.md",
+                "DETAILED_USER_WORKFLOW.md",
+                "README.md"
+            ]
+
+            for filename in workflow_files:
+                if os.path.exists(filename):
+                    # Open in default markdown viewer or text editor
+                    if os.name == 'nt':  # Windows
+                        os.startfile(filename)
+                    else:  # macOS and Linux
+                        import subprocess
+                        subprocess.call(['open' if sys.platform == 'darwin' else 'xdg-open', filename])
+                    return
+
+            # If no file found, show a basic guide
+            messagebox.showinfo(
+                "Workflow Guide",
+                "Recommended Workflow:\n\n"
+                "1. Scan Folder (Files tab)\n"
+                "   → Import G-code files from external folders\n\n"
+                "2. Sync Registry (Workflow tab)\n"
+                "   → Update program number registry\n\n"
+                "3. Detect Round Sizes (Workflow tab)\n"
+                "   → Auto-detect round sizes from titles/G-code\n\n"
+                "4. Add to Repository (External tab)\n"
+                "   → Move files to managed repository\n\n"
+                "5. Resolve Out-of-Range (Repository tab)\n"
+                "   → Batch rename programs to correct ranges\n\n"
+                "6. Manage Duplicates (Repository tab)\n"
+                "   → Clean up duplicate programs\n\n"
+                "See RECOMMENDED_WORKFLOW.md for detailed guide."
+            )
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to open workflow guide:\n{str(e)}")
 
 
 class EditEntryWindow:
