@@ -515,6 +515,35 @@ class GCodeDatabaseGUI:
         conn.commit()
         conn.close()
 
+    @staticmethod
+    def format_program_number(number):
+        """
+        Format a program number with proper leading zeros.
+
+        Args:
+            number: Integer or string program number (with or without 'o' prefix)
+
+        Returns:
+            str: Formatted program number (e.g., 'o00001', 'o01000', 'o12345')
+
+        Examples:
+            format_program_number(1) -> 'o00001'
+            format_program_number(100) -> 'o00100'
+            format_program_number('o1000') -> 'o01000'
+            format_program_number('1000') -> 'o01000'
+        """
+        # Convert to string and remove any 'o' or 'O' prefix
+        num_str = str(number).replace('o', '').replace('O', '')
+
+        # Convert to integer and back to string (removes leading zeros if any)
+        try:
+            num_int = int(num_str)
+            # Format with leading zeros (5 digits total)
+            return f"o{num_int:05d}"
+        except ValueError:
+            # If conversion fails, return as-is with 'o' prefix
+            return f"o{num_str}"
+
     def init_repository(self):
         """Initialize managed file repository structure"""
         # Get base path (where this script is located)
@@ -649,7 +678,7 @@ class GCodeDatabaseGUI:
         Returns True if successful, False otherwise.
         """
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
             cursor = conn.cursor()
 
             # Get current file path and managed status
@@ -811,7 +840,7 @@ class GCodeDatabaseGUI:
     def create_version(self, program_number, change_summary=None):
         """Create a new version of a program"""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
             cursor = conn.cursor()
 
             # Get current program data
@@ -899,7 +928,7 @@ class GCodeDatabaseGUI:
     def get_version_history(self, program_number):
         """Get all versions of a program"""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
             cursor = conn.cursor()
 
             cursor.execute("""
@@ -922,7 +951,7 @@ class GCodeDatabaseGUI:
     def compare_versions(self, version_id1, version_id2):
         """Compare two versions of a program"""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
             cursor = conn.cursor()
 
             cursor.execute("SELECT file_content, version_number FROM program_versions WHERE version_id = ?", (version_id1,))
@@ -1041,7 +1070,7 @@ class GCodeDatabaseGUI:
     def detect_round_size_from_gcode(self, program_number):
         """Get round size from ob_from_gcode field"""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
             cursor = conn.cursor()
 
             cursor.execute("SELECT ob_from_gcode FROM programs WHERE program_number = ?",
@@ -1062,7 +1091,7 @@ class GCodeDatabaseGUI:
     def detect_round_size_from_dimension(self, program_number):
         """Get round size from outer_diameter field"""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
             cursor = conn.cursor()
 
             cursor.execute("SELECT outer_diameter FROM programs WHERE program_number = ?",
@@ -1158,7 +1187,7 @@ class GCodeDatabaseGUI:
     def batch_detect_round_sizes(self, program_numbers=None):
         """Detect and update round sizes for multiple programs"""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
             cursor = conn.cursor()
 
             # Get programs to process
@@ -1207,7 +1236,7 @@ class GCodeDatabaseGUI:
             dict: Statistics about registry population
         """
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
             cursor = conn.cursor()
 
             # Get all round size ranges
@@ -1247,7 +1276,7 @@ class GCodeDatabaseGUI:
                 }
 
                 for prog_num in range(range_start, range_end + 1):
-                    program_number = f"o{prog_num}"
+                    program_number = self.format_program_number(prog_num)
 
                     # Check if this program exists in database
                     if program_number in existing_programs:
@@ -1331,23 +1360,24 @@ class GCodeDatabaseGUI:
                         cursor.execute("""
                             SELECT status FROM program_number_registry
                             WHERE program_number = ?
-                        """, (f"o{pref_num}",))
+                        """, (self.format_program_number(pref_num),))
                         result = cursor.fetchone()
                         if result and result[0] == 'AVAILABLE':
                             conn.close()
-                            return f"o{pref_num}"
+                            return self.format_program_number(pref_num)
                 except:
                     pass
 
             # Find first available number in range
+            # Query by numeric range, not round_size (more reliable)
             cursor.execute("""
                 SELECT program_number
                 FROM program_number_registry
-                WHERE round_size = ?
+                WHERE CAST(REPLACE(program_number, 'o', '') AS INTEGER) BETWEEN ? AND ?
                 AND status = 'AVAILABLE'
-                ORDER BY program_number
+                ORDER BY CAST(REPLACE(program_number, 'o', '') AS INTEGER)
                 LIMIT 1
-            """, (round_size,))
+            """, (range_start, range_end))
 
             result = cursor.fetchone()
             conn.close()
@@ -1369,7 +1399,7 @@ class GCodeDatabaseGUI:
             dict: Statistics about each range and overall usage
         """
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
             cursor = conn.cursor()
 
             stats = {
@@ -1443,7 +1473,7 @@ class GCodeDatabaseGUI:
             list: List of tuples (program_number, round_size, current_range, correct_range, title)
         """
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
             cursor = conn.cursor()
 
             cursor.execute("""
@@ -1506,7 +1536,7 @@ class GCodeDatabaseGUI:
                 - error: str (if failed)
         """
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
             cursor = conn.cursor()
 
             # Get program info
@@ -1570,24 +1600,32 @@ class GCodeDatabaseGUI:
                 content = f.read()
 
             # Update program number in file content
+            import re
+
+            # Strip any suffix from old program number for matching internal content
+            # Database might have o00002(1) or o00002_1, but file content has O00002
             old_num_plain = program_number.replace('o', '').replace('O', '')
+            # Remove any suffix patterns: (1), (2), _1, _2, etc.
+            old_num_base = re.sub(r'[(_]\d+[\)]?$', '', old_num_plain)
+
             new_num_plain = new_number.replace('o', '').replace('O', '')
 
             # Replace program number (common patterns)
             updated_content = content
 
             # Pattern 1: O12345 or o12345 at start of line
-            import re
+            # Use the BASE number without suffix to match file content
             updated_content = re.sub(
-                rf'^[oO]{old_num_plain}\b',
+                rf'^[oO]{old_num_base}\b',
                 new_number.upper(),
                 updated_content,
                 flags=re.MULTILINE
             )
 
             # Pattern 2: In program number comments
+            # Use the BASE number without suffix to match file content
             updated_content = re.sub(
-                rf'\b[oO]{old_num_plain}\b',
+                rf'\b[oO]{old_num_base}\b',
                 new_number.upper(),
                 updated_content
             )
@@ -1604,20 +1642,30 @@ class GCodeDatabaseGUI:
 
             updated_content = '\n'.join(lines)
 
-            # Write updated file
-            with open(file_path, 'w', encoding='utf-8') as f:
+            # Generate new file path with new program number
+            old_dir = os.path.dirname(file_path)
+            new_filename = f"{new_number}.nc"
+            new_file_path = os.path.join(old_dir, new_filename)
+
+            # Write updated content to new file
+            with open(new_file_path, 'w', encoding='utf-8') as f:
                 f.write(updated_content)
 
-            # Update database - programs table
+            # Delete old file if new file was created successfully
+            if os.path.exists(new_file_path) and os.path.exists(file_path):
+                os.remove(file_path)
+
+            # Update database - programs table with new file path
             cursor.execute("""
                 UPDATE programs
                 SET program_number = ?,
+                    file_path = ?,
                     legacy_names = ?,
                     last_renamed_date = ?,
                     rename_reason = 'Out of range correction',
                     in_correct_range = 1
                 WHERE program_number = ?
-            """, (new_number, json.dumps(legacy_list), datetime.now().isoformat(), program_number))
+            """, (new_number, new_file_path, json.dumps(legacy_list), datetime.now().isoformat(), program_number))
 
             # Update registry - mark old number as available
             cursor.execute("""
@@ -1627,13 +1675,13 @@ class GCodeDatabaseGUI:
                 WHERE program_number = ?
             """, (program_number,))
 
-            # Update registry - mark new number as in use
+            # Update registry - mark new number as in use with new file path
             cursor.execute("""
                 UPDATE program_number_registry
                 SET status = 'IN_USE',
                     file_path = ?
                 WHERE program_number = ?
-            """, (file_path, new_number))
+            """, (new_file_path, new_number))
 
             # Log resolution in duplicate_resolutions table
             cursor.execute("""
@@ -1646,10 +1694,10 @@ class GCodeDatabaseGUI:
                 'TYPE_1_OUT_OF_RANGE',
                 json.dumps([program_number, new_number]),
                 'RENAME',
-                json.dumps([file_path]),
-                json.dumps({'program_number': program_number, 'round_size': round_size}),
-                json.dumps({'program_number': new_number, 'round_size': round_size}),
-                f'Renamed from {program_number} to {new_number} - out of range correction'
+                json.dumps([{'old': file_path, 'new': new_file_path}]),
+                json.dumps({'program_number': program_number, 'round_size': round_size, 'old_file': file_path}),
+                json.dumps({'program_number': new_number, 'round_size': round_size, 'new_file': new_file_path}),
+                f'Renamed from {program_number} to {new_number} - file renamed from {os.path.basename(file_path)} to {new_filename}'
             ))
 
             conn.commit()
@@ -1660,7 +1708,9 @@ class GCodeDatabaseGUI:
                 'old_number': program_number,
                 'new_number': new_number,
                 'round_size': round_size,
-                'file_path': file_path,
+                'file_path': new_file_path,
+                'old_file_path': file_path,
+                'new_file_path': new_file_path,
                 'title': title,
                 'legacy_name_added': True
             }
@@ -1784,16 +1834,16 @@ class GCodeDatabaseGUI:
                         cursor.execute("""
                             SELECT status FROM program_number_registry
                             WHERE program_number = ?
-                        """, (f"o{next_num}",))
+                        """, (self.format_program_number(next_num),))
                         result = cursor.fetchone()
                         conn.close()
 
                         if result and result[0] == 'AVAILABLE':
-                            new_number = f"o{next_num}"
+                            new_number = self.format_program_number(next_num)
                         else:
                             # This number is also taken, keep searching
                             current_num = next_num
-                            new_number = f"o{current_num}"
+                            new_number = self.format_program_number(current_num)
                     except Exception:
                         new_number = None
                         break
@@ -1904,7 +1954,7 @@ class GCodeDatabaseGUI:
     def get_available_values(self, column: str) -> List[str]:
         """Get distinct values from database column for filter dropdowns"""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
             cursor = conn.cursor()
             cursor.execute(f"SELECT DISTINCT {column} FROM programs WHERE {column} IS NOT NULL ORDER BY {column}")
             values = [row[0] for row in cursor.fetchall()]
@@ -2044,6 +2094,11 @@ class GCodeDatabaseGUI:
                  bg="#FF6B00", fg=self.fg_color, font=("Arial", 10, "bold"),
                  width=40, height=2).pack(side=tk.LEFT, padx=3)
 
+        tk.Button(repo_buttons2, text="🔄 Sync Filenames with Database",
+                 command=self.sync_filenames_with_database,
+                 bg="#00BCD4", fg=self.fg_color, font=("Arial", 10, "bold"),
+                 width=30, height=2).pack(side=tk.LEFT, padx=3)
+
         # Repository management buttons - Row 3 (Program Number Management)
         repo_buttons3 = tk.Frame(self.repository_tab, bg=self.bg_color)
         repo_buttons3.pack(fill=tk.X, pady=5, padx=10)
@@ -2062,6 +2117,30 @@ class GCodeDatabaseGUI:
                  command=self.show_batch_rename_window,
                  bg="#9B59B6", fg=self.fg_color, font=("Arial", 9, "bold"),
                  width=35, height=1).pack(side=tk.LEFT, padx=3)
+
+        tk.Button(repo_buttons3, text="🎯 Move to Correct Range",
+                 command=self.move_to_correct_range,
+                 bg="#E91E63", fg=self.fg_color, font=("Arial", 9, "bold"),
+                 width=25, height=1).pack(side=tk.LEFT, padx=3)
+
+        # Repository management buttons - Row 4 (Export)
+        repo_buttons4 = tk.Frame(self.repository_tab, bg=self.bg_color)
+        repo_buttons4.pack(fill=tk.X, pady=5, padx=10)
+
+        tk.Button(repo_buttons4, text="📦 Export Repository by Round Size",
+                 command=self.export_repository_by_round_size,
+                 bg="#4CAF50", fg=self.fg_color, font=("Arial", 10, "bold"),
+                 width=40, height=2).pack(side=tk.LEFT, padx=3)
+
+        tk.Button(repo_buttons4, text="🔧 Repair File Paths",
+                 command=self.repair_file_paths,
+                 bg="#FF9800", fg=self.fg_color, font=("Arial", 10, "bold"),
+                 width=20, height=2).pack(side=tk.LEFT, padx=3)
+
+        tk.Button(repo_buttons4, text="🔢 Fix Program Number Format",
+                 command=self.fix_program_number_formatting,
+                 bg="#9C27B0", fg=self.fg_color, font=("Arial", 10, "bold"),
+                 width=25, height=2).pack(side=tk.LEFT, padx=3)
 
     def setup_external_tab(self):
         """Setup the External/Scanned tab (external files only)"""
@@ -2516,6 +2595,14 @@ class GCodeDatabaseGUI:
                                    activebackground=self.bg_color, activeforeground=self.fg_color,
                                    font=("Arial", 9))
         dup_check.pack(side=tk.LEFT, padx=10)
+
+        # Missing file path checkbox
+        self.filter_missing_file_path = tk.BooleanVar()
+        missing_path_check = tk.Checkbutton(row4, text="Missing File Path", variable=self.filter_missing_file_path,
+                                           bg=self.bg_color, fg=self.fg_color, selectcolor=self.input_bg,
+                                           activebackground=self.bg_color, activeforeground=self.fg_color,
+                                           font=("Arial", 9))
+        missing_path_check.pack(side=tk.LEFT, padx=10)
 
         # Results count label
         self.results_label = tk.Label(row4, text="", bg=self.bg_color, fg=self.fg_color,
@@ -4419,7 +4506,7 @@ class GCodeDatabaseGUI:
             return
 
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
             cursor = conn.cursor()
 
             # Get count before deletion
@@ -5259,6 +5346,10 @@ class GCodeDatabaseGUI:
             query += " AND (validation_issues LIKE ? OR bore_warnings LIKE ? OR dimensional_issues LIKE ?)"
             params.extend([error_search, error_search, error_search])
 
+        # Missing file path filter
+        if self.filter_missing_file_path.get():
+            query += " AND (file_path IS NULL OR file_path = '')"
+
         query += " ORDER BY program_number"
 
         # Note: Duplicates filter is applied after query in the display logic
@@ -5512,6 +5603,7 @@ class GCodeDatabaseGUI:
         self.filter_step_d_max.set("")
         self.filter_error_text.set("")
         self.filter_duplicates.set(False)
+        self.filter_missing_file_path.set(False)
         self.refresh_results()
         
     def sort_column(self, col):
@@ -6465,7 +6557,7 @@ class GCodeDatabaseGUI:
 
         # Delete from database
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
             cursor = conn.cursor()
 
             cursor.execute("""
@@ -8997,7 +9089,7 @@ For more documentation, see project README files in the application directory.
             return
 
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
             cursor = conn.cursor()
             cursor.execute("DELETE FROM programs WHERE program_number = ?", (program_number,))
             conn.commit()
@@ -9108,47 +9200,77 @@ For more documentation, see project README files in the application directory.
         # Main options frame (inside scrollable canvas)
         options_frame = scrollable_frame
 
-        # Option 1: Content Duplicates
-        content_frame = tk.LabelFrame(options_frame, text="Content Duplicates",
+        # Option 1: Content Duplicates (Type 2 & 3)
+        content_frame = tk.LabelFrame(options_frame, text="STEP 1: Content Duplicates (Type 2 & 3) - DO THIS FIRST",
                                      bg=self.bg_color, fg=self.fg_color,
                                      font=("Arial", 10, "bold"), relief=tk.RIDGE, bd=1)
         content_frame.pack(fill=tk.X, pady=5, padx=10)
 
-        tk.Label(content_frame, text="Files with identical content (same hash)",
+        tk.Label(content_frame, text="Files with identical content (same OR different names)",
                 bg=self.bg_color, fg=self.accent_color,
                 font=("Arial", 8)).pack(anchor=tk.W, padx=8, pady=2)
+
+        tk.Label(content_frame,
+                text="• Type 2: o12345, o12345, o12345 (same name) • Type 3: o62000, o62500 (different names)",
+                bg=self.bg_color, fg=self.fg_color,
+                font=("Arial", 8), justify=tk.LEFT).pack(anchor=tk.W, padx=15, pady=2)
 
         tk.Label(content_frame,
                 text="• SHA256 hash match • Keeps parent/lowest # • Moves to deleted/",
                 bg=self.bg_color, fg=self.fg_color,
                 font=("Arial", 8), justify=tk.LEFT).pack(anchor=tk.W, padx=15, pady=2)
 
-        tk.Button(content_frame, text="🗑️ Delete Content Duplicates",
+        tk.Button(content_frame, text="🗑️ Delete Content Duplicates (Type 2 & 3)",
                  command=lambda: (mgmt_window.destroy(), self.delete_content_duplicates()),
                  bg="#E65100", fg=self.fg_color,
-                 font=("Arial", 9, "bold"), width=28).pack(pady=5)
+                 font=("Arial", 9, "bold"), width=35).pack(pady=5)
 
-        # Option 2: Name Duplicates
-        name_frame = tk.LabelFrame(options_frame, text="Name Duplicates",
+        # Option 2: Name Duplicates (Type 1)
+        name_frame = tk.LabelFrame(options_frame, text="STEP 2: Name Conflicts (Type 1) - DO THIS SECOND",
                                   bg=self.bg_color, fg=self.fg_color,
                                   font=("Arial", 10, "bold"), relief=tk.RIDGE, bd=1)
         name_frame.pack(fill=tk.X, pady=5, padx=10)
 
-        tk.Label(name_frame, text="Same base name but different content",
+        tk.Label(name_frame, text="Same base name but different content (versions/revisions)",
                 bg=self.bg_color, fg=self.accent_color,
                 font=("Arial", 8)).pack(anchor=tk.W, padx=8, pady=2)
 
         tk.Label(name_frame,
-                text="• Renames to next available # • Keeps 1st • Updates file + internal",
+                text="• Type 1: o12345, o12345(1), o12345(2) with different dimensions",
                 bg=self.bg_color, fg=self.fg_color,
                 font=("Arial", 8), justify=tk.LEFT).pack(anchor=tk.W, padx=15, pady=2)
 
-        tk.Button(name_frame, text="✏️ Rename Name Duplicates",
+        tk.Label(name_frame,
+                text="• Keeps 1st file • Renames others to correct range • Updates file + database + registry",
+                bg=self.bg_color, fg=self.fg_color,
+                font=("Arial", 8), justify=tk.LEFT).pack(anchor=tk.W, padx=15, pady=2)
+
+        tk.Button(name_frame, text="✏️ Rename Name Conflicts (Type 1)",
                  command=lambda: (mgmt_window.destroy(), self.rename_name_duplicates()),
                  bg="#7B1FA2", fg=self.fg_color,
-                 font=("Arial", 9, "bold"), width=28).pack(pady=5)
+                 font=("Arial", 9, "bold"), width=35).pack(pady=5)
 
-        # Option 3: Scan/Report Only
+        # Option 3: Fix Underscore Suffixes
+        underscore_frame = tk.LabelFrame(options_frame, text="STEP 3: Fix Underscore Suffixes - CLEANUP",
+                                        bg=self.bg_color, fg=self.fg_color,
+                                        font=("Arial", 10, "bold"), relief=tk.RIDGE, bd=1)
+        underscore_frame.pack(fill=tk.X, pady=5, padx=10)
+
+        tk.Label(underscore_frame, text="Files with underscore suffixes (o12345_1.nc, o12345_2.nc)",
+                bg=self.bg_color, fg=self.accent_color,
+                font=("Arial", 8)).pack(anchor=tk.W, padx=8, pady=2)
+
+        tk.Label(underscore_frame,
+                text="• Finds: o#####_#.nc patterns • Renames to correct range • Updates database + registry",
+                bg=self.bg_color, fg=self.fg_color,
+                font=("Arial", 8), justify=tk.LEFT).pack(anchor=tk.W, padx=15, pady=2)
+
+        tk.Button(underscore_frame, text="🔧 Fix Underscore Suffix Files",
+                 command=lambda: (mgmt_window.destroy(), self.fix_underscore_suffix_files()),
+                 bg="#FF6B00", fg=self.fg_color,
+                 font=("Arial", 9, "bold"), width=35).pack(pady=5)
+
+        # Option 4: Scan/Report Only
         scan_frame = tk.LabelFrame(options_frame, text="Scan for Duplicates",
                                   bg=self.bg_color, fg=self.fg_color,
                                   font=("Arial", 10, "bold"), relief=tk.RIDGE, bd=1)
@@ -9488,7 +9610,7 @@ For more documentation, see project README files in the application directory.
         self.root.update()
 
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
             cursor = conn.cursor()
 
             # Get all REPEAT status files from repository
@@ -9659,7 +9781,7 @@ For more documentation, see project README files in the application directory.
         self.root.update()
 
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
             cursor = conn.cursor()
 
             # Get all managed files from repository
@@ -9923,7 +10045,7 @@ For more documentation, see project README files in the application directory.
         self.root.update()
 
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
             cursor = conn.cursor()
 
             # Get all managed files from repository
@@ -10083,7 +10205,7 @@ For more documentation, see project README files in the application directory.
         self.root.update()
 
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
             cursor = conn.cursor()
 
             # Get all managed files from repository
@@ -10127,7 +10249,8 @@ For more documentation, see project README files in the application directory.
                 return
 
             # Show duplicates and prepare rename suggestions
-            renames_to_apply = []  # (old_prog_num, new_prog_num)
+            renames_to_apply = []  # (old_prog_num, new_prog_num, round_size)
+            assigned_numbers = set()  # Track numbers we've already assigned in this session
 
             progress_text.insert(tk.END, f"{'='*80}\n")
             progress_text.insert(tk.END, f"DUPLICATE GROUPS (Will keep first, rename others)\n")
@@ -10141,18 +10264,88 @@ For more documentation, see project README files in the application directory.
                     if idx == 0:
                         progress_text.insert(tk.END, f"  ✓ KEEP: {prog_num} - {title[:40]}\n")
                     else:
-                        # Find next available number by incrementing
-                        cursor.execute("SELECT MAX(CAST(REPLACE(program_number, 'o', '') AS INTEGER)) FROM programs WHERE program_number LIKE 'o%'")
-                        result = cursor.fetchone()
-                        try:
-                            max_num = int(result[0]) if result[0] else 0
-                            new_num = max_num + 1 + len(renames_to_apply)
-                            new_prog_num = f"o{new_num}"
-                        except:
-                            new_prog_num = f"{prog_num}_renamed"
+                        # Get round size for this duplicate file
+                        cursor.execute("SELECT round_size FROM programs WHERE program_number = ?", (prog_num,))
+                        round_result = cursor.fetchone()
+                        round_size = round_result[0] if round_result and round_result[0] else None
 
-                        renames_to_apply.append((prog_num, new_prog_num))
-                        progress_text.insert(tk.END, f"  ✏️ RENAME: {prog_num} → {new_prog_num} - {title[:40]}\n")
+                        if round_size:
+                            # Find next available number in correct range for this round size
+                            # Keep trying until we find one not already assigned in this session
+                            new_prog_num = None
+                            attempts = 0
+                            max_attempts = 100  # Prevent infinite loop
+
+                            while attempts < max_attempts:
+                                candidate = self.find_next_available_number(round_size)
+                                if not candidate:
+                                    break  # No more available numbers
+
+                                # Check if already exists in database OR already assigned in this session
+                                cursor.execute("SELECT COUNT(*) FROM programs WHERE program_number = ?", (candidate,))
+                                exists = cursor.fetchone()[0] > 0
+
+                                if not exists and candidate not in assigned_numbers:
+                                    new_prog_num = candidate
+                                    assigned_numbers.add(new_prog_num)  # Mark as assigned
+                                    break
+                                else:
+                                    # This number is taken, temporarily mark it in registry to get next one
+                                    cursor.execute("UPDATE program_number_registry SET status = 'IN_USE' WHERE program_number = ?", (candidate,))
+                                    conn.commit()  # Commit immediately to avoid locking
+                                    attempts += 1
+
+                            if new_prog_num:
+                                # Get the range info to show in output
+                                range_info = self.get_range_for_round_size(round_size)
+                                if range_info:
+                                    range_start, range_end = range_info
+                                    renames_to_apply.append((prog_num, new_prog_num, round_size))
+                                    progress_text.insert(tk.END, f"  ✏️ RENAME: {prog_num} → {new_prog_num} ({round_size}\" range: o{range_start}-o{range_end}) - {title[:40]}\n")
+                                else:
+                                    renames_to_apply.append((prog_num, new_prog_num, round_size))
+                                    progress_text.insert(tk.END, f"  ✏️ RENAME: {prog_num} → {new_prog_num} ({round_size}\") - {title[:40]}\n")
+                            else:
+                                progress_text.insert(tk.END, f"  ⚠️ SKIP: {prog_num} - No available numbers for {round_size}\" - {title[:40]}\n")
+                        else:
+                            # No round size detected - use free range (o1000-o9999)
+                            # Keep trying until we find one not already assigned
+                            new_prog_num = None
+                            attempts = 0
+                            max_attempts = 100
+
+                            while attempts < max_attempts:
+                                cursor.execute("""
+                                    SELECT MIN(program_number)
+                                    FROM program_number_registry
+                                    WHERE status = 'AVAILABLE'
+                                    AND CAST(REPLACE(program_number, 'o', '') AS INTEGER) BETWEEN 1000 AND 9999
+                                """)
+                                free_result = cursor.fetchone()
+                                if not free_result or not free_result[0]:
+                                    break  # No more available numbers
+
+                                candidate = free_result[0]
+
+                                # Check if already exists in database OR already assigned in this session
+                                cursor.execute("SELECT COUNT(*) FROM programs WHERE program_number = ?", (candidate,))
+                                exists = cursor.fetchone()[0] > 0
+
+                                if not exists and candidate not in assigned_numbers:
+                                    new_prog_num = candidate
+                                    assigned_numbers.add(new_prog_num)  # Mark as assigned
+                                    break
+                                else:
+                                    # This number is taken, temporarily mark it in registry to get next one
+                                    cursor.execute("UPDATE program_number_registry SET status = 'IN_USE' WHERE program_number = ?", (candidate,))
+                                    conn.commit()  # Commit immediately to avoid locking
+                                    attempts += 1
+
+                            if new_prog_num:
+                                renames_to_apply.append((prog_num, new_prog_num, None))
+                                progress_text.insert(tk.END, f"  ✏️ RENAME: {prog_num} → {new_prog_num} (free range) - {title[:40]}\n")
+                            else:
+                                progress_text.insert(tk.END, f"  ⚠️ SKIP: {prog_num} - No round size, no free numbers - {title[:40]}\n")
 
                 progress_text.insert(tk.END, f"\n")
                 progress_text.see(tk.END)
@@ -10169,8 +10362,13 @@ For more documentation, see project README files in the application directory.
 
             if renames_to_apply:
                 progress_text.insert(tk.END, f"Rename list (first 20):\n")
-                for old_num, new_num in renames_to_apply[:20]:
-                    progress_text.insert(tk.END, f"  • {old_num} → {new_num}\n")
+                for item in renames_to_apply[:20]:
+                    old_num, new_num = item[0], item[1]
+                    round_size = item[2] if len(item) > 2 else None
+                    if round_size:
+                        progress_text.insert(tk.END, f"  • {old_num} → {new_num} ({round_size}\")\n")
+                    else:
+                        progress_text.insert(tk.END, f"  • {old_num} → {new_num} (free range)\n")
                 if len(renames_to_apply) > 20:
                     progress_text.insert(tk.END, f"  ... and {len(renames_to_apply) - 20} more\n")
 
@@ -10188,7 +10386,8 @@ For more documentation, see project README files in the application directory.
                 renamed_count = 0
                 error_count = 0
 
-                for old_num, new_num in renames_to_apply:
+                for item in renames_to_apply:
+                    old_num, new_num = item[0], item[1]
                     try:
                         # Get current file path
                         cursor.execute("SELECT file_path FROM programs WHERE program_number = ?", (old_num,))
@@ -10210,7 +10409,8 @@ For more documentation, see project README files in the application directory.
                         old_dir = os.path.dirname(old_file_path)
                         old_filename = os.path.basename(old_file_path)
 
-                        # Create new filename (replace program number, keep extension)
+                        # Create new filename - match exactly the program number
+                        # Example: program_number = o85000 -> filename = o85000.nc
                         new_filename = f"{new_num}.nc"
                         new_file_path = os.path.join(old_dir, new_filename)
 
@@ -10241,7 +10441,11 @@ For more documentation, see project README files in the application directory.
                         cursor.execute("UPDATE programs SET program_number = ?, file_path = ? WHERE program_number = ?",
                                      (new_num, new_file_path, old_num))
 
-                        progress_text.insert(tk.END, f"  ✓ Renamed: {old_num} → {new_num} (file + internal)\n")
+                        # Update registry: mark old number as AVAILABLE, new number as IN_USE
+                        cursor.execute("UPDATE program_number_registry SET status = 'AVAILABLE', file_path = NULL WHERE program_number = ?", (old_num,))
+                        cursor.execute("UPDATE program_number_registry SET status = 'IN_USE', file_path = ? WHERE program_number = ?", (new_file_path, new_num))
+
+                        progress_text.insert(tk.END, f"  ✓ Renamed: {old_num} → {new_num} (file + internal + registry)\n")
                         renamed_count += 1
 
                         if renamed_count % 10 == 0:
@@ -10280,6 +10484,561 @@ For more documentation, see project README files in the application directory.
                          bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold")).pack(pady=10)
 
             def cancel_rename():
+                # Rollback temporary IN_USE markings in registry
+                for num in assigned_numbers:
+                    cursor.execute("UPDATE program_number_registry SET status = 'AVAILABLE' WHERE program_number = ?", (num,))
+                conn.commit()
+                conn.close()
+                progress_window.destroy()
+
+            # Set window close handler to ensure cleanup even if user closes window with X button
+            progress_window.protocol("WM_DELETE_WINDOW", cancel_rename)
+
+            # Button frame
+            btn_frame = tk.Frame(progress_window, bg=self.bg_color)
+            btn_frame.pack(pady=10)
+
+            tk.Button(btn_frame, text="✓ Confirm Rename", command=confirm_rename,
+                     bg="#7B1FA2", fg=self.fg_color, font=("Arial", 10, "bold"),
+                     width=18, height=2).pack(side=tk.LEFT, padx=10)
+
+            tk.Button(btn_frame, text="✗ Cancel", command=cancel_rename,
+                     bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold"),
+                     width=18, height=2).pack(side=tk.LEFT, padx=10)
+
+        except Exception as e:
+            # Rollback temporary IN_USE markings if they exist
+            if 'assigned_numbers' in locals() and 'cursor' in locals() and 'conn' in locals():
+                try:
+                    for num in assigned_numbers:
+                        cursor.execute("UPDATE program_number_registry SET status = 'AVAILABLE' WHERE program_number = ?", (num,))
+                    conn.commit()
+                except:
+                    pass  # Ignore errors during cleanup
+
+            progress_text.insert(tk.END, f"\n\nERROR: {e}\n")
+            import traceback
+            progress_text.insert(tk.END, traceback.format_exc())
+            progress_text.see(tk.END)
+
+            # Close connection if it exists
+            if 'conn' in locals():
+                try:
+                    conn.close()
+                except:
+                    pass
+
+            tk.Button(progress_window, text="Close", command=progress_window.destroy,
+                     bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold")).pack(pady=10)
+
+    def fix_underscore_suffix_files(self):
+        """Fix files with underscore suffix patterns (o12345_1.nc) by renaming to correct ranges"""
+
+        # Create progress window
+        progress_window = tk.Toplevel(self.root)
+        progress_window.title("Fix Underscore Suffix Files")
+        progress_window.geometry("800x600")
+        progress_window.configure(bg=self.bg_color)
+        progress_window.transient(self.root)
+        progress_window.grab_set()
+
+        tk.Label(progress_window, text="🔧 Fix Underscore Suffix Files",
+                bg=self.bg_color, fg=self.fg_color,
+                font=("Arial", 14, "bold")).pack(pady=10)
+
+        # Info frame
+        info_frame = tk.Frame(progress_window, bg=self.bg_color)
+        info_frame.pack(fill=tk.X, padx=20, pady=5)
+
+        tk.Label(info_frame,
+                text="This will find and rename files with underscore suffix patterns (o12345_1.nc, o12345_2.nc)\n"
+                     "to available numbers in their correct round size ranges.",
+                bg=self.bg_color, fg=self.fg_color,
+                font=("Arial", 9), justify=tk.LEFT).pack(anchor=tk.W)
+
+        # Progress text
+        text_frame = tk.Frame(progress_window, bg=self.bg_color)
+        text_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+
+        scrollbar = ttk.Scrollbar(text_frame)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        progress_text = tk.Text(text_frame, height=25, yscrollcommand=scrollbar.set,
+                               bg="#2B2B2B", fg="#FFFFFF", font=("Consolas", 9), wrap=tk.WORD)
+        scrollbar.config(command=progress_text.yview)
+        progress_text.pack(fill=tk.BOTH, expand=True)
+
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
+            cursor = conn.cursor()
+
+            progress_text.insert(tk.END, "Scanning for files with underscore suffixes...\n")
+            progress_text.insert(tk.END, "="*80 + "\n\n")
+            progress_text.see(tk.END)
+            self.root.update()
+
+            # Find all repository files with underscore suffix patterns in program_number or filename
+            # Pattern: o#####_# (5 digits followed by underscore and more digits)
+            cursor.execute("""
+                SELECT program_number, file_path, round_size, title
+                FROM programs
+                WHERE is_managed = 1
+                AND (
+                    program_number LIKE 'o%_%'
+                    OR program_number LIKE 'o%(%'
+                )
+                ORDER BY program_number
+            """)
+
+            underscore_files = cursor.fetchall()
+
+            if not underscore_files:
+                progress_text.insert(tk.END, "No files with underscore suffixes found.\n")
+                progress_text.see(tk.END)
+
+                tk.Button(progress_window, text="Close", command=progress_window.destroy,
+                         bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold")).pack(pady=10)
+                return
+
+            progress_text.insert(tk.END, f"Found {len(underscore_files)} files with underscore/parenthesis patterns\n\n")
+
+            # Group and analyze
+            renames_to_apply = []
+            assigned_numbers = set()  # Track numbers already assigned in this session
+
+            for prog_num, file_path, round_size, title in underscore_files:
+                progress_text.insert(tk.END, f"Analyzing: {prog_num}\n")
+                progress_text.insert(tk.END, f"  File: {os.path.basename(file_path)}\n")
+                progress_text.insert(tk.END, f"  Title: {title or 'N/A'}\n")
+
+                if round_size:
+                    progress_text.insert(tk.END, f"  Round Size: {round_size}\"\n")
+
+                    # Find next available number - keep trying until we get one not already assigned
+                    new_prog_num = None
+                    attempts = 0
+                    max_attempts = 100
+
+                    while attempts < max_attempts:
+                        candidate = self.find_next_available_number(round_size)
+                        if not candidate:
+                            break
+
+                        # Check if already exists in database OR already assigned in this session
+                        cursor.execute("SELECT COUNT(*) FROM programs WHERE program_number = ?", (candidate,))
+                        exists = cursor.fetchone()[0] > 0
+
+                        if not exists and candidate not in assigned_numbers:
+                            new_prog_num = candidate
+                            assigned_numbers.add(new_prog_num)
+                            break
+                        else:
+                            # Temporarily mark as IN_USE to get next number
+                            cursor.execute("UPDATE program_number_registry SET status = 'IN_USE' WHERE program_number = ?", (candidate,))
+                            conn.commit()  # Commit immediately to avoid locking and ensure next query sees updated status
+                            attempts += 1
+
+                    if new_prog_num:
+                        renames_to_apply.append((prog_num, new_prog_num, round_size, file_path, title))
+                        progress_text.insert(tk.END, f"  ✓ Will rename to: {new_prog_num} ({round_size}\" range)\n")
+                    else:
+                        progress_text.insert(tk.END, f"  ✗ No available numbers in {round_size}\" range\n")
+                else:
+                    progress_text.insert(tk.END, f"  Round Size: Not detected\n")
+
+                    # Use free range - keep trying until we get one not already assigned
+                    new_prog_num = None
+                    attempts = 0
+                    max_attempts = 100
+
+                    while attempts < max_attempts:
+                        cursor.execute("""
+                            SELECT MIN(program_number)
+                            FROM program_number_registry
+                            WHERE status = 'AVAILABLE'
+                            AND CAST(REPLACE(program_number, 'o', '') AS INTEGER) BETWEEN 1000 AND 9999
+                        """)
+                        free_result = cursor.fetchone()
+                        if not free_result or not free_result[0]:
+                            break
+
+                        candidate = free_result[0]
+
+                        # Check if already exists in database OR already assigned in this session
+                        cursor.execute("SELECT COUNT(*) FROM programs WHERE program_number = ?", (candidate,))
+                        exists = cursor.fetchone()[0] > 0
+
+                        if not exists and candidate not in assigned_numbers:
+                            new_prog_num = candidate
+                            assigned_numbers.add(new_prog_num)
+                            break
+                        else:
+                            # Temporarily mark as IN_USE to get next number
+                            cursor.execute("UPDATE program_number_registry SET status = 'IN_USE' WHERE program_number = ?", (candidate,))
+                            conn.commit()  # Commit immediately to avoid locking and ensure next query sees updated status
+                            attempts += 1
+
+                    if new_prog_num:
+                        renames_to_apply.append((prog_num, new_prog_num, None, file_path, title))
+                        progress_text.insert(tk.END, f"  ✓ Will rename to: {new_prog_num} (free range)\n")
+                    else:
+                        progress_text.insert(tk.END, f"  ✗ No available numbers in free range\n")
+
+                progress_text.insert(tk.END, "\n")
+                progress_text.see(tk.END)
+                self.root.update()
+
+            if not renames_to_apply:
+                progress_text.insert(tk.END, "\n" + "="*80 + "\n")
+                progress_text.insert(tk.END, "No renames possible (no available program numbers)\n")
+                progress_text.see(tk.END)
+
+                tk.Button(progress_window, text="Close", command=progress_window.destroy,
+                         bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold")).pack(pady=10)
+                return
+
+            # Show summary
+            progress_text.insert(tk.END, "="*80 + "\n")
+            progress_text.insert(tk.END, f"PREVIEW - {len(renames_to_apply)} files ready to rename:\n")
+            progress_text.insert(tk.END, "="*80 + "\n\n")
+
+            for old_num, new_num, round_size, file_path, title in renames_to_apply:
+                size_str = f"({round_size}\")" if round_size else "(free range)"
+                title_str = title or "UNKNOWN"
+                progress_text.insert(tk.END, f"✏️ RENAME: {old_num} → {new_num} {size_str} - {title_str}\n")
+
+            progress_text.insert(tk.END, "\n" + "="*80 + "\n")
+            progress_text.insert(tk.END, "Click 'Confirm Rename' to proceed or 'Cancel' to abort.\n")
+            progress_text.see(tk.END)
+
+            def confirm_rename():
+                progress_text.insert(tk.END, "\n" + "="*80 + "\n")
+                progress_text.insert(tk.END, "STARTING RENAME OPERATIONS...\n")
+                progress_text.insert(tk.END, "="*80 + "\n\n")
+                progress_text.see(tk.END)
+
+                renamed_count = 0
+                error_count = 0
+
+                for old_num, new_num, round_size, old_file_path, title in renames_to_apply:
+                    try:
+                        progress_text.insert(tk.END, f"Processing: {old_num} → {new_num}\n")
+
+                        # Read the file content
+                        if not os.path.exists(old_file_path):
+                            progress_text.insert(tk.END, f"  ✗ ERROR: File not found: {old_file_path}\n")
+                            error_count += 1
+                            continue
+
+                        with open(old_file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                            content = f.read()
+
+                        # Replace the O-number in the content (case-insensitive)
+                        # Remove suffix before replacing (o12345_1 → o12345)
+                        base_old_num = old_num.split('_')[0].split('(')[0]
+                        new_content = re.sub(
+                            rf'(?i)({base_old_num})',
+                            new_num,
+                            content
+                        )
+
+                        # Create new filename - exactly the program number
+                        old_dir = os.path.dirname(old_file_path)
+                        new_filename = f"{new_num}.nc"
+                        new_file_path = os.path.join(old_dir, new_filename)
+
+                        # Rename the file
+                        os.rename(old_file_path, new_file_path)
+                        progress_text.insert(tk.END, f"  ✓ File renamed: {os.path.basename(old_file_path)} → {new_filename}\n")
+
+                        # Write the updated content
+                        with open(new_file_path, 'w', encoding='utf-8') as f:
+                            f.write(new_content)
+                        progress_text.insert(tk.END, f"  ✓ Internal O-number updated: {base_old_num} → {new_num}\n")
+
+                        # Update database
+                        cursor.execute("""
+                            UPDATE programs
+                            SET program_number = ?,
+                                file_path = ?
+                            WHERE program_number = ?
+                        """, (new_num, new_file_path, old_num))
+                        progress_text.insert(tk.END, f"  ✓ Database updated\n")
+
+                        # Update registry: mark old number as AVAILABLE (if it exists), new number as IN_USE
+                        cursor.execute("UPDATE program_number_registry SET status = 'AVAILABLE', file_path = NULL WHERE program_number = ?", (old_num,))
+                        cursor.execute("UPDATE program_number_registry SET status = 'IN_USE', file_path = ? WHERE program_number = ?", (new_file_path, new_num))
+
+                        progress_text.insert(tk.END, f"  ✓ Registry updated\n")
+                        progress_text.insert(tk.END, f"  ✅ Complete: {old_num} → {new_num}\n\n")
+                        renamed_count += 1
+
+                        if renamed_count % 5 == 0:
+                            progress_text.see(tk.END)
+                            self.root.update()
+
+                    except Exception as e:
+                        progress_text.insert(tk.END, f"  ✗ ERROR: {e}\n\n")
+                        error_count += 1
+
+                conn.commit()
+
+                progress_text.insert(tk.END, "="*80 + "\n")
+                progress_text.insert(tk.END, "COMPLETE\n")
+                progress_text.insert(tk.END, "="*80 + "\n\n")
+                progress_text.insert(tk.END, f"Successfully renamed: {renamed_count} files\n")
+                if error_count > 0:
+                    progress_text.insert(tk.END, f"Errors: {error_count} files\n")
+                progress_text.see(tk.END)
+
+                # Log activity
+                self.log_activity('fix_underscore_suffixes', 'batch', {
+                    'renamed_count': renamed_count,
+                    'error_count': error_count
+                })
+
+                # Refresh the view
+                self.refresh_results()
+
+                # Close database connection
+                conn.close()
+
+                # Update button
+                btn_frame.pack_forget()
+                tk.Button(progress_window, text="Close", command=progress_window.destroy,
+                         bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold")).pack(pady=10)
+
+            def cancel_rename():
+                # Rollback temporary IN_USE markings in registry
+                for num in assigned_numbers:
+                    cursor.execute("UPDATE program_number_registry SET status = 'AVAILABLE' WHERE program_number = ?", (num,))
+                conn.commit()
+                conn.close()
+                progress_window.destroy()
+
+            # Set window close handler to ensure cleanup even if user closes window with X button
+            progress_window.protocol("WM_DELETE_WINDOW", cancel_rename)
+
+            # Button frame
+            btn_frame = tk.Frame(progress_window, bg=self.bg_color)
+            btn_frame.pack(pady=10)
+
+            tk.Button(btn_frame, text="✓ Confirm Rename", command=confirm_rename,
+                     bg="#7B1FA2", fg=self.fg_color, font=("Arial", 10, "bold"),
+                     width=18, height=2).pack(side=tk.LEFT, padx=10)
+
+            tk.Button(btn_frame, text="✗ Cancel", command=cancel_rename,
+                     bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold"),
+                     width=18, height=2).pack(side=tk.LEFT, padx=10)
+
+        except Exception as e:
+            # Rollback temporary IN_USE markings if they exist
+            if 'assigned_numbers' in locals() and 'cursor' in locals() and 'conn' in locals():
+                try:
+                    for num in assigned_numbers:
+                        cursor.execute("UPDATE program_number_registry SET status = 'AVAILABLE' WHERE program_number = ?", (num,))
+                    conn.commit()
+                except:
+                    pass  # Ignore errors during cleanup
+
+            progress_text.insert(tk.END, f"\n\nERROR: {e}\n")
+            import traceback
+            progress_text.insert(tk.END, traceback.format_exc())
+            progress_text.see(tk.END)
+
+            # Close connection if it exists
+            if 'conn' in locals():
+                try:
+                    conn.close()
+                except:
+                    pass
+
+            tk.Button(progress_window, text="Close", command=progress_window.destroy,
+                     bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold")).pack(pady=10)
+
+    def sync_filenames_with_database(self):
+        """Synchronize filenames with their program numbers in the database"""
+
+        # Create progress window
+        progress_window = tk.Toplevel(self.root)
+        progress_window.title("Sync Filenames with Database")
+        progress_window.geometry("800x600")
+        progress_window.configure(bg=self.bg_color)
+        progress_window.transient(self.root)
+
+        tk.Label(progress_window, text="🔄 Sync Filenames with Program Numbers",
+                font=("Arial", 14, "bold"), bg=self.bg_color, fg=self.fg_color).pack(pady=10)
+
+        # Progress text
+        text_frame = tk.Frame(progress_window, bg=self.bg_color)
+        text_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+
+        progress_text = tk.Text(text_frame, bg=self.input_bg, fg=self.fg_color,
+                               font=("Consolas", 9), wrap=tk.WORD)
+        scrollbar = ttk.Scrollbar(text_frame, orient=tk.VERTICAL, command=progress_text.yview)
+        progress_text.configure(yscrollcommand=scrollbar.set)
+
+        progress_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
+            cursor = conn.cursor()
+
+            progress_text.insert(tk.END, "Scanning for filename mismatches...\n")
+            progress_text.insert(tk.END, "="*80 + "\n\n")
+            progress_text.see(tk.END)
+            self.root.update()
+
+            # Find all managed files where filename doesn't match program number
+            cursor.execute("""
+                SELECT program_number, file_path, title
+                FROM programs
+                WHERE is_managed = 1
+                ORDER BY program_number
+            """)
+
+            all_files = cursor.fetchall()
+            mismatches = []
+
+            for prog_num, file_path, title in all_files:
+                if not file_path or not os.path.exists(file_path):
+                    continue
+
+                # Get current filename without extension
+                current_filename = os.path.basename(file_path)
+                current_base = os.path.splitext(current_filename)[0]
+
+                # Expected filename from program number
+                expected_base = prog_num
+
+                # Check if they match
+                if current_base != expected_base:
+                    mismatches.append((prog_num, file_path, current_base, expected_base, title))
+
+            if not mismatches:
+                progress_text.insert(tk.END, "✓ No filename mismatches found!\n\n")
+                progress_text.insert(tk.END, "All filenames match their program numbers.\n")
+                progress_text.see(tk.END)
+
+                tk.Button(progress_window, text="Close", command=progress_window.destroy,
+                         bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold")).pack(pady=10)
+                conn.close()
+                return
+
+            progress_text.insert(tk.END, f"Found {len(mismatches)} filename mismatches\n\n")
+            progress_text.insert(tk.END, "="*80 + "\n")
+            progress_text.insert(tk.END, "FILENAME MISMATCHES (will rename files to match program numbers)\n")
+            progress_text.insert(tk.END, "="*80 + "\n\n")
+
+            # Show preview
+            for prog_num, file_path, current_base, expected_base, title in mismatches[:50]:
+                progress_text.insert(tk.END, f"Program: {prog_num}\n")
+                progress_text.insert(tk.END, f"  Current filename: {current_base}.nc\n")
+                progress_text.insert(tk.END, f"  Will rename to:   {expected_base}.nc\n")
+                if title:
+                    progress_text.insert(tk.END, f"  Title: {title}\n")
+                progress_text.insert(tk.END, "\n")
+
+            if len(mismatches) > 50:
+                progress_text.insert(tk.END, f"... and {len(mismatches) - 50} more\n\n")
+
+            progress_text.insert(tk.END, "="*80 + "\n")
+            progress_text.insert(tk.END, "Click 'Confirm Rename' to rename files or 'Cancel' to abort.\n")
+            progress_text.see(tk.END)
+
+            def confirm_rename():
+                progress_text.insert(tk.END, "\n" + "="*80 + "\n")
+                progress_text.insert(tk.END, "STARTING FILENAME SYNC...\n")
+                progress_text.insert(tk.END, "="*80 + "\n\n")
+                progress_text.see(tk.END)
+
+                renamed_count = 0
+                error_count = 0
+
+                for prog_num, old_file_path, current_base, expected_base, title in mismatches:
+                    try:
+                        progress_text.insert(tk.END, f"Processing: {current_base}.nc → {expected_base}.nc\n")
+
+                        # Generate new file path
+                        old_dir = os.path.dirname(old_file_path)
+                        new_filename = f"{expected_base}.nc"
+                        new_file_path = os.path.join(old_dir, new_filename)
+
+                        # Check if this is just a case change (Windows is case-insensitive)
+                        if old_file_path.lower() == new_file_path.lower():
+                            # Case-only change - use temporary rename
+                            import tempfile
+                            temp_name = os.path.join(old_dir, f"temp_{os.path.basename(old_file_path)}")
+                            os.rename(old_file_path, temp_name)
+                            os.rename(temp_name, new_file_path)
+                            progress_text.insert(tk.END, f"  ✓ File renamed (case change)\n")
+                        else:
+                            # Different filename - check if target already exists
+                            if os.path.exists(new_file_path):
+                                progress_text.insert(tk.END, f"  ⚠️ SKIP: {new_filename} already exists\n\n")
+                                error_count += 1
+                                continue
+
+                            # Rename the file
+                            os.rename(old_file_path, new_file_path)
+                            progress_text.insert(tk.END, f"  ✓ File renamed\n")
+
+                        # Update database with new file path
+                        cursor.execute("""
+                            UPDATE programs
+                            SET file_path = ?
+                            WHERE program_number = ?
+                        """, (new_file_path, prog_num))
+                        progress_text.insert(tk.END, f"  ✓ Database updated\n")
+
+                        # Update registry with new file path
+                        cursor.execute("""
+                            UPDATE program_number_registry
+                            SET file_path = ?
+                            WHERE program_number = ?
+                        """, (new_file_path, prog_num))
+                        progress_text.insert(tk.END, f"  ✓ Registry updated\n")
+
+                        progress_text.insert(tk.END, f"  ✅ Complete: {current_base}.nc → {expected_base}.nc\n\n")
+                        renamed_count += 1
+
+                        if renamed_count % 10 == 0:
+                            progress_text.see(tk.END)
+                            self.root.update()
+
+                    except Exception as e:
+                        progress_text.insert(tk.END, f"  ✗ ERROR: {e}\n\n")
+                        error_count += 1
+
+                conn.commit()
+
+                progress_text.insert(tk.END, "="*80 + "\n")
+                progress_text.insert(tk.END, "COMPLETE\n")
+                progress_text.insert(tk.END, "="*80 + "\n\n")
+                progress_text.insert(tk.END, f"Successfully renamed: {renamed_count} files\n")
+                if error_count > 0:
+                    progress_text.insert(tk.END, f"Errors: {error_count} files\n")
+                progress_text.see(tk.END)
+
+                # Log activity
+                self.log_activity('sync_filenames', 'batch', {
+                    'renamed_count': renamed_count,
+                    'error_count': error_count
+                })
+
+                # Refresh the view
+                self.refresh_results()
+
+                # Close database connection
+                conn.close()
+
+                # Update button
+                btn_frame.pack_forget()
+                tk.Button(progress_window, text="Close", command=progress_window.destroy,
+                         bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold")).pack(pady=10)
+
+            def cancel_rename():
                 conn.close()
                 progress_window.destroy()
 
@@ -10300,6 +11059,1077 @@ For more documentation, see project README files in the application directory.
             import traceback
             progress_text.insert(tk.END, traceback.format_exc())
             progress_text.see(tk.END)
+
+            # Close connection if it exists
+            if 'conn' in locals():
+                try:
+                    conn.close()
+                except:
+                    pass
+
+            tk.Button(progress_window, text="Close", command=progress_window.destroy,
+                     bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold")).pack(pady=10)
+
+    def export_repository_by_round_size(self):
+        """Export repository files organized by round size folders"""
+
+        # Ask user to select export destination
+        export_root = filedialog.askdirectory(
+            title="Select Export Destination Folder",
+            initialdir=os.path.expanduser("~")
+        )
+
+        if not export_root:
+            return  # User cancelled
+
+        # Create progress window
+        progress_window = tk.Toplevel(self.root)
+        progress_window.title("Export Repository by Round Size")
+        progress_window.geometry("900x700")
+        progress_window.configure(bg=self.bg_color)
+        progress_window.transient(self.root)
+
+        tk.Label(progress_window, text="📦 Export Repository by Round Size",
+                font=("Arial", 14, "bold"), bg=self.bg_color, fg=self.fg_color).pack(pady=10)
+
+        # Progress text
+        text_frame = tk.Frame(progress_window, bg=self.bg_color)
+        text_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+
+        progress_text = tk.Text(text_frame, bg=self.input_bg, fg=self.fg_color,
+                               font=("Consolas", 9), wrap=tk.WORD)
+        scrollbar = ttk.Scrollbar(text_frame, orient=tk.VERTICAL, command=progress_text.yview)
+        progress_text.configure(yscrollcommand=scrollbar.set)
+
+        progress_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
+            cursor = conn.cursor()
+
+            progress_text.insert(tk.END, f"Export Destination: {export_root}\n")
+            progress_text.insert(tk.END, "="*80 + "\n\n")
+            progress_text.see(tk.END)
+            self.root.update()
+
+            # Define standard round size folders
+            # Map detected sizes to standard folder names
+            standard_folders = {
+                # Exact matches
+                5.75: "5.75",
+                6.0: "6.0",
+                6.25: "6.25",
+                6.5: "6.5",
+                7.0: "7.0",
+                7.5: "7.5",
+                8.0: "8.0",
+                8.5: "8.5",
+                9.5: "9.5",
+                10.25: "10.25",
+                10.5: "10.5",
+                13.0: "13.0",
+            }
+
+            # Function to map any round size to nearest standard folder
+            def get_folder_for_round_size(round_size):
+                if not round_size:
+                    return "NO_ROUND_SIZE"
+
+                # Check for exact match
+                if round_size in standard_folders:
+                    return standard_folders[round_size]
+
+                # Find nearest standard size
+                nearest = min(standard_folders.keys(), key=lambda x: abs(x - round_size))
+                return standard_folders[nearest]
+
+            # Get repository path
+            repo_path = self.repository_path
+            if not repo_path:
+                progress_text.insert(tk.END, "ERROR: No repository path configured\n")
+                tk.Button(progress_window, text="Close", command=progress_window.destroy,
+                         bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold")).pack(pady=10)
+                conn.close()
+                return
+
+            # Get ALL repository files:
+            # - In repository folder
+            # - Has file_path set
+            # - Any extension (or no extension)
+            # - Include files with or without round size
+            cursor.execute("""
+                SELECT program_number, file_path, round_size, title
+                FROM programs
+                WHERE is_managed = 1
+                  AND file_path IS NOT NULL
+                  AND file_path LIKE ?
+                ORDER BY round_size, program_number
+            """, (f"{repo_path}%",))
+
+            all_files = cursor.fetchall()
+
+            if not all_files:
+                progress_text.insert(tk.END, "No repository files found to export.\n")
+                progress_text.see(tk.END)
+                tk.Button(progress_window, text="Close", command=progress_window.destroy,
+                         bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold")).pack(pady=10)
+                conn.close()
+                return
+
+            # Filter to only files that actually exist
+            verified_files = []
+            skipped_count = 0
+            for prog_num, file_path, round_size, title in all_files:
+                if file_path and os.path.exists(file_path):
+                    verified_files.append((prog_num, file_path, round_size, title))
+                else:
+                    skipped_count += 1
+
+            all_files = verified_files
+
+            if not all_files:
+                progress_text.insert(tk.END, "No files found that actually exist.\n")
+                progress_text.insert(tk.END, f"(Skipped {skipped_count} database entries with missing files)\n")
+                progress_text.see(tk.END)
+                tk.Button(progress_window, text="Close", command=progress_window.destroy,
+                         bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold")).pack(pady=10)
+                conn.close()
+                return
+
+            progress_text.insert(tk.END, f"Found {len(all_files)} repository files to export\n")
+            if skipped_count > 0:
+                progress_text.insert(tk.END, f"(Skipped {skipped_count} entries with missing files)\n")
+            progress_text.insert(tk.END, "\nExporting ALL files from repository:\n")
+            progress_text.insert(tk.END, "  ✓ All extensions (.nc, .txt, no extension)\n")
+            progress_text.insert(tk.END, "  ✓ Organized by round size\n")
+            progress_text.insert(tk.END, "  ✓ Only files that actually exist\n\n")
+            progress_text.insert(tk.END, "Organizing files by round size...\n")
+            progress_text.insert(tk.END, "="*80 + "\n\n")
+            progress_text.see(tk.END)
+            self.root.update()
+
+            # Group files by folder
+            files_by_folder = {}
+            for prog_num, file_path, round_size, title in all_files:
+                folder_name = get_folder_for_round_size(round_size)
+
+                if folder_name not in files_by_folder:
+                    files_by_folder[folder_name] = []
+
+                files_by_folder[folder_name].append((prog_num, file_path, round_size, title))
+
+            # Show organization summary
+            progress_text.insert(tk.END, "EXPORT ORGANIZATION:\n")
+            progress_text.insert(tk.END, "="*80 + "\n\n")
+
+            for folder_name in sorted(files_by_folder.keys()):
+                file_count = len(files_by_folder[folder_name])
+                progress_text.insert(tk.END, f"📁 {folder_name}/ ({file_count} files)\n")
+
+            progress_text.insert(tk.END, f"\n{'='*80}\n")
+            progress_text.insert(tk.END, f"Total: {len(all_files)} files in {len(files_by_folder)} folders\n\n")
+            progress_text.see(tk.END)
+            self.root.update()
+
+            # Start export
+            progress_text.insert(tk.END, "="*80 + "\n")
+            progress_text.insert(tk.END, "STARTING EXPORT...\n")
+            progress_text.insert(tk.END, "="*80 + "\n\n")
+            progress_text.see(tk.END)
+
+            exported_count = 0
+            error_count = 0
+            created_folders = set()
+
+            for folder_name in sorted(files_by_folder.keys()):
+                # Create folder
+                folder_path = os.path.join(export_root, folder_name)
+                if not os.path.exists(folder_path):
+                    os.makedirs(folder_path)
+                    created_folders.add(folder_name)
+                    progress_text.insert(tk.END, f"📁 Created folder: {folder_name}/\n")
+
+                progress_text.insert(tk.END, f"\nExporting to {folder_name}/:\n")
+
+                # Copy files to this folder
+                for prog_num, file_path, round_size, title in files_by_folder[folder_name]:
+                    try:
+                        # Check if file_path is None or empty
+                        if not file_path:
+                            progress_text.insert(tk.END, f"  ⚠️ SKIP: {prog_num} - No file path in database (run Repair File Paths)\n")
+                            error_count += 1
+                            continue
+
+                        if not os.path.exists(file_path):
+                            progress_text.insert(tk.END, f"  ⚠️ SKIP: {prog_num} - File not found: {file_path}\n")
+                            error_count += 1
+                            continue
+
+                        # Copy file
+                        filename = os.path.basename(file_path)
+                        dest_path = os.path.join(folder_path, filename)
+
+                        import shutil
+                        shutil.copy2(file_path, dest_path)
+
+                        progress_text.insert(tk.END, f"  ✓ {prog_num} - {filename}\n")
+                        exported_count += 1
+
+                        if exported_count % 50 == 0:
+                            progress_text.see(tk.END)
+                            self.root.update()
+
+                    except Exception as e:
+                        progress_text.insert(tk.END, f"  ✗ ERROR copying {prog_num}: {e}\n")
+                        error_count += 1
+
+                progress_text.see(tk.END)
+                self.root.update()
+
+            # Summary
+            progress_text.insert(tk.END, f"\n{'='*80}\n")
+            progress_text.insert(tk.END, "EXPORT COMPLETE\n")
+            progress_text.insert(tk.END, "="*80 + "\n\n")
+            progress_text.insert(tk.END, f"Export Location: {export_root}\n\n")
+            progress_text.insert(tk.END, f"Folders Created: {len(created_folders)}\n")
+            progress_text.insert(tk.END, f"Files Exported: {exported_count}\n")
+            if error_count > 0:
+                progress_text.insert(tk.END, f"Errors: {error_count}\n")
+            progress_text.insert(tk.END, f"\nTotal Size: {len(files_by_folder)} folders, {exported_count} files\n")
+            progress_text.see(tk.END)
+
+            # Log activity
+            self.log_activity('export_repository', 'export', {
+                'export_root': export_root,
+                'folders_created': len(created_folders),
+                'files_exported': exported_count,
+                'error_count': error_count
+            })
+
+            conn.close()
+
+            # Show completion message
+            messagebox.showinfo(
+                "Export Complete",
+                f"Repository exported successfully!\n\n"
+                f"Location: {export_root}\n"
+                f"Folders: {len(created_folders)}\n"
+                f"Files: {exported_count}\n"
+                f"Errors: {error_count}"
+            )
+
+            tk.Button(progress_window, text="Close", command=progress_window.destroy,
+                     bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold")).pack(pady=10)
+
+        except Exception as e:
+            progress_text.insert(tk.END, f"\n\nERROR: {e}\n")
+            import traceback
+            progress_text.insert(tk.END, traceback.format_exc())
+            progress_text.see(tk.END)
+
+            # Close connection if it exists
+            if 'conn' in locals():
+                try:
+                    conn.close()
+                except:
+                    pass
+
+            tk.Button(progress_window, text="Close", command=progress_window.destroy,
+                     bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold")).pack(pady=10)
+
+    def fix_program_number_formatting(self):
+        """Fix program numbers that are missing leading zeros (e.g., o1000 -> o01000)"""
+
+        # Create progress window
+        progress_window = tk.Toplevel(self.root)
+        progress_window.title("Fix Program Number Formatting")
+        progress_window.geometry("900x700")
+        progress_window.configure(bg=self.bg_color)
+
+        # Title
+        title_label = tk.Label(progress_window,
+                              text="🔢 Fix Program Number Formatting",
+                              font=("Arial", 14, "bold"),
+                              bg=self.bg_color, fg=self.fg_color)
+        title_label.pack(pady=10)
+
+        # Info
+        info_label = tk.Label(progress_window,
+                             text="This will add leading zeros to program numbers (o1000 → o01000).\n"
+                                  "All program numbers should be in the format o##### (5 digits).",
+                             font=("Arial", 10),
+                             bg=self.bg_color, fg=self.fg_color,
+                             justify=tk.LEFT)
+        info_label.pack(pady=5, padx=20, anchor=tk.W)
+
+        # Scrolled text for output
+        output_frame = tk.Frame(progress_window, bg=self.bg_color)
+        output_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        output_text = scrolledtext.ScrolledText(output_frame,
+                                                wrap=tk.WORD,
+                                                width=100, height=35,
+                                                font=("Courier New", 9),
+                                                bg="#1e1e1e", fg="#ffffff")
+        output_text.pack(fill=tk.BOTH, expand=True)
+
+        progress_window.update()
+
+        conn = None
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
+            cursor = conn.cursor()
+
+            output_text.insert(tk.END, "=" * 80 + "\n")
+            output_text.insert(tk.END, "SCANNING FOR INCORRECTLY FORMATTED PROGRAM NUMBERS\n")
+            output_text.insert(tk.END, "=" * 80 + "\n\n")
+
+            # Find all programs with incorrect format (missing leading zeros)
+            cursor.execute("""
+                SELECT program_number, file_path, title
+                FROM programs
+                WHERE LENGTH(program_number) < 6
+                ORDER BY CAST(REPLACE(program_number, 'o', '') AS INTEGER)
+            """)
+
+            incorrect_programs = cursor.fetchall()
+            output_text.insert(tk.END, f"Found {len(incorrect_programs)} programs with incorrect formatting\n\n")
+
+            if not incorrect_programs:
+                output_text.insert(tk.END, "✅ All program numbers are correctly formatted!\n")
+                conn.close()
+                tk.Button(progress_window, text="Close", command=progress_window.destroy,
+                         bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold")).pack(pady=10)
+                return
+
+            output_text.insert(tk.END, "=" * 80 + "\n")
+            output_text.insert(tk.END, "FIX PREVIEW\n")
+            output_text.insert(tk.END, "=" * 80 + "\n\n")
+
+            fixes = []
+            for old_num, file_path, title in incorrect_programs[:50]:  # Show first 50
+                new_num = self.format_program_number(old_num)
+
+                output_text.insert(tk.END, f"Program: {old_num} → {new_num}\n")
+                output_text.insert(tk.END, f"  Title: {title}\n")
+                output_text.insert(tk.END, f"  File: {os.path.basename(file_path) if file_path else 'None'}\n\n")
+
+                fixes.append((old_num, new_num, file_path, title))
+                progress_window.update()
+
+            if len(incorrect_programs) > 50:
+                output_text.insert(tk.END, f"... and {len(incorrect_programs) - 50} more programs\n\n")
+
+            # Include all programs for fixing, not just the displayed ones
+            for old_num, file_path, title in incorrect_programs[50:]:
+                new_num = self.format_program_number(old_num)
+                fixes.append((old_num, new_num, file_path, title))
+
+            output_text.insert(tk.END, "=" * 80 + "\n")
+            output_text.insert(tk.END, f"Total programs to fix: {len(fixes)}\n")
+            output_text.insert(tk.END, "=" * 80 + "\n\n")
+
+            # Ask user to confirm
+            def apply_fixes():
+                output_text.insert(tk.END, "\n" + "=" * 80 + "\n")
+                output_text.insert(tk.END, "APPLYING FIXES\n")
+                output_text.insert(tk.END, "=" * 80 + "\n\n")
+
+                fixed_count = 0
+                error_count = 0
+
+                for old_num, new_num, file_path, title in fixes:
+                    try:
+                        # Check if new number already exists
+                        cursor.execute("SELECT COUNT(*) FROM programs WHERE program_number = ?", (new_num,))
+                        if cursor.fetchone()[0] > 0 and new_num != old_num:
+                            output_text.insert(tk.END, f"⚠️ SKIP: {old_num} → {new_num} (target already exists)\n")
+                            error_count += 1
+                            continue
+
+                        # Rename file if it exists
+                        if file_path and os.path.exists(file_path):
+                            old_dir = os.path.dirname(file_path)
+                            new_filename = f"{new_num}.nc"
+                            new_file_path = os.path.join(old_dir, new_filename)
+
+                            # Only rename if filenames are different
+                            if file_path != new_file_path:
+                                os.rename(file_path, new_file_path)
+                                file_path = new_file_path
+
+                        # Update programs table
+                        cursor.execute("""
+                            UPDATE programs
+                            SET program_number = ?, file_path = ?
+                            WHERE program_number = ?
+                        """, (new_num, file_path, old_num))
+
+                        # Update registry table
+                        cursor.execute("""
+                            UPDATE program_number_registry
+                            SET program_number = ?, file_path = ?
+                            WHERE program_number = ?
+                        """, (new_num, file_path, old_num))
+
+                        conn.commit()
+                        fixed_count += 1
+                        output_text.insert(tk.END, f"✓ Fixed: {old_num} → {new_num}\n")
+                    except Exception as e:
+                        error_count += 1
+                        output_text.insert(tk.END, f"❌ Error fixing {old_num}: {e}\n")
+
+                    progress_window.update()
+
+                output_text.insert(tk.END, "\n" + "=" * 80 + "\n")
+                output_text.insert(tk.END, "FIX COMPLETE\n")
+                output_text.insert(tk.END, "=" * 80 + "\n\n")
+                output_text.insert(tk.END, f"✅ Fixed: {fixed_count}\n")
+                output_text.insert(tk.END, f"❌ Errors: {error_count}\n")
+                output_text.insert(tk.END, "\nAll program numbers now have proper leading zeros!\n")
+
+                confirm_btn.pack_forget()
+                cancel_btn.pack_forget()
+
+                tk.Button(progress_window, text="Close", command=progress_window.destroy,
+                         bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold")).pack(pady=10)
+
+            def cancel_fix():
+                conn.close()
+                progress_window.destroy()
+
+            # Buttons
+            button_frame = tk.Frame(progress_window, bg=self.bg_color)
+            button_frame.pack(pady=10)
+
+            confirm_btn = tk.Button(button_frame, text="✓ Apply Fixes",
+                                    command=apply_fixes,
+                                    bg="#4CAF50", fg="white", font=("Arial", 11, "bold"),
+                                    width=15)
+            confirm_btn.pack(side=tk.LEFT, padx=5)
+
+            cancel_btn = tk.Button(button_frame, text="✗ Cancel",
+                                   command=cancel_fix,
+                                   bg="#f44336", fg="white", font=("Arial", 11, "bold"),
+                                   width=15)
+            cancel_btn.pack(side=tk.LEFT, padx=5)
+
+        except Exception as e:
+            if 'output_text' in locals():
+                output_text.insert(tk.END, f"\n❌ ERROR: {str(e)}\n")
+                import traceback
+                output_text.insert(tk.END, f"\n{traceback.format_exc()}\n")
+
+            if 'conn' in locals():
+                try:
+                    conn.close()
+                except:
+                    pass
+
+            tk.Button(progress_window, text="Close", command=progress_window.destroy,
+                     bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold")).pack(pady=10)
+
+    def move_to_correct_range(self):
+        """
+        Move programs to their correct range based on round size.
+
+        This function prioritizes using proper round size ranges before free ranges.
+        It finds and moves two types of programs:
+        1. Programs outside their correct range (e.g., o01010 with 7.0" → o70000-o79999)
+        2. Programs in free ranges (1000-9999, 14000-49999) that have real round sizes
+           and can be consolidated into their proper round size ranges
+
+        This ensures proper round size ranges are filled before using overflow free ranges.
+        """
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
+            cursor = conn.cursor()
+
+            # Create progress window
+            progress_window = tk.Toplevel(self.root)
+            progress_window.title("Move to Correct Range")
+            progress_window.geometry("1000x700")
+            progress_window.configure(bg=self.bg_color)
+            progress_window.transient(self.root)
+
+            tk.Label(progress_window, text="🎯 Move Programs to Correct Range",
+                    font=("Arial", 14, "bold"), bg=self.bg_color, fg=self.fg_color).pack(pady=10)
+
+            # Progress text
+            text_frame = tk.Frame(progress_window, bg=self.bg_color)
+            text_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+
+            progress_text = scrolledtext.ScrolledText(text_frame, bg=self.input_bg, fg=self.fg_color,
+                                                     font=("Consolas", 9), wrap=tk.WORD)
+            progress_text.pack(fill=tk.BOTH, expand=True)
+
+            progress_text.insert(tk.END, "=" * 80 + "\n")
+            progress_text.insert(tk.END, "SCANNING FOR PROGRAMS TO MOVE\n")
+            progress_text.insert(tk.END, "=" * 80 + "\n")
+            progress_text.insert(tk.END, "Looking for:\n")
+            progress_text.insert(tk.END, "  1. Programs outside their correct round size range\n")
+            progress_text.insert(tk.END, "  2. Programs in free ranges that can move to proper ranges\n")
+            progress_text.insert(tk.END, "=" * 80 + "\n\n")
+            progress_text.see(tk.END)
+            self.root.update()
+
+            # Get programs that need to be moved
+            # A program is in wrong range if:
+            # 1. It has a round_size OR outer_diameter (OD column in GUI)
+            # 2. Its program number doesn't match the range for that round size
+
+            cursor.execute("""
+                SELECT program_number, file_path, round_size, outer_diameter, title
+                FROM programs
+                WHERE is_managed = 1
+                  AND file_path IS NOT NULL
+                  AND (round_size IS NOT NULL OR outer_diameter IS NOT NULL)
+                ORDER BY COALESCE(round_size, outer_diameter), program_number
+            """)
+
+            all_programs = cursor.fetchall()
+
+            needs_move = []
+
+            # Define free ranges
+            FREE_RANGE_1 = (1000, 9999)    # round_size 0.0
+            FREE_RANGE_2 = (14000, 49999)  # round_size -1.0
+
+            for prog_num, file_path, round_size, outer_diameter, title in all_programs:
+                # Use round_size if available, otherwise use outer_diameter (OD column)
+                effective_round_size = round_size if round_size is not None else outer_diameter
+
+                if effective_round_size is None:
+                    continue  # Skip if both are NULL
+
+                # Determine correct range for this round size
+                correct_range = self.get_range_for_round_size(effective_round_size)
+
+                if not correct_range:
+                    continue  # Unknown round size
+
+                range_start, range_end = correct_range
+
+                # Extract number from program number
+                num_str = prog_num.replace('o', '').replace('O', '')
+                try:
+                    prog_int = int(num_str)
+                except:
+                    continue
+
+                # Check if program needs to be moved:
+                # 1. Program is outside its correct range (wrong range)
+                # 2. Program is in a free range BUT has a real round size (not 0.0 or -1.0)
+                #    This prioritizes using proper round size ranges before free ranges
+
+                in_free_range_1 = (FREE_RANGE_1[0] <= prog_int <= FREE_RANGE_1[1])
+                in_free_range_2 = (FREE_RANGE_2[0] <= prog_int <= FREE_RANGE_2[1])
+                in_any_free_range = in_free_range_1 or in_free_range_2
+
+                # Has a real round size (not free range sizes 0.0 or -1.0)
+                has_real_round_size = effective_round_size not in (0.0, -1.0)
+
+                # Check if outside correct range
+                outside_correct_range = (prog_int < range_start or prog_int > range_end)
+
+                # Move if: outside range OR (in free range AND has real round size)
+                if outside_correct_range or (in_any_free_range and has_real_round_size):
+                    needs_move.append((prog_num, file_path, effective_round_size, title, range_start, range_end))
+
+            progress_text.insert(tk.END, f"Found {len(needs_move)} programs to move\n\n")
+
+            if not needs_move:
+                progress_text.insert(tk.END, "✓ All programs are already in correct ranges!\n")
+                progress_text.insert(tk.END, "✓ No programs in free ranges need consolidation!\n")
+                progress_text.see(tk.END)
+                tk.Button(progress_window, text="Close", command=progress_window.destroy,
+                         bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold")).pack(pady=10)
+                conn.close()
+                return
+
+            progress_text.insert(tk.END, "=" * 80 + "\n")
+            progress_text.insert(tk.END, "PREVIEW - Programs to Move\n")
+            progress_text.insert(tk.END, "=" * 80 + "\n\n")
+
+            # Define free ranges for status reporting
+            FREE_RANGE_1 = (1000, 9999)
+            FREE_RANGE_2 = (14000, 49999)
+
+            # Show preview (first 50)
+            for prog_num, file_path, round_size, title, range_start, range_end in needs_move[:50]:
+                num_str = prog_num.replace('o', '').replace('O', '')
+                prog_int = int(num_str)
+
+                # Determine reason for move
+                in_free_range_1 = (FREE_RANGE_1[0] <= prog_int <= FREE_RANGE_1[1])
+                in_free_range_2 = (FREE_RANGE_2[0] <= prog_int <= FREE_RANGE_2[1])
+
+                if in_free_range_1:
+                    reason = "📦 Currently in Free Range 1 (o1000-o9999)"
+                elif in_free_range_2:
+                    reason = "📦 Currently in Free Range 2 (o14000-o49999)"
+                else:
+                    reason = "⚠️ Currently in wrong range"
+
+                progress_text.insert(tk.END, f"Program: {prog_num}\n")
+                progress_text.insert(tk.END, f"  {reason}\n")
+                progress_text.insert(tk.END, f"  Round size: {round_size}\"\n")
+                progress_text.insert(tk.END, f"  Correct range: o{range_start:05d} - o{range_end:05d}\n")
+                progress_text.insert(tk.END, f"  Title: {title[:50] if title else '(no title)'}\n")
+                progress_text.insert(tk.END, f"  → Will move to first available in correct range\n\n")
+
+            if len(needs_move) > 50:
+                progress_text.insert(tk.END, f"... and {len(needs_move) - 50} more programs\n\n")
+
+            progress_text.insert(tk.END, "=" * 80 + "\n")
+            progress_text.insert(tk.END, f"Total: {len(needs_move)} programs will be moved\n")
+            progress_text.insert(tk.END, "=" * 80 + "\n")
+            progress_text.see(tk.END)
+
+            def apply_move():
+                progress_text.insert(tk.END, "\n" + "=" * 80 + "\n")
+                progress_text.insert(tk.END, "MOVING PROGRAMS\n")
+                progress_text.insert(tk.END, "=" * 80 + "\n\n")
+                progress_text.see(tk.END)
+                self.root.update()
+
+                moved_count = 0
+                error_count = 0
+                assigned_numbers = set()
+
+                for prog_num, file_path, round_size, title, range_start, range_end in needs_move:
+                    try:
+                        # Find next available number in correct range
+                        new_number = self.find_next_available_number_in_range(
+                            range_start, range_end, assigned_numbers
+                        )
+
+                        if not new_number:
+                            progress_text.insert(tk.END, f"✗ {prog_num}: No available numbers in range\n")
+                            error_count += 1
+                            continue
+
+                        assigned_numbers.add(new_number)
+
+                        # Check if file exists
+                        if not os.path.exists(file_path):
+                            progress_text.insert(tk.END, f"✗ {prog_num}: File not found\n")
+                            error_count += 1
+                            continue
+
+                        # Read file content
+                        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                            content = f.read()
+
+                        # Update internal O-number in file
+                        old_num_plain = prog_num.replace('o', '').replace('O', '')
+                        new_num_plain = new_number.replace('o', '').replace('O', '')
+
+                        # Update O-number at start of line
+                        updated_content = re.sub(
+                            rf'^[oO]{old_num_plain}\b',
+                            new_number.upper(),
+                            content,
+                            flags=re.MULTILINE
+                        )
+
+                        # Update O-number in comments
+                        updated_content = re.sub(
+                            rf'\b[oO]{old_num_plain}\b',
+                            new_number.upper(),
+                            updated_content
+                        )
+
+                        # Add legacy comment
+                        from datetime import datetime
+                        today = datetime.now().strftime("%Y-%m-%d")
+                        legacy_comment = f"(MOVED FROM {prog_num.upper()} ON {today} - RANGE CORRECTION)\n"
+
+                        # Insert after first O-number line
+                        lines = updated_content.split('\n')
+                        for i, line in enumerate(lines):
+                            if re.match(rf'^[oO]{new_num_plain}\b', line):
+                                lines.insert(i + 1, legacy_comment)
+                                break
+                        updated_content = '\n'.join(lines)
+
+                        # Create new file path
+                        old_dir = os.path.dirname(file_path)
+                        new_file_path = os.path.join(old_dir, f"{new_number}.nc")
+
+                        # Write to new file
+                        with open(new_file_path, 'w', encoding='utf-8') as f:
+                            f.write(updated_content)
+
+                        # Delete old file
+                        if os.path.exists(file_path) and file_path != new_file_path:
+                            os.remove(file_path)
+
+                        # Update database
+                        cursor.execute("""
+                            UPDATE programs
+                            SET program_number = ?, file_path = ?
+                            WHERE program_number = ?
+                        """, (new_number, new_file_path, prog_num))
+
+                        # Update registry - mark old as AVAILABLE
+                        cursor.execute("""
+                            UPDATE program_number_registry
+                            SET status = 'AVAILABLE', file_path = NULL
+                            WHERE program_number = ?
+                        """, (prog_num,))
+
+                        # Update registry - mark new as IN_USE
+                        cursor.execute("""
+                            UPDATE program_number_registry
+                            SET status = 'IN_USE', file_path = ?
+                            WHERE program_number = ?
+                        """, (new_file_path, new_number))
+
+                        conn.commit()
+                        moved_count += 1
+
+                        progress_text.insert(tk.END, f"✓ {prog_num} → {new_number} (Round {round_size}\")\n")
+
+                        if moved_count % 10 == 0:
+                            progress_text.see(tk.END)
+                            self.root.update()
+
+                    except Exception as e:
+                        error_count += 1
+                        progress_text.insert(tk.END, f"✗ Error moving {prog_num}: {e}\n")
+
+                progress_text.insert(tk.END, "\n" + "=" * 80 + "\n")
+                progress_text.insert(tk.END, "COMPLETE\n")
+                progress_text.insert(tk.END, "=" * 80 + "\n\n")
+                progress_text.insert(tk.END, f"Successfully moved: {moved_count} programs\n")
+                if error_count > 0:
+                    progress_text.insert(tk.END, f"Errors: {error_count}\n")
+                progress_text.see(tk.END)
+
+                # Refresh the view
+                self.refresh_results()
+
+                # Close database
+                conn.close()
+
+                # Update button
+                btn_frame.pack_forget()
+                tk.Button(progress_window, text="Close", command=progress_window.destroy,
+                         bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold")).pack(pady=10)
+
+            def cancel_move():
+                conn.close()
+                progress_window.destroy()
+
+            # Buttons
+            btn_frame = tk.Frame(progress_window, bg=self.bg_color)
+            btn_frame.pack(pady=10)
+
+            tk.Button(btn_frame, text="✓ Move Programs", command=apply_move,
+                     bg="#E91E63", fg=self.fg_color, font=("Arial", 10, "bold"),
+                     width=20, height=2).pack(side=tk.LEFT, padx=10)
+
+            tk.Button(btn_frame, text="✗ Cancel", command=cancel_move,
+                     bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold"),
+                     width=20, height=2).pack(side=tk.LEFT, padx=10)
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to scan programs: {str(e)}")
+            import traceback
+            traceback.print_exc()
+
+    def find_next_available_number_in_range(self, range_start, range_end, assigned_numbers):
+        """Find next available program number in specified range"""
+        conn = sqlite3.connect(self.db_path, timeout=30.0)
+        cursor = conn.cursor()
+
+        for num in range(range_start, range_end + 1):
+            prog_num = self.format_program_number(num)
+
+            if prog_num in assigned_numbers:
+                continue
+
+            # Check registry
+            cursor.execute("""
+                SELECT status FROM program_number_registry
+                WHERE program_number = ?
+            """, (prog_num,))
+
+            result = cursor.fetchone()
+            if result and result[0] == 'AVAILABLE':
+                conn.close()
+                return prog_num
+
+        conn.close()
+        return None  # No available numbers found
+
+    def repair_file_paths(self):
+        """Repair database file_path entries by scanning repository folder and matching files"""
+
+        # Create progress window
+        progress_window = tk.Toplevel(self.root)
+        progress_window.title("Repair File Paths")
+        progress_window.geometry("900x700")
+        progress_window.configure(bg=self.bg_color)
+
+        # Title
+        title_label = tk.Label(progress_window,
+                              text="🔧 Repair Database File Paths",
+                              font=("Arial", 14, "bold"),
+                              bg=self.bg_color, fg=self.fg_color)
+        title_label.pack(pady=10)
+
+        # Info
+        info_label = tk.Label(progress_window,
+                             text="This will scan the repository folder and fix file_path entries in the database.\n"
+                                  "It matches files on disk to their database entries and updates incorrect paths.",
+                             font=("Arial", 10),
+                             bg=self.bg_color, fg=self.fg_color,
+                             justify=tk.LEFT)
+        info_label.pack(pady=5, padx=20, anchor=tk.W)
+
+        # Scrolled text for output
+        output_frame = tk.Frame(progress_window, bg=self.bg_color)
+        output_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        output_text = scrolledtext.ScrolledText(output_frame,
+                                                wrap=tk.WORD,
+                                                width=100, height=35,
+                                                font=("Courier New", 9),
+                                                bg="#1e1e1e", fg="#ffffff")
+        output_text.pack(fill=tk.BOTH, expand=True)
+
+        progress_window.update()
+
+        conn = None
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
+            cursor = conn.cursor()
+
+            output_text.insert(tk.END, "=" * 80 + "\n")
+            output_text.insert(tk.END, "SCANNING REPOSITORY FOLDER\n")
+            output_text.insert(tk.END, "=" * 80 + "\n\n")
+
+            # Get repository path from class instance
+            repo_path = self.repository_path
+            if not repo_path:
+                output_text.insert(tk.END, "❌ ERROR: No repository path configured\n")
+                conn.close()
+                tk.Button(progress_window, text="Close", command=progress_window.destroy,
+                         bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold")).pack(pady=10)
+                return
+
+            output_text.insert(tk.END, f"Repository Path: {repo_path}\n\n")
+
+            if not os.path.exists(repo_path):
+                output_text.insert(tk.END, f"❌ ERROR: Repository path does not exist\n")
+                conn.close()
+                tk.Button(progress_window, text="Close", command=progress_window.destroy,
+                         bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold")).pack(pady=10)
+                return
+
+            # Scan repository for all .nc files
+            output_text.insert(tk.END, "Scanning for .nc files...\n")
+            progress_window.update()
+
+            nc_files = {}  # program_number -> full_path
+            for root, dirs, files in os.walk(repo_path):
+                for filename in files:
+                    if filename.lower().endswith('.nc'):
+                        full_path = os.path.join(root, filename)
+                        base_name = os.path.splitext(filename)[0].lower()
+                        nc_files[base_name] = full_path
+
+            output_text.insert(tk.END, f"Found {len(nc_files)} .nc files in repository\n\n")
+            output_text.insert(tk.END, "=" * 80 + "\n")
+            output_text.insert(tk.END, "CHECKING DATABASE ENTRIES\n")
+            output_text.insert(tk.END, "=" * 80 + "\n\n")
+            progress_window.update()
+
+            # Get all managed programs
+            cursor.execute("""
+                SELECT program_number, file_path, title
+                FROM programs
+                WHERE is_managed = 1
+                ORDER BY program_number
+            """)
+
+            all_programs = cursor.fetchall()
+            output_text.insert(tk.END, f"Found {len(all_programs)} managed programs in database\n\n")
+
+            # Check each program's file_path
+            needs_repair = []
+            for prog_num, file_path, title in all_programs:
+                # Check if file exists at stored path
+                if file_path and os.path.exists(file_path):
+                    continue  # Path is correct
+
+                # File doesn't exist at stored path - try to find it
+                # Strip any suffixes like (1), _1, etc. to get base program number
+                import re
+                # Remove suffix patterns: (1), (2), _1, _2, etc.
+                base_prog = re.sub(r'[\(_]\d+[\)]?$', '', prog_num).lower()
+
+                # Try multiple variations
+                possible_names = [
+                    prog_num.lower(),  # Exact match: o00801(2)
+                    base_prog,  # Without suffixes: o00801
+                    prog_num.replace('(', '_').replace(')', '').lower(),  # Convert () to _: o00801_2
+                ]
+
+                found_path = None
+                for name in possible_names:
+                    if name in nc_files:
+                        found_path = nc_files[name]
+                        break
+
+                # Only add to needs_repair if we're actually changing something
+                # (Either found a new path, or old path was None/invalid)
+                if found_path or not file_path or not os.path.exists(file_path):
+                    needs_repair.append((prog_num, file_path, found_path, title))
+
+            output_text.insert(tk.END, f"Found {len(needs_repair)} entries that need repair\n\n")
+
+            if not needs_repair:
+                output_text.insert(tk.END, "✅ All file paths are correct! No repairs needed.\n")
+                conn.close()
+                tk.Button(progress_window, text="Close", command=progress_window.destroy,
+                         bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold")).pack(pady=10)
+                return
+
+            output_text.insert(tk.END, "=" * 80 + "\n")
+            output_text.insert(tk.END, "REPAIR PREVIEW\n")
+            output_text.insert(tk.END, "=" * 80 + "\n\n")
+
+            fixed_count = 0
+            missing_count = 0
+
+            for prog_num, old_path, new_path, title in needs_repair[:50]:  # Show first 50
+                output_text.insert(tk.END, f"Program: {prog_num}\n")
+                output_text.insert(tk.END, f"  Title: {title}\n")
+                output_text.insert(tk.END, f"  Current DB path: {old_path if old_path else '(empty)'}\n")
+
+                if new_path:
+                    output_text.insert(tk.END, f"  ✓ Found at: {new_path}\n")
+                    fixed_count += 1
+                else:
+                    output_text.insert(tk.END, f"  ❌ File not found in repository\n")
+                    missing_count += 1
+
+                output_text.insert(tk.END, "\n")
+                progress_window.update()
+
+            if len(needs_repair) > 50:
+                output_text.insert(tk.END, f"... and {len(needs_repair) - 50} more entries\n\n")
+
+            output_text.insert(tk.END, "=" * 80 + "\n")
+            output_text.insert(tk.END, f"SUMMARY:\n")
+            output_text.insert(tk.END, f"  • Can be fixed: {fixed_count}\n")
+            output_text.insert(tk.END, f"  • Missing files: {missing_count}\n")
+            output_text.insert(tk.END, "=" * 80 + "\n\n")
+
+            # Ask user to confirm
+            def apply_repairs():
+                output_text.insert(tk.END, "\n" + "=" * 80 + "\n")
+                output_text.insert(tk.END, "APPLYING REPAIRS\n")
+                output_text.insert(tk.END, "=" * 80 + "\n\n")
+
+                repaired = 0
+                failed = 0
+
+                for prog_num, old_path, new_path, title in needs_repair:
+                    if new_path:
+                        try:
+                            # Update programs table
+                            cursor.execute("""
+                                UPDATE programs
+                                SET file_path = ?
+                                WHERE program_number = ?
+                            """, (new_path, prog_num))
+
+                            # Update registry table
+                            cursor.execute("""
+                                UPDATE program_number_registry
+                                SET file_path = ?
+                                WHERE program_number = ?
+                            """, (new_path, prog_num))
+
+                            conn.commit()
+                            repaired += 1
+                            output_text.insert(tk.END, f"✓ Fixed: {prog_num}\n")
+                        except Exception as e:
+                            failed += 1
+                            output_text.insert(tk.END, f"❌ Error fixing {prog_num}: {e}\n")
+                    else:
+                        # File not found - clear the file_path
+                        try:
+                            cursor.execute("""
+                                UPDATE programs
+                                SET file_path = NULL
+                                WHERE program_number = ?
+                            """, (prog_num,))
+
+                            cursor.execute("""
+                                UPDATE program_number_registry
+                                SET file_path = NULL
+                                WHERE program_number = ?
+                            """, (prog_num,))
+
+                            conn.commit()
+                            failed += 1
+                            output_text.insert(tk.END, f"⚠️ Cleared path for missing file: {prog_num}\n")
+                        except Exception as e:
+                            failed += 1
+                            output_text.insert(tk.END, f"❌ Error clearing {prog_num}: {e}\n")
+
+                    progress_window.update()
+
+                output_text.insert(tk.END, "\n" + "=" * 80 + "\n")
+                output_text.insert(tk.END, "REPAIR COMPLETE\n")
+                output_text.insert(tk.END, "=" * 80 + "\n\n")
+                output_text.insert(tk.END, f"✅ Repaired: {repaired}\n")
+                output_text.insert(tk.END, f"⚠️ Missing files: {failed}\n")
+                output_text.insert(tk.END, "\nYou can now try batch rename again!\n")
+
+                confirm_btn.pack_forget()
+                cancel_btn.pack_forget()
+
+                tk.Button(progress_window, text="Close", command=progress_window.destroy,
+                         bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold")).pack(pady=10)
+
+            def cancel_repair():
+                conn.close()
+                progress_window.destroy()
+
+            # Buttons
+            button_frame = tk.Frame(progress_window, bg=self.bg_color)
+            button_frame.pack(pady=10)
+
+            confirm_btn = tk.Button(button_frame, text="✓ Apply Repairs",
+                                    command=apply_repairs,
+                                    bg="#4CAF50", fg="white", font=("Arial", 11, "bold"),
+                                    width=15)
+            confirm_btn.pack(side=tk.LEFT, padx=5)
+
+            cancel_btn = tk.Button(button_frame, text="✗ Cancel",
+                                   command=cancel_repair,
+                                   bg="#f44336", fg="white", font=("Arial", 11, "bold"),
+                                   width=15)
+            cancel_btn.pack(side=tk.LEFT, padx=5)
+
+        except Exception as e:
+            if 'output_text' in locals():
+                output_text.insert(tk.END, f"\n❌ ERROR: {str(e)}\n")
+                import traceback
+                output_text.insert(tk.END, f"\n{traceback.format_exc()}\n")
+
+            if 'conn' in locals():
+                try:
+                    conn.close()
+                except:
+                    pass
 
             tk.Button(progress_window, text="Close", command=progress_window.destroy,
                      bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold")).pack(pady=10)
@@ -10619,7 +12449,7 @@ For more documentation, see project README files in the application directory.
     def show_round_size_stats(self):
         """Show statistics about round size detection"""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
             cursor = conn.cursor()
 
             # Get overall stats
