@@ -4264,7 +4264,7 @@ class GCodeDatabaseGUI:
                     validation_status = "DIMENSIONAL"  # PURPLE - P-code/thickness mismatches
                 # elif parse_result.tool_validation_status == "WARNING":
                 #     validation_status = "TOOL_WARNING"  # AMBER - Tool suggestions (DISABLED - needs tuning)
-                elif parse_result.validation_warnings or parse_result.safety_blocks_status == "WARNING":
+                elif parse_result.validation_warnings:
                     validation_status = "WARNING"  # YELLOW - General warnings
 
                 # Update database with refreshed data
@@ -4504,7 +4504,7 @@ class GCodeDatabaseGUI:
                         validation_status = "DIMENSIONAL"
                     # elif parse_result.tool_validation_status == "WARNING":
                     #     validation_status = "TOOL_WARNING"  # DISABLED - needs tuning
-                    elif parse_result.validation_warnings or parse_result.safety_blocks_status == "WARNING":
+                    elif parse_result.validation_warnings:
                         validation_status = "WARNING"
 
                     # Update database with refreshed data
@@ -13160,7 +13160,7 @@ For more documentation, see project README files in the application directory.
                         validation_status = "DIMENSIONAL"
                     # elif parse_result.tool_validation_status == "WARNING":
                     #     validation_status = "TOOL_WARNING"  # DISABLED - needs tuning
-                    elif parse_result.validation_warnings or parse_result.safety_blocks_status == "WARNING":
+                    elif parse_result.validation_warnings:
                         validation_status = "WARNING"
 
                     # Update database
