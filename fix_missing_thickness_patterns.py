@@ -1,0 +1,116 @@
+import sqlite3
+import sys
+import os
+import json
+
+# Add the current directory to path to import the parser
+sys.path.insert(0, os.path.dirname(__file__))
+
+from improved_gcode_parser import ImprovedGCodeParser
+
+db_path = r"c:\Users\John Wayne\Desktop\Bronson Generators\File organizer\gcode_database.db"
+
+conn = sqlite3.connect(db_path, timeout=30.0)
+cursor = conn.cursor()
+
+print("=" * 80)
+print("FIXING FILES WITH MISSING THICKNESS (Pattern Detected in Title)")
+print("=" * 80)
+print()
+
+# Find all files with NULL thickness
+cursor.execute("""
+    SELECT program_number, title, file_path
+    FROM programs
+    WHERE thickness IS NULL
+      AND title IS NOT NULL
+      AND file_path IS NOT NULL
+    ORDER BY program_number
+""")
+
+results = cursor.fetchall()
+
+print(f"Found {len(results)} files with no thickness\n")
+print(f"Re-scanning with updated parser...\n")
+
+# Initialize parser
+parser = ImprovedGCodeParser()
+
+fixed_count = 0
+still_missing = 0
+error_count = 0
+
+for i, (prog_num, title, file_path) in enumerate(results):
+    if not os.path.exists(file_path):
+        error_count += 1
+        continue
+
+    try:
+        # Re-parse file
+        parse_result = parser.parse_file(file_path)
+
+        if parse_result and parse_result.thickness:
+            # Determine validation status
+            validation_status = "PASS"
+            if parse_result.validation_issues:
+                validation_status = "CRITICAL"
+            elif parse_result.bore_warnings:
+                validation_status = "BORE_WARNING"
+            elif parse_result.dimensional_issues:
+                validation_status = "DIMENSIONAL"
+            elif parse_result.validation_warnings:
+                validation_status = "WARNING"
+
+            # Update database
+            cursor.execute("""
+                UPDATE programs
+                SET thickness = ?,
+                    thickness_display = ?,
+                    hub_height = ?,
+                    validation_status = ?,
+                    validation_issues = ?,
+                    validation_warnings = ?,
+                    bore_warnings = ?,
+                    dimensional_issues = ?
+                WHERE program_number = ?
+            """, (
+                parse_result.thickness,
+                parse_result.thickness_display,
+                parse_result.hub_height,
+                validation_status,
+                json.dumps(parse_result.validation_issues) if parse_result.validation_issues else None,
+                json.dumps(parse_result.validation_warnings) if parse_result.validation_warnings else None,
+                json.dumps(parse_result.bore_warnings) if parse_result.bore_warnings else None,
+                json.dumps(parse_result.dimensional_issues) if parse_result.dimensional_issues else None,
+                prog_num
+            ))
+
+            fixed_count += 1
+
+            if fixed_count <= 10:
+                print(f"[OK] {prog_num}: {parse_result.thickness:.2f}\" - {title[:60]}")
+        else:
+            still_missing += 1
+
+        if (i + 1) % 100 == 0:
+            print(f"  ... processed {i + 1}/{len(results)} files")
+            conn.commit()
+
+    except Exception as e:
+        error_count += 1
+        if error_count <= 5:
+            print(f"[ERROR] {prog_num}: {e}")
+
+conn.commit()
+conn.close()
+
+print()
+print("=" * 80)
+print("COMPLETE")
+print("=" * 80)
+print(f"Files scanned: {len(results)}")
+print(f"  Fixed (thickness now detected): {fixed_count}")
+print(f"  Still missing thickness: {still_missing}")
+print(f"  Errors: {error_count}")
+print()
+print("The files with detected thickness are now displaying in the table!")

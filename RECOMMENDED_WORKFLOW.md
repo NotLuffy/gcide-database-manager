@@ -113,47 +113,125 @@ python run_batch_detection.py
 ---
 
 ### **Step 7: Manage Duplicates FIRST** 🔎
-**What:** Consolidate duplicate programs BEFORE renaming
+**What:** Consolidate duplicate programs BEFORE batch renaming
 **Where:** Repository tab → "🔍 Manage Duplicates"
-**Why First:** Prevents renaming duplicate copies that should be deleted
+**Why First:** Prevents wasting program numbers renaming files you'll delete
 
-**⚠️ CRITICAL: Process duplicates in this order!**
+**⚠️ CRITICAL: Must complete ALL 4 passes in this order BEFORE batch rename!**
 
-### **Step 7a: Type 2 First - Exact Duplicates** (Fastest)
+---
+
+### **Pass 1: Delete Type 2 & 3 (Content Duplicates)**
+
+**Button:** "🗑️ Delete Content Duplicates (Type 2 & 3)"
+
+**Type 2 - Exact Duplicates:**
 - **What:** Same name, same content (identical files)
-- **Example:** o12345 appears 3 times with identical content
+- **Example:** `o12345` appears 3 times with identical content
 - **Action:** Keep one (first/newest), delete the rest
 - **Why First:** Easy to identify, no decision needed, clears most duplicates
-- **Automation:** ✅ Can automate (same hash = definitely duplicate)
 
-### **Step 7b: Type 3 Second - Content Duplicates** (Saves Numbers)
+**Type 3 - Content Duplicates:**
 - **What:** Different names, same content
-- **Example:** o62000 and o62500 have identical content
+- **Example:** `o62000` and `o62500` have identical content
 - **Action:** Keep the one in correct range, delete the other
-- **Why Second:** Consolidates program numbers (one part = one number)
+- **Why:** Consolidates program numbers (one part = one number)
 - **Benefit:** If o62500 is already in correct range, delete o62000 instead of renaming it!
-- **Automation:** ⚠️ Semi-automatic (keep lowest number or one in correct range)
 
-### **Step 7c: Type 1 Last - Name Conflicts** (Needs Review)
-- **What:** Same name, different content (versions/revisions)
-- **Example:** o12345, o12345(1), o12345(2) with different dimensions
-- **Action:** Review each, keep current version, delete old versions
-- **Why Last:** Requires human judgment to determine correct version
-- **Automation:** ❌ Manual review required
-
-**Detailed Workflow:**
+**How to use:**
 1. Click "🔍 Manage Duplicates" button
-2. **First Pass:** Delete Type 2 (exact copies)
-   - Same hash = definitely duplicates
-   - Keep one, delete rest
-3. **Second Pass:** Delete Type 3 (content duplicates)
-   - Different numbers, same content
-   - Keep one in correct range or lowest number
-4. **Third Pass:** Delete Type 1 (name conflicts)
-   - Review each group
+2. Click "🗑️ Delete Content Duplicates (Type 2 & 3)" button
+3. Review the list of duplicates
+4. Select which files to keep (mark with ✓)
+5. Click "Delete Selected Duplicates"
+6. Confirm deletion
+
+**Result:** Only unique files remain (same content = same program)
+
+---
+
+### **Pass 2: Review Type 1 (Name Conflicts)**
+
+**Button:** "✏️ Rename Name Duplicates (Type 1)"
+
+**Type 1 - Name Conflicts:**
+- **What:** Same name, different content (versions/revisions)
+- **Example:** `o12345`, `o12345(1)`, `o12345(2)` with different dimensions
+- **Action:** Review each, keep current version, delete old versions
+- **Why:** Requires human judgment to determine correct version
+
+**How to use:**
+1. Still in "🔍 Manage Duplicates" window
+2. Review groups of files with same base number but different suffixes
+3. **Option A: Delete old versions manually**
+   - Compare files (dimensions, dates, etc.)
    - Keep correct/current version
    - Delete outdated versions
-5. Result: Only unique programs remain, ready for rename
+   - Close window
+4. **Option B: Use Rename button (if keeping multiple versions)**
+   - Click "✏️ Rename Name Duplicates" button
+   - Keeps first file (o12345)
+   - Renames duplicates to available numbers in correct ranges:
+     - o12345(1) with 8.5" round → o85000
+     - o12345(2) with 6.25" round → o62501
+   - Useful if you need to keep all versions
+
+**Result:** No more name conflicts, each version has unique program number
+
+---
+
+### **Pass 3: Fix Underscore Suffixes (Cleanup)**
+
+**Button:** "🔧 Fix Underscore Suffix Files"
+
+**What:** Files with underscore/parenthesis suffixes that remain after Pass 1 & 2
+- **Example:** `o12345_1.nc`, `o12345_2.nc`, `o62000(1).nc`
+- **Problem:** Invalid program number format, not detected as out-of-range
+- **Action:** Rename to available numbers in correct ranges
+
+**How to use:**
+1. Still in "🔍 Manage Duplicates" window
+2. Scroll to STEP 3: Fix Underscore Suffixes
+3. Click "🔧 Fix Underscore Suffix Files" button
+4. Review preview showing old → new mappings:
+   - `o12345_1` (8.5") → `o85000`
+   - `o12345_2` (8.5") → `o85001`
+   - `o62000(1)` (6.25") → `o62501`
+5. Click "✓ Confirm Rename" to proceed
+6. Watch progress as files are renamed
+
+**Result:** All files have valid program numbers (o##### format)
+
+---
+
+### **Summary: Complete Duplicate Management Workflow**
+
+**Execute in this order:**
+
+```
+Click "🔍 Manage Duplicates" button
+   ↓
+PASS 1: Delete Content Duplicates (Type 2 & 3)
+   → Click "🗑️ Delete Content Duplicates" button
+   → Review and delete identical files
+   → Keep one per unique content
+   ↓
+PASS 2: Handle Name Conflicts (Type 1)
+   → Review files with (1), (2) suffixes
+   → Delete old versions OR use "✏️ Rename Name Duplicates" to keep all
+   ↓
+PASS 3: Fix Underscore Suffixes
+   → Click "🔧 Fix Underscore Suffix Files" button
+   → Renames o12345_1.nc → o85000.nc
+   ↓
+RESULT: Clean, unique, valid program numbers ready for batch rename
+```
+
+**Why this order matters:**
+- Pass 1 deletes most duplicates (Type 2 & 3)
+- Pass 2 handles version conflicts (Type 1)
+- Pass 3 cleans up any remaining invalid suffixes
+- **Only then** should you batch rename out-of-range programs
 
 **Impact Example:**
 ```
@@ -171,7 +249,7 @@ See [DUPLICATE_MANAGEMENT_ORDER.md](DUPLICATE_MANAGEMENT_ORDER.md) for detailed 
 **Where:** Repository tab → "🔧 Resolve Out-of-Range (Batch Rename)"
 **Prerequisites:**
 - Programs must be in repository (is_managed=1)
-- **Duplicates already handled** (Step 7 completed)
+- **Duplicates already handled** (Step 7 completed, including underscore suffix fix)
 
 **Workflow:**
 1. **Preview First:**
@@ -238,6 +316,9 @@ For most users, the minimal workflow is:
 4. Add to Repository     (External tab → Add Selected)
    ↓
 5. Manage Duplicates     (Repository tab → 🔍 Manage Duplicates) ⚠️ DO THIS FIRST!
+   PASS 1: Delete content duplicates (🗑️ button)
+   PASS 2: Review name conflicts (✏️ button or manual delete)
+   PASS 3: Fix underscore suffixes (🔧 button)
    ↓
 6. Batch Rename          (Repository tab → Resolve Out-of-Range)
    ↓
@@ -246,7 +327,10 @@ For most users, the minimal workflow is:
 
 **All 7 steps can be done entirely in the UI - no command line needed!**
 
-**⚠️ IMPORTANT:** Step 5 (Manage Duplicates) must happen BEFORE Step 6 (Batch Rename) to avoid renaming files you'll delete anyway!
+**⚠️ IMPORTANT:**
+- Step 5 (Manage Duplicates) must happen BEFORE Step 6 (Batch Rename)
+- Complete ALL 3 passes in Step 5 (content duplicates, name conflicts, underscore suffixes)
+- Skipping this wastes program numbers renaming files you'll delete!
 
 ---
 
