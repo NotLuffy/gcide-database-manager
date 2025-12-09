@@ -1574,8 +1574,26 @@ class ImprovedGCodeParser:
                 # Pattern: X3.168 (OB position) -> Z-0.05 (hub height creation)
                 ob_with_following_z = [x for x, z, idx, has_marker, has_z in ob_candidates if has_z]
                 if ob_with_following_z:
-                    # Use the largest X with following Z (typically the final OB after all passes)
-                    result.ob_from_gcode = max(ob_with_following_z) * 25.4  # Convert to mm
+                    # CRITICAL FIX: Filter out OD values before selecting OB
+                    # OD facing operations create large X values (e.g., X5.7 for 5.75" parts)
+                    # OB is the SMALLEST X value after OD chamfer, not the largest
+                    # Filter: Remove X values close to the OD (within 0.3" of OD)
+                    od_mm = result.outer_diameter * 25.4 if result.outer_diameter else None
+                    filtered_ob = []
+                    for x_val in ob_with_following_z:
+                        x_mm = x_val * 25.4
+                        # Exclude if close to OD (OD facing operations)
+                        if od_mm and abs(x_mm - od_mm) > 8.0:  # More than 8mm away from OD
+                            filtered_ob.append(x_val)
+                        elif not od_mm:  # No OD to compare, keep all
+                            filtered_ob.append(x_val)
+
+                    if filtered_ob:
+                        # Use the SMALLEST X (not largest) - OB is where we face down TO, not the OD we start from
+                        result.ob_from_gcode = min(filtered_ob) * 25.4  # Convert to mm
+                    else:
+                        # All values were close to OD, fall through to next strategy
+                        pass
                 else:
                     # Strategy 3: Look for X value after chamfer and before moving to positive Z
                     # Pattern from O10040:
