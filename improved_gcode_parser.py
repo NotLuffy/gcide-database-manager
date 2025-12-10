@@ -2487,10 +2487,14 @@ class ImprovedGCodeParser:
                             if result.drill_depth:
                                 drill_total = result.drill_depth - 0.15  # Drill total = drill - clearance
 
-                            # For hub-centric, calculate expected total from title
+                            # For hub-centric and 2PC with hub, calculate expected total from title
+                            # CRITICAL FIX: 2PC parts can also have hubs (e.g., 0.75" 2PC STUD with 0.25" hub)
                             if result.spacer_type == 'hub_centric':
                                 hub_h = result.hub_height if result.hub_height else 0.50
                                 title_total = result.thickness + hub_h
+                            elif result.spacer_type in ('2PC LUG', '2PC STUD', '2PC UNSURE') and result.hub_height:
+                                # 2PC with detected hub - title shows body, total = body + hub
+                                title_total = result.thickness + result.hub_height
                             else:
                                 title_total = result.thickness
 
@@ -2501,8 +2505,14 @@ class ImprovedGCodeParser:
                                     if abs(title_total - pcode_total) > 0.02:
                                         # Title is mislabeled
                                         if result.spacer_type == 'hub_centric':
+                                            hub_h = result.hub_height if result.hub_height else 0.50
                                             result.dimensional_issues.append(
                                                 f'TITLE MISLABELED: Title says {result.thickness}"+{hub_h}"hub={title_total:.2f}"total but P-code ({actual_desc}) and drill depth ({drill_total:.2f}"total) both indicate {pcode_total:.2f}"total - TITLE NEEDS CORRECTION'
+                                            )
+                                        elif result.spacer_type in ('2PC LUG', '2PC STUD', '2PC UNSURE') and result.hub_height:
+                                            # 2PC with hub - show hub in error message
+                                            result.dimensional_issues.append(
+                                                f'TITLE MISLABELED: Title says {result.thickness}"+{result.hub_height:.2f}"hub={title_total:.2f}"total but P-code ({actual_desc}) and drill depth ({drill_total:.2f}"total) both indicate {pcode_total:.2f}"total - TITLE NEEDS CORRECTION'
                                             )
                                         else:
                                             result.dimensional_issues.append(
