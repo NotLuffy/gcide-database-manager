@@ -818,7 +818,9 @@ class ImprovedGCodeParser:
         title = result.title
 
         # Outer Diameter (inches)
+        # CRITICAL: First number before DIA or at start of title is ALWAYS OD in inches (even without "IN")
         od_patterns = [
+            r'^(\d+\.?\d*)\s+DIA',              # Match "6.00 DIA" - first value before DIA is ALWAYS OD in inches
             r'(\d+\.?\d*)\s*IN[\$]?\s+DIA',     # Match "5.75IN$ DIA" or "5.75IN DIA"
             r'(\d+\.?\d*)\s*IN\s+(?!DIA)\d',    # Match "5.75 IN 60MM" (IN followed by number, not DIA)
             r'(\d+\.?\d*)\s*IN\s+ROUND',
@@ -1380,20 +1382,28 @@ class ImprovedGCodeParser:
                                 break
 
                         if max_z_depth and max_z_depth > 0.3:
-                            # Check if this X reaches full drill depth
+                            # Check if this X reaches full drill depth OR thickness depth
+                            # CRITICAL FIX: Final CB boring often goes to thickness, not full drill depth
+                            # Example: drill_depth=1.4", thickness=1.25", final bore=Z-1.25" (not Z-1.4")
                             reaches_full_depth = False
                             if drill_depth and max_z_depth >= drill_depth * 0.95:
+                                reaches_full_depth = True
+                            elif result.thickness and max_z_depth >= result.thickness * 0.95:
+                                # Boring to thickness depth (common for final CB dimension)
                                 reaches_full_depth = True
                             
                             # SPECIAL CASES for shelf patterns:
                             # 1. Thin hub (CB and OB within 5mm): Shelf in OP1 to preserve hub material
                             # 2. Hub inside CB (OB < CB): Hub is smaller than CB, shelf supports it
                             # 3. CB=Counterbore in title: (X IS CB) marker refers to CB, not counterbore
+                            # CRITICAL: Only apply to SMALL parts (CB < 100mm), not large 13" rounds
                             is_special_case = False
                             is_hub_inside_cb = False  # Hub OB < CB case
                             if result.center_bore and result.hub_diameter:
                                 cb_ob_diff = abs(result.hub_diameter - result.center_bore)
-                                if cb_ob_diff <= 5.0:  # Thin hub
+                                # Thin hub detection: Only for small parts (CB < 100mm)
+                                # Large parts like 13" rounds can have CB≈OB but aren't "thin hub"
+                                if cb_ob_diff <= 5.0 and result.center_bore < 100.0:  # Thin hub on small parts
                                     is_special_case = True
                                 elif result.hub_diameter < result.center_bore:  # Hub inside CB
                                     is_special_case = True
@@ -1507,12 +1517,13 @@ class ImprovedGCodeParser:
                         ob_candidates.append((x_val, z_val, i, True, False))  # True = has marker, False = has_following_z (N/A for marked)
 
                     # OB (Hub D) range depends on part size:
-                    # - Small parts (OD ~6"): OB typically 2.2-4.0"
+                    # - Small parts (OD ~6"): OB typically 2.0-4.0" (50-100mm)
                     # - Large parts (OD ~13"): OB can be 6-9" (e.g., X8.661 for 220mm OB)
                     # CRITICAL FIX: Extended range to 10.0" to handle 13" rounds
+                    # CRITICAL FIX: Lowered minimum from 2.2" to 2.0" to catch small OB values (50-56mm)
                     # Progressive facing cuts down to the OB, then retracts to smaller X (CB)
-                    # Exclude values too large (OD facing > 10.5") and too small (CB < 2.2")
-                    elif 2.2 < x_val < 10.5:
+                    # Exclude values too large (OD facing > 10.5") and too small (CB < 2.0")
+                    elif 2.0 < x_val < 10.5:
                         # Check if next line is a Z movement (indicates X is OB)
                         # Pattern: X3.168 (line i) -> Z-0.05 (line i+1) confirms X3.168 is OB
                         has_following_z = False
@@ -1523,8 +1534,9 @@ class ImprovedGCodeParser:
                                 next_z_match = re.search(r'Z\s*-?\s*([\d.]+)', next_line, re.IGNORECASE)
                                 if next_z_match:
                                     next_z_val = float(next_z_match.group(1))
-                                    # If Z is within hub height range (0.05" to 2.0"), this confirms X is OB
-                                    if 0.05 <= next_z_val <= 2.0:
+                                    # If Z is within hub height range (0.02" to 2.0"), this confirms X is OB
+                                    # Lowered from 0.05 to 0.02 to catch shallow movements like Z-0.04
+                                    if 0.02 <= next_z_val <= 2.0:
                                         has_following_z = True
 
                         # Store X with its Z depth, line index, and following_z flag for detection
@@ -1549,10 +1561,18 @@ class ImprovedGCodeParser:
                                     cb_candidates.append(x_val)
                             # If no title CB, don't add OP2 values - rely on OP1 full depth extraction
 
-        # Select CB: largest from candidates (final bore diameter after all passes)
-        # The finishing bore pass is typically larger than roughing passes
+        # Select CB: FIXED to use closest to title spec instead of max
+        # Issue: max() fails when chamfer creates oversized CB (e.g., X6.941 vs spec X6.701)
+        # Solution: Select candidate closest to title spec for better accuracy
         if cb_candidates:
-            result.cb_from_gcode = max(cb_candidates) * 25.4  # Convert to mm
+            if result.center_bore:
+                # Select candidate closest to title spec (in inches)
+                title_cb_inches = result.center_bore / 25.4
+                closest_cb = min(cb_candidates, key=lambda x: abs(x - title_cb_inches))
+                result.cb_from_gcode = closest_cb * 25.4  # Convert to mm
+            else:
+                # Fallback: use max if no title spec to compare
+                result.cb_from_gcode = max(cb_candidates) * 25.4  # Convert to mm
 
         # Set step depth for STEP programs
         # Step depth is the Z after chamfer creates CB, before moving inward
@@ -1570,30 +1590,44 @@ class ImprovedGCodeParser:
             if marked_ob:
                 result.ob_from_gcode = marked_ob[0] * 25.4  # Use first marked value, convert to mm
             else:
-                # Strategy 2: X followed by Z movement (highest confidence for unmarked)
-                # Pattern: X3.168 (OB position) -> Z-0.05 (hub height creation)
-                ob_with_following_z = [x for x, z, idx, has_marker, has_z in ob_candidates if has_z]
-                if ob_with_following_z:
-                    # CRITICAL FIX: Filter out OD values before selecting OB
-                    # OD facing operations create large X values (e.g., X5.7 for 5.75" parts)
-                    # OB is the SMALLEST X value after OD chamfer, not the largest
-                    # Filter: Remove X values close to the OD (within 0.3" of OD)
-                    od_mm = result.outer_diameter * 25.4 if result.outer_diameter else None
-                    filtered_ob = []
-                    for x_val in ob_with_following_z:
-                        x_mm = x_val * 25.4
-                        # Exclude if close to OD (OD facing operations)
-                        if od_mm and abs(x_mm - od_mm) > 8.0:  # More than 8mm away from OD
-                            filtered_ob.append(x_val)
-                        elif not od_mm:  # No OD to compare, keep all
-                            filtered_ob.append(x_val)
+                # CRITICAL FIX: Check ALL candidates for near-matches FIRST, not just those with following Z
+                # Issue: Best OB values (X2.8, X2.764) don't have following Z flag, so they were excluded
+                # Solution: Prioritize near-matches from ALL candidates, use following_z as tiebreaker
 
-                    if filtered_ob:
-                        # Use the SMALLEST X (not largest) - OB is where we face down TO, not the OD we start from
-                        result.ob_from_gcode = min(filtered_ob) * 25.4  # Convert to mm
+                # Filter out OD values from ALL candidates
+                od_mm = result.outer_diameter * 25.4 if result.outer_diameter else None
+                all_filtered_ob = []
+                for x_val, z_val, idx, has_marker, has_z in ob_candidates:
+                    x_mm = x_val * 25.4
+                    # Exclude if close to OD (OD facing operations)
+                    if od_mm and abs(x_mm - od_mm) > 8.0:  # More than 8mm away from OD
+                        all_filtered_ob.append((x_val, has_z))
+                    elif not od_mm:  # No OD to compare, keep all
+                        all_filtered_ob.append((x_val, has_z))
+
+                if all_filtered_ob:
+                    # CRITICAL FIX: Use closest-to-spec with HIGH PRIORITY for near-matches
+                    # Issue: Parser selects OD chamfer (X5.87) instead of actual OB (X2.857)
+                    # Solution: If any candidate is within 5mm of title OB, use it (exact match priority)
+                    if result.hub_diameter:
+                        title_ob_inches = result.hub_diameter / 25.4
+                        title_ob_mm = result.hub_diameter
+
+                        # Check for near-exact matches first (within 5mm of spec)
+                        near_matches = [(x, has_z) for x, has_z in all_filtered_ob if abs(x * 25.4 - title_ob_mm) < 5.0]
+
+                        if near_matches:
+                            # Use the closest near-match (high confidence - matches title!)
+                            # If multiple near-matches, prefer one with following_z as tiebreaker
+                            closest_ob = min(near_matches, key=lambda pair: (abs(pair[0] - title_ob_inches), not pair[1]))
+                            result.ob_from_gcode = closest_ob[0] * 25.4
+                        else:
+                            # No near-matches, use overall closest (prefer following_z as tiebreaker)
+                            closest_ob = min(all_filtered_ob, key=lambda pair: (abs(pair[0] - title_ob_inches), not pair[1]))
+                            result.ob_from_gcode = closest_ob[0] * 25.4
                     else:
-                        # All values were close to OD, fall through to next strategy
-                        pass
+                        # Fallback: use min if no title spec to compare (prefer following_z as tiebreaker)
+                        result.ob_from_gcode = min(all_filtered_ob, key=lambda pair: (pair[0], not pair[1]))[0] * 25.4
                 else:
                     # Strategy 3: Look for X value after chamfer and before moving to positive Z
                     # Pattern from O10040:
@@ -1904,24 +1938,17 @@ class ImprovedGCodeParser:
             if 'G04' in line_upper or 'G4' in line_upper:
                 continue
 
-            # Look for G54.1 P## pattern (extended work offsets)
-            # This is the standard way to use P-codes as work offsets
-            g54_match = re.search(r'G54\.1\s*P(\d+)', line, re.IGNORECASE)
+            # ONLY trust G154 P## or G54.1 P## patterns (extended work offsets)
+            # These are the ONLY reliable indicators of fixture P-codes
+            # G154 P## is common in Okuma/Fanuc controllers
+            # CRITICAL: Do NOT detect P-codes from comments or standalone P## - those are false positives
+            # Examples of FALSE positives we're avoiding:
+            #   - (OP1), (OP2), (OP22) - operation labels, not P-codes
+            #   - Standalone P## in comments
+            g54_match = re.search(r'G(?:54\.1|154)\s*P(\d+)', line, re.IGNORECASE)
             if g54_match:
-                pcodes.add(int(g54_match.group(1)))
-                continue
-
-            # Also check for standalone P## that looks like a work offset call
-            # Work offset P-codes are typically 1-99 range
-            # Skip if line contains other P uses (like subroutine calls)
-            if 'M98' in line_upper:  # M98 P## is subroutine call, not work offset
-                continue
-
-            # Look for P## at start of line or after space (common work offset usage)
-            p_match = re.search(r'(?:^|\s)P(\d{1,2})(?:\s|$)', line, re.IGNORECASE)
-            if p_match:
-                pcode = int(p_match.group(1))
-                # Work offsets are typically in specific ranges (1-99)
+                pcode = int(g54_match.group(1))
+                # Work offsets are typically in range 1-99
                 if 1 <= pcode <= 99:
                     pcodes.add(pcode)
 
@@ -2279,20 +2306,32 @@ class ImprovedGCodeParser:
                         pcode_map = {}
 
                     # Check what thickness the P-codes indicate
+                    # CRITICAL FIX: P-code represents TOTAL height for ALL part types
+                    # For hub-centric: Compare P-code total against (body + hub)
+                    # For standard: Compare P-code total against body thickness
                     for pcode in result.pcodes_found:
                         if pcode in pcode_map:
                             pcode_total_height = pcode_map[pcode]
+
+                            # Calculate expected total height from drill
                             if result.spacer_type == 'hub_centric':
-                                # Use actual hub height from title/G-code, not fixed 0.50"
+                                # For hub-centric: P-code should match drill total (drill - 0.15")
+                                # NOT body thickness alone
                                 hub_h = result.hub_height if result.hub_height else 0.50
-                                pcode_thickness = pcode_total_height - hub_h
+                                expected_total_from_drill = result.drill_depth - 0.15
+
+                                # If P-code total matches drill total (within 0.02")
+                                if abs(pcode_total_height - expected_total_from_drill) < 0.02:
+                                    pcode_agrees_with_drill = True
+                                    break
                             else:
+                                # For standard/2PC: P-code = body thickness
                                 pcode_thickness = pcode_total_height
 
-                            # If P-code thickness matches calculated (within 0.02")
-                            if abs(pcode_thickness - calculated_thickness) < 0.02:
-                                pcode_agrees_with_drill = True
-                                break
+                                # If P-code thickness matches calculated (within 0.02")
+                                if abs(pcode_thickness - calculated_thickness) < 0.02:
+                                    pcode_agrees_with_drill = True
+                                    break
 
                 if pcode_agrees_with_drill:
                     # Title is mislabeled - both P-code and drill agree
@@ -2340,12 +2379,14 @@ class ImprovedGCodeParser:
             diff = gcode_od - title_od
 
             # Set tolerance based on part size
+            # CRITICAL FIX: Increased small parts warning tolerance from 0.05" to 0.15"
+            # User specification: "allow special od pass if the od is working 0.15 tolerance"
             if title_od >= 10.0:
                 error_tolerance = 0.25  # Large parts: ±0.25"
                 warning_tolerance = 0.15  # Warning zone: ±0.15-0.25"
             else:
                 error_tolerance = 0.1  # Small parts: ±0.1"
-                warning_tolerance = 0.05  # Warning zone: ±0.05-0.1"
+                warning_tolerance = 0.15  # Warning zone: ±0.15-0.1" (relaxed from 0.05")
 
             if abs(diff) > error_tolerance:
                 result.validation_issues.append(
@@ -2389,9 +2430,11 @@ class ImprovedGCodeParser:
             # Check 3: Validate P-code matches detected thickness
             # Calculate expected P-codes for the thickness using correct lathe table
             if result.thickness and result.lathe:
-                # For hub-centric, P-code = thickness + 0.50"
+                # For hub-centric, P-code = thickness + actual hub_height (not fixed 0.50")
+                # CRITICAL FIX: Use actual hub height from title, not fixed value
                 if result.spacer_type == 'hub_centric':
-                    total_height = result.thickness + 0.50
+                    hub_h = result.hub_height if result.hub_height else 0.50
+                    total_height = result.thickness + hub_h
                 else:
                     total_height = result.thickness
 
@@ -2433,29 +2476,38 @@ class ImprovedGCodeParser:
 
                             # Check if P-code and drill depth AGREE with each other but disagree with title
                             # If so, the title is likely mislabeled
-                            pcode_thickness = None
+                            # CRITICAL FIX: For hub-centric, compare TOTAL heights, not body thickness
+                            pcode_total = None
                             for p in actual_pcodes:
                                 if p in pcode_map:
-                                    if result.spacer_type == 'hub_centric':
-                                        pcode_thickness = pcode_map[p] - 0.50
-                                    else:
-                                        pcode_thickness = pcode_map[p]
+                                    pcode_total = pcode_map[p]  # P-code is ALWAYS total height
                                     break
 
-                            drill_thickness = None
+                            drill_total = None
                             if result.drill_depth:
-                                if result.spacer_type == 'hub_centric':
-                                    drill_thickness = result.drill_depth - 0.65
-                                else:
-                                    drill_thickness = result.drill_depth - 0.15
+                                drill_total = result.drill_depth - 0.15  # Drill total = drill - clearance
+
+                            # For hub-centric, calculate expected total from title
+                            if result.spacer_type == 'hub_centric':
+                                hub_h = result.hub_height if result.hub_height else 0.50
+                                title_total = result.thickness + hub_h
+                            else:
+                                title_total = result.thickness
 
                             # Check if P-code and drill depth agree (within 0.02")
-                            if pcode_thickness and drill_thickness:
-                                if abs(pcode_thickness - drill_thickness) < 0.02:
-                                    # Both agree! Title is mislabeled
-                                    result.dimensional_issues.append(
-                                        f'TITLE MISLABELED: Title says {result.thickness}" but P-code ({actual_desc}) and drill depth ({drill_thickness:.2f}") both indicate {pcode_thickness:.2f}" - TITLE NEEDS CORRECTION'
-                                    )
+                            if pcode_total and drill_total:
+                                if abs(pcode_total - drill_total) < 0.02:
+                                    # Both agree! Check if title matches
+                                    if abs(title_total - pcode_total) > 0.02:
+                                        # Title is mislabeled
+                                        if result.spacer_type == 'hub_centric':
+                                            result.dimensional_issues.append(
+                                                f'TITLE MISLABELED: Title says {result.thickness}"+{hub_h}"hub={title_total:.2f}"total but P-code ({actual_desc}) and drill depth ({drill_total:.2f}"total) both indicate {pcode_total:.2f}"total - TITLE NEEDS CORRECTION'
+                                            )
+                                        else:
+                                            result.dimensional_issues.append(
+                                                f'TITLE MISLABELED: Title says {result.thickness}" but P-code ({actual_desc}) and drill depth ({drill_total:.2f}") both indicate {pcode_total:.2f}" - TITLE NEEDS CORRECTION'
+                                            )
                                 else:
                                     # P-code and drill depth disagree with each other
                                     result.dimensional_issues.append(
