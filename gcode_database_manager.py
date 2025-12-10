@@ -600,18 +600,37 @@ class GCodeDatabaseGUI:
 
     def import_to_repository(self, source_file, program_number=None):
         """
-        Import a file into the managed repository.
+        Import a file into the managed repository with automatic archiving.
+        New file keeps standard name, old file gets version suffix and moves to archive.
+
         Returns the new path in the repository.
         """
         try:
+            # Initialize repository manager if not already done
+            if not hasattr(self, 'repo_manager'):
+                from repository_manager import RepositoryManager
+                self.repo_manager = RepositoryManager(self.db_path, self.repository_path)
+
             # If already in repository, return as-is
             if self.is_managed_file(source_file):
                 return source_file
 
-            # Get filename
-            filename = os.path.basename(source_file)
+            # Extract program number if not provided
+            if not program_number:
+                filename = os.path.basename(source_file)
+                program_number = os.path.splitext(filename)[0].lower()
 
-            # Destination path in repository
+            # Use repository manager's import with archive
+            # This handles: archiving old version, importing new file with standard name
+            dest_path = self.repo_manager.import_with_archive(source_file, program_number)
+
+            if dest_path:
+                return dest_path
+
+            # Fallback to old behavior if repo manager fails
+            print(f"[Repository] Warning: Archive system failed, using legacy import")
+
+            filename = os.path.basename(source_file)
             dest_path = os.path.join(self.repository_path, filename)
 
             # If file already exists, handle collision
@@ -639,16 +658,12 @@ class GCodeDatabaseGUI:
             shutil.copy2(source_file, dest_path)
             print(f"[Repository] Imported: {filename}")
 
-            # Skip activity logging during bulk imports to avoid database locks
-            # self.log_activity('import_to_repository', program_number, {
-            #     'source': source_file,
-            #     'destination': dest_path
-            # })
-
             return dest_path
 
         except Exception as e:
             print(f"[Repository] Error importing file: {e}")
+            import traceback
+            traceback.print_exc()
             return None
 
     def create_version_file(self, program_number, version_number, source_file_path):
