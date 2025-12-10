@@ -116,7 +116,7 @@ class RepositoryManager:
             cursor = conn.cursor()
 
             cursor.execute("""
-                INSERT INTO activity_log (timestamp, user, activity_type, program_number, details)
+                INSERT INTO activity_log (timestamp, username, action_type, program_number, details)
                 VALUES (?, ?, ?, ?, ?)
             """, (
                 datetime.now().isoformat(),
