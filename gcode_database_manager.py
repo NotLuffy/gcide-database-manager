@@ -8475,6 +8475,159 @@ class GCodeDatabaseGUI:
 
         error_text.config(state=tk.DISABLED)
 
+        # TAB 5: Status by Type (Detailed breakdown)
+        tab_type_status = tk.Frame(notebook, bg=self.bg_color)
+        notebook.add(tab_type_status, text='📋 Type & Status')
+
+        type_status_text = scrolledtext.ScrolledText(tab_type_status, bg=self.input_bg, fg=self.fg_color,
+                                                     font=("Courier", 9), wrap=tk.NONE, padx=10, pady=10)
+        type_status_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        type_status_text.insert(tk.END, "="*140 + "\n")
+        type_status_text.insert(tk.END, "VALIDATION STATUS BY SPACER TYPE\n")
+        type_status_text.insert(tk.END, "="*140 + "\n\n")
+
+        if filters_active:
+            type_status_text.insert(tk.END, "NOTE: Showing FILTERED data only\n\n")
+
+        # Get all spacer types
+        type_query = "SELECT DISTINCT spacer_type FROM programs WHERE spacer_type IS NOT NULL ORDER BY spacer_type"
+        cursor.execute(type_query)
+        all_types = [row[0] for row in cursor.fetchall()]
+
+        status_list = ['PASS', 'CRITICAL', 'DIMENSIONAL', 'WARNING', 'BORE_WARNING']
+
+        for spacer_type in all_types:
+            type_status_text.insert(tk.END, f"\n{spacer_type.upper()}:\n")
+            type_status_text.insert(tk.END, "-"*140 + "\n")
+            type_status_text.insert(tk.END, f"{'Status':<20} {'Count':>10} {'% of Type':>12}\n")
+            type_status_text.insert(tk.END, "-"*140 + "\n")
+
+            # Get total for this type
+            type_total_query = filter_query + " AND spacer_type = ?"
+            cursor.execute(type_total_query, filter_params + [spacer_type])
+            type_total = cursor.fetchone()[0]
+
+            if type_total == 0:
+                continue
+
+            # Get status breakdown
+            type_status_query = type_total_query.replace("SELECT COUNT(*)", "SELECT validation_status, COUNT(*)") + " GROUP BY validation_status"
+            cursor.execute(type_status_query, filter_params + [spacer_type])
+            status_breakdown = dict(cursor.fetchall())
+
+            for status in status_list:
+                count = status_breakdown.get(status, 0)
+                pct = (count / type_total * 100) if type_total > 0 else 0
+                type_status_text.insert(tk.END, f"{status:<20} {count:>10,} {pct:>11.1f}%\n")
+
+            type_status_text.insert(tk.END, "-"*140 + "\n")
+            type_status_text.insert(tk.END, f"{'TOTAL':<20} {type_total:>10,} {100.0:>11.1f}%\n")
+
+        type_status_text.config(state=tk.DISABLED)
+
+        # TAB 6: Round Size & Type Matrix
+        tab_size_type = tk.Frame(notebook, bg=self.bg_color)
+        notebook.add(tab_size_type, text='🔍 Size & Type')
+
+        size_type_text = scrolledtext.ScrolledText(tab_size_type, bg=self.input_bg, fg=self.fg_color,
+                                                   font=("Courier", 9), wrap=tk.NONE, padx=10, pady=10)
+        size_type_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        size_type_text.insert(tk.END, "="*140 + "\n")
+        size_type_text.insert(tk.END, "SPACER TYPE BY ROUND SIZE\n")
+        size_type_text.insert(tk.END, "="*140 + "\n\n")
+
+        if filters_active:
+            size_type_text.insert(tk.END, "NOTE: Showing FILTERED data only\n\n")
+
+        size_type_text.insert(tk.END, f"{'OD Size':<10}")
+        for stype in ['hub_centric', 'standard', '2PC LUG', '2PC STUD', 'step', 'STEP']:
+            size_type_text.insert(tk.END, f"{stype[:8]:>10}")
+        size_type_text.insert(tk.END, f"{'Total':>10}\n")
+        size_type_text.insert(tk.END, "-"*140 + "\n")
+
+        for min_od, max_od, label in od_ranges:
+            od_filter_query = filter_query + " AND outer_diameter >= ? AND outer_diameter < ?"
+            od_params = filter_params + [min_od, max_od]
+
+            cursor.execute(od_filter_query, od_params)
+            range_total = cursor.fetchone()[0]
+
+            if range_total == 0:
+                continue
+
+            size_type_text.insert(tk.END, f"{label:<10}")
+
+            # Get type breakdown for this OD range
+            type_breakdown_query = od_filter_query.replace("SELECT COUNT(*)", "SELECT spacer_type, COUNT(*)") + " GROUP BY spacer_type"
+            cursor.execute(type_breakdown_query, od_params)
+            type_breakdown = dict(cursor.fetchall())
+
+            for stype in ['hub_centric', 'standard', '2PC LUG', '2PC STUD', 'step', 'STEP']:
+                count = type_breakdown.get(stype, 0)
+                size_type_text.insert(tk.END, f"{count:>10,}")
+
+            size_type_text.insert(tk.END, f"{range_total:>10,}\n")
+
+        size_type_text.config(state=tk.DISABLED)
+
+        # TAB 7: Errors/Warnings by Round Size
+        tab_size_errors = tk.Frame(notebook, bg=self.bg_color)
+        notebook.add(tab_size_errors, text='⚠️ Errors by Size')
+
+        size_errors_text = scrolledtext.ScrolledText(tab_size_errors, bg=self.input_bg, fg=self.fg_color,
+                                                     font=("Courier", 9), wrap=tk.NONE, padx=10, pady=10)
+        size_errors_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        size_errors_text.insert(tk.END, "="*140 + "\n")
+        size_errors_text.insert(tk.END, "TOP ERROR TYPES BY ROUND SIZE\n")
+        size_errors_text.insert(tk.END, "="*140 + "\n\n")
+
+        if filters_active:
+            size_errors_text.insert(tk.END, "NOTE: Showing FILTERED data only\n\n")
+
+        # For each OD range, show top error types
+        for min_od, max_od, label in od_ranges:
+            od_filter_query = filter_query + " AND outer_diameter >= ? AND outer_diameter < ?"
+            od_params = filter_params + [min_od, max_od]
+
+            # Get programs with issues in this range
+            issues_query = od_filter_query.replace("SELECT COUNT(*)", "SELECT validation_issues") + " AND validation_issues IS NOT NULL"
+            cursor.execute(issues_query, od_params)
+            range_issues = cursor.fetchall()
+
+            if not range_issues:
+                continue
+
+            size_errors_text.insert(tk.END, f"\n{label} ROUND:\n")
+            size_errors_text.insert(tk.END, "-"*140 + "\n")
+
+            # Parse error types for this range
+            range_error_counts = {}
+            for (issues_str,) in range_issues:
+                if not issues_str:
+                    continue
+                issues = [i.strip() for i in issues_str.split('|') if i.strip()]
+                for issue in issues:
+                    error_type = issue.split(':')[0].strip() if ':' in issue else issue.strip()
+                    range_error_counts[error_type] = range_error_counts.get(error_type, 0) + 1
+
+            # Sort and show top 5 errors
+            sorted_range_errors = sorted(range_error_counts.items(), key=lambda x: x[1], reverse=True)
+
+            size_errors_text.insert(tk.END, f"{'Error Type':<60} {'Count':>10}\n")
+            size_errors_text.insert(tk.END, "-"*140 + "\n")
+
+            for error_type, count in sorted_range_errors[:5]:
+                size_errors_text.insert(tk.END, f"{error_type:<60} {count:>10,}\n")
+
+            total_range_errors = sum(range_error_counts.values())
+            size_errors_text.insert(tk.END, "-"*140 + "\n")
+            size_errors_text.insert(tk.END, f"Total programs with errors in {label}: {len(range_issues):,} ({total_range_errors:,} total errors)\n")
+
+        size_errors_text.config(state=tk.DISABLED)
+
         conn.close()
 
         # Add close button
