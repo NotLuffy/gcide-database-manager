@@ -887,7 +887,7 @@ class ImprovedGCodeParser:
                 (r'B/C\s+(\d*\.?\d+)', 'IN', False),         # "B/C 1.50"
                 (r'MM\s+(\d*\.?\d+)\s+(?:THK|HC)', 'IN', False),  # "MM 1.50 THK"
                 (r'/[\d.]+MM\s+(\d*\.?\d+)', 'IN', False),   # After slash pattern
-                (r'(\d*\.?\d+)\s+(?:STEEL|STAINLESS)', 'IN', False),  # "1.25 STEEL" - thickness before material keywords
+                (r'(\d*\.?\d+)\s+(?:STEEL|STAINLESS|STL)', 'IN', False),  # "1.25 STEEL/STL" - thickness before material keywords (protects from S-X/HCS-X suffixes)
                 (r'(\d*\.?\d+)\s*$', 'IN', False),           # End of line (last resort)
             ]
 
