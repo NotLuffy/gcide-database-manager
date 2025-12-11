@@ -2278,6 +2278,27 @@ class ImprovedGCodeParser:
                     else:
                         # Not a recognized 2PC hub pattern - standard 2PC calculation
                         calculated_thickness = result.drill_depth - 0.15
+            elif result.spacer_type == 'steel_ring':
+                # STEEL RING Unstated Hub Pattern:
+                # Some steel rings have unstated 0.25" hub machined in OP2
+                # Pattern: Title shows body thickness, drill = body + hub + 0.15" breach
+                # Similar to 2PC STUD rule
+
+                # Calculate implied hub from drill depth
+                implied_hub = result.drill_depth - title_thickness - 0.15
+
+                # Steel ring typical unstated hub: 0.20-0.30" (most common is 0.25")
+                # More strict range than 2PC since this is a specific pattern
+                is_valid_steel_hub = 0.20 <= implied_hub <= 0.30
+
+                if is_valid_steel_hub:
+                    # Steel ring with unstated hub: title thickness is correct, drill includes hub
+                    calculated_thickness = title_thickness
+                    # Populate hub_height with calculated value
+                    result.hub_height = implied_hub
+                else:
+                    # Not unstated hub pattern - standard steel ring calculation
+                    calculated_thickness = result.drill_depth - 0.15
             else:
                 calculated_thickness = result.drill_depth - 0.15
 
@@ -2488,13 +2509,16 @@ class ImprovedGCodeParser:
                             if result.drill_depth:
                                 drill_total = result.drill_depth - 0.15  # Drill total = drill - clearance
 
-                            # For hub-centric and 2PC with hub, calculate expected total from title
-                            # CRITICAL FIX: 2PC parts can also have hubs (e.g., 0.75" 2PC STUD with 0.25" hub)
+                            # For hub-centric, 2PC with hub, and steel_ring with hub, calculate expected total from title
+                            # CRITICAL FIX: 2PC and steel_ring parts can have unstated hubs (e.g., 0.75" 2PC STUD with 0.25" hub)
                             if result.spacer_type == 'hub_centric':
                                 hub_h = result.hub_height if result.hub_height else 0.50
                                 title_total = result.thickness + hub_h
                             elif result.spacer_type in ('2PC LUG', '2PC STUD', '2PC UNSURE') and result.hub_height:
                                 # 2PC with detected hub - title shows body, total = body + hub
+                                title_total = result.thickness + result.hub_height
+                            elif result.spacer_type == 'steel_ring' and result.hub_height:
+                                # Steel ring with detected unstated hub - title shows body, total = body + hub
                                 title_total = result.thickness + result.hub_height
                             else:
                                 title_total = result.thickness
@@ -2514,6 +2538,11 @@ class ImprovedGCodeParser:
                                             # 2PC with hub - show hub in error message
                                             result.dimensional_issues.append(
                                                 f'TITLE MISLABELED: Title says {result.thickness}"+{result.hub_height:.2f}"hub={title_total:.2f}"total but P-code ({actual_desc}) and drill depth ({drill_total:.2f}"total) both indicate {pcode_total:.2f}"total - TITLE NEEDS CORRECTION'
+                                            )
+                                        elif result.spacer_type == 'steel_ring' and result.hub_height:
+                                            # Steel ring with unstated hub - show hub in error message
+                                            result.dimensional_issues.append(
+                                                f'TITLE MISLABELED: Title says {result.thickness}"+{result.hub_height:.2f}"unstated hub={title_total:.2f}"total but P-code ({actual_desc}) and drill depth ({drill_total:.2f}"total) both indicate {pcode_total:.2f}"total - TITLE NEEDS CORRECTION'
                                             )
                                         else:
                                             result.dimensional_issues.append(
