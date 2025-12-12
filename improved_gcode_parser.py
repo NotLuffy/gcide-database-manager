@@ -1097,7 +1097,7 @@ class ImprovedGCodeParser:
         Differences >0.1mm between title and G-code often indicate CB/OB confusion in
         G-code extraction, not title parsing errors.
 
-        ML Analysis showed:
+        Analysis showed:
         - 92.9% of programs have title CB within 0.5mm of G-code CB
         - When they differ significantly, it's often G-code extracting wrong bore
         - Example: Title "141.3/170MM" (CB/OB) but G-code finds 169.9mm for both

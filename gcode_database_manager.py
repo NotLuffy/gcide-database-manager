@@ -4008,14 +4008,14 @@ class GCodeDatabaseGUI:
         self.refresh_filter_values()
         self.refresh_results()
 
-    def _ml_predict_dimension(self, ml_extractor, dimension, parse_result, program_number):
-        """Helper method to predict a single dimension using ML"""
+    def _predict_dimension_fallback(self, fallback_extractor, dimension, parse_result, program_number):
+        """Helper method to predict a single dimension using secondary fallback"""
         try:
             import numpy as np
 
             # Extract features from title
             title = parse_result.title if parse_result.title else ""
-            features = ml_extractor.extract_title_features(title)
+            features = fallback_extractor.extract_title_features(title)
 
             # Add G-code features
             features['cb_from_gcode'] = parse_result.cb_from_gcode if parse_result.cb_from_gcode else 0
@@ -4027,11 +4027,11 @@ class GCodeDatabaseGUI:
             features['known_thickness'] = parse_result.thickness if (dimension != 'thickness' and parse_result.thickness) else 0
 
             # Create feature vector matching training
-            feature_vector = [features.get(fn, 0) for fn in ml_extractor.feature_names]
+            feature_vector = [features.get(fn, 0) for fn in fallback_extractor.feature_names]
             feature_vector = np.array(feature_vector).reshape(1, -1)
 
             # Predict
-            model = ml_extractor.models.get(dimension)
+            model = fallback_extractor.models.get(dimension)
             if model:
                 prediction = model.predict(feature_vector)[0]
                 return prediction
@@ -4041,7 +4041,7 @@ class GCodeDatabaseGUI:
 
     def rescan_database(self):
         """Re-parse all files already in database to refresh with latest parser improvements"""
-        # Create custom dialog with ML fallback option
+        # Create custom dialog with secondary fallback option
         dialog = tk.Toplevel(self.root)
         dialog.title("Rescan Database")
         dialog.geometry("500x300")
@@ -4069,39 +4069,39 @@ class GCodeDatabaseGUI:
                             wraplength=450)
         msg_label.pack(anchor='w')
 
-        # ML Fallback checkbox
-        use_ml_var = tk.BooleanVar(value=False)  # Default to OFF for speed
+        # Secondary fallback checkbox
+        use_fallback_var = tk.BooleanVar(value=False)  # Default to OFF for speed
 
-        ml_frame = tk.Frame(dialog, bg=self.bg_color)
-        ml_frame.pack(pady=10, padx=20, fill=tk.X)
+        fallback_frame = tk.Frame(dialog, bg=self.bg_color)
+        fallback_frame.pack(pady=10, padx=20, fill=tk.X)
 
-        ml_check = tk.Checkbutton(ml_frame,
-                                 text="Use ML Fallback for missing dimensions",
-                                 variable=use_ml_var,
+        fallback_check = tk.Checkbutton(fallback_frame,
+                                 text="Use secondary fallback for missing dimensions",
+                                 variable=use_fallback_var,
                                  bg=self.bg_color, fg=self.fg_color,
                                  selectcolor=self.input_bg,
                                  activebackground=self.bg_color,
                                  activeforeground=self.fg_color,
                                  font=("Arial", 10, "bold"),
                                  cursor='hand2')
-        ml_check.pack(anchor='w')
+        fallback_check.pack(anchor='w')
 
-        ml_note = tk.Label(ml_frame,
+        fallback_note = tk.Label(fallback_frame,
                           text="(Slower but fills all missing dimensions automatically)",
                           bg=self.bg_color, fg=self.fg_color,
                           font=("Arial", 8, "italic"),
                           justify=tk.LEFT)
-        ml_note.pack(anchor='w', padx=25)
+        fallback_note.pack(anchor='w', padx=25)
 
         # Buttons
         button_frame = tk.Frame(dialog, bg=self.bg_color)
         button_frame.pack(pady=20)
 
-        result = {'proceed': False, 'use_ml': False}
+        result = {'proceed': False, 'use_fallback': False}
 
         def on_proceed():
             result['proceed'] = True
-            result['use_ml'] = use_ml_var.get()
+            result['use_fallback'] = use_fallback_var.get()
             dialog.destroy()
 
         def on_cancel():
@@ -4128,7 +4128,7 @@ class GCodeDatabaseGUI:
         if not result['proceed']:
             return
 
-        use_ml_fallback = result['use_ml']
+        use_secondary_fallback = result['use_fallback']
 
         # Show progress window
         progress_window = tk.Toplevel(self.root)
@@ -4165,43 +4165,43 @@ class GCodeDatabaseGUI:
         from improved_gcode_parser import ImprovedGCodeParser
         parser = ImprovedGCodeParser()
 
-        # Try to initialize ML fallback (only if user enabled it)
-        ml_extractor = None
-        ml_available = False
-        if use_ml_fallback:
+        # Try to initialize secondary fallback (only if user enabled it)
+        fallback_extractor = None
+        fallback_available = False
+        if use_secondary_fallback:
             try:
-                from ml_dimension_extractor import MLDimensionExtractor
-                ml_extractor = MLDimensionExtractor(self.db_path)
-                if ml_extractor.load_models():
-                    ml_available = True
-                    progress_text.insert(tk.END, "[ML Fallback] Loaded ML models for missing dimensions\n\n")
+                from ml_tools.ml_dimension_extractor import MLDimensionExtractor
+                fallback_extractor = MLDimensionExtractor(self.db_path)
+                if fallback_extractor.load_models():
+                    fallback_available = True
+                    progress_text.insert(tk.END, "[Secondary Fallback] Loaded models for missing dimensions\n\n")
                 else:
-                    progress_text.insert(tk.END, "[ML Fallback] Training ML models...\n")
-                    ml_extractor.load_data()
-                    ml_extractor.train_all_models()
-                    ml_extractor.save_models()
-                    ml_available = True
-                    progress_text.insert(tk.END, "[ML Fallback] ML models trained successfully\n\n")
+                    progress_text.insert(tk.END, "[Secondary Fallback] Training models...\n")
+                    fallback_extractor.load_data()
+                    fallback_extractor.train_all_models()
+                    fallback_extractor.save_models()
+                    fallback_available = True
+                    progress_text.insert(tk.END, "[Secondary Fallback] Models trained successfully\n\n")
                 progress_text.see(tk.END)
                 self.root.update()
             except ImportError:
-                progress_text.insert(tk.END, "[ML Fallback] ML libraries not installed - skipping ML predictions\n")
+                progress_text.insert(tk.END, "[Secondary Fallback] Libraries not installed - skipping predictions\n")
                 progress_text.insert(tk.END, "              Install with: pip install pandas scikit-learn numpy\n\n")
                 progress_text.see(tk.END)
                 self.root.update()
             except Exception as e:
-                progress_text.insert(tk.END, f"[ML Fallback] Error initializing ML: {str(e)[:80]}\n\n")
+                progress_text.insert(tk.END, f"[Secondary Fallback] Error initializing: {str(e)[:80]}\n\n")
                 progress_text.see(tk.END)
                 self.root.update()
         else:
-            progress_text.insert(tk.END, "ML Fallback disabled (for faster scanning)\n\n")
+            progress_text.insert(tk.END, "Secondary Fallback disabled (for faster scanning)\n\n")
             progress_text.see(tk.END)
             self.root.update()
 
         updated = 0
         skipped = 0
         errors = 0
-        ml_predictions = 0
+        fallback_predictions = 0
 
         for idx, (prog_num, file_path) in enumerate(all_files, 1):
             filename = os.path.basename(file_path)
@@ -4232,37 +4232,37 @@ class GCodeDatabaseGUI:
                         self.root.update()
                     continue
 
-                # Apply ML fallback for missing dimensions
-                if ml_available and ml_extractor:
+                # Apply secondary fallback for missing dimensions
+                if fallback_available and fallback_extractor:
                     # Check and predict Outer Diameter
                     if not parse_result.outer_diameter:
-                        ml_od = self._ml_predict_dimension(ml_extractor, 'outer_diameter', parse_result, prog_num)
-                        if ml_od:
-                            parse_result.outer_diameter = ml_od
-                            if parse_result.detection_confidence != 'ML_FALLBACK':
-                                parse_result.detection_confidence = 'ML_FALLBACK'
-                            parse_result.detection_notes.append(f'OD from ML: {ml_od:.2f}"')
-                            ml_predictions += 1
+                        fallback_od = self._predict_dimension_fallback(fallback_extractor, 'outer_diameter', parse_result, prog_num)
+                        if fallback_od:
+                            parse_result.outer_diameter = fallback_od
+                            if parse_result.detection_confidence != 'SECONDARY_FALLBACK':
+                                parse_result.detection_confidence = 'SECONDARY_FALLBACK'
+                            parse_result.detection_notes.append(f'OD from secondary: {fallback_od:.2f}"')
+                            fallback_predictions += 1
 
                     # Check and predict Thickness
                     if not parse_result.thickness:
-                        ml_thickness = self._ml_predict_dimension(ml_extractor, 'thickness', parse_result, prog_num)
-                        if ml_thickness:
-                            parse_result.thickness = ml_thickness
-                            if parse_result.detection_confidence != 'ML_FALLBACK':
-                                parse_result.detection_confidence = 'ML_FALLBACK'
-                            parse_result.detection_notes.append(f'Thickness from ML: {ml_thickness:.3f}"')
-                            ml_predictions += 1
+                        fallback_thickness = self._predict_dimension_fallback(fallback_extractor, 'thickness', parse_result, prog_num)
+                        if fallback_thickness:
+                            parse_result.thickness = fallback_thickness
+                            if parse_result.detection_confidence != 'SECONDARY_FALLBACK':
+                                parse_result.detection_confidence = 'SECONDARY_FALLBACK'
+                            parse_result.detection_notes.append(f'Thickness from secondary: {fallback_thickness:.3f}"')
+                            fallback_predictions += 1
 
                     # Check and predict Center Bore
                     if not parse_result.center_bore:
-                        ml_cb = self._ml_predict_dimension(ml_extractor, 'center_bore', parse_result, prog_num)
-                        if ml_cb:
-                            parse_result.center_bore = ml_cb
-                            if parse_result.detection_confidence != 'ML_FALLBACK':
-                                parse_result.detection_confidence = 'ML_FALLBACK'
-                            parse_result.detection_notes.append(f'CB from ML: {ml_cb:.1f}mm')
-                            ml_predictions += 1
+                        fallback_cb = self._predict_dimension_fallback(fallback_extractor, 'center_bore', parse_result, prog_num)
+                        if fallback_cb:
+                            parse_result.center_bore = fallback_cb
+                            if parse_result.detection_confidence != 'SECONDARY_FALLBACK':
+                                parse_result.detection_confidence = 'SECONDARY_FALLBACK'
+                            parse_result.detection_notes.append(f'CB from secondary: {fallback_cb:.1f}mm')
+                            fallback_predictions += 1
 
                 # Calculate validation status (prioritized by severity)
                 # NOTE: Safety and tool validation disabled for now - too many false positives
@@ -4376,9 +4376,9 @@ class GCodeDatabaseGUI:
         progress_text.insert(tk.END, f"Total files: {total_files}\n")
         progress_text.insert(tk.END, f"Updated: {updated}\n")
         progress_text.insert(tk.END, f"Skipped (not found): {skipped}\n")
-        if ml_available and ml_predictions > 0:
-            progress_text.insert(tk.END, f"\n[ML Fallback] {ml_predictions} dimensions predicted by ML\n")
-            progress_text.insert(tk.END, f"              (Programs marked as 'ML_FALLBACK')\n")
+        if fallback_available and fallback_predictions > 0:
+            progress_text.insert(tk.END, f"\n[Secondary Fallback] {fallback_predictions} dimensions predicted\n")
+            progress_text.insert(tk.END, f"              (Programs marked as 'SECONDARY_FALLBACK')\n")
         progress_text.insert(tk.END, f"Errors: {errors}\n")
         progress_text.see(tk.END)
 
