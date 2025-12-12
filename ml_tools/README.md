@@ -11,7 +11,7 @@ This folder contains machine learning-related scripts and data files.
 
 ### ML Data
 - **ml_dimension_predictions.csv** - CSV file with ML dimension predictions
-- **ml_dimension_models.pkl** - Trained ML models (stored in root folder)
+- **ml_dimension_models.pkl** - Trained ML models (pickle file)
 
 ## Usage
 
