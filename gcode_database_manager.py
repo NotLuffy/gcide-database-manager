@@ -4170,7 +4170,7 @@ class GCodeDatabaseGUI:
         fallback_available = False
         if use_secondary_fallback:
             try:
-                from ml_tools.ml_dimension_extractor import MLDimensionExtractor
+                from analysis_tools.ml_dimension_extractor import MLDimensionExtractor
                 fallback_extractor = MLDimensionExtractor(self.db_path)
                 if fallback_extractor.load_models():
                     fallback_available = True
