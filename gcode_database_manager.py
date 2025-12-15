@@ -6389,7 +6389,7 @@ class GCodeDatabaseGUI:
                 # Derive repository path from database path
                 repo_path = os.path.join(os.path.dirname(self.db_path), 'repository')
 
-            repo_manager = RepositoryManager(repo_path)
+            repo_manager = RepositoryManager(self.db_path, repo_path)
 
             # Archive the file
             archive_path = repo_manager.archive_old_file(file_path, program_number, reason='manual')
