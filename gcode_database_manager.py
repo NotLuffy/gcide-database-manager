@@ -1075,17 +1075,29 @@ class GCodeDatabaseGUI:
         return None
 
     def detect_round_size_from_title(self, title):
-        """Extract round size from title string"""
+        """
+        Extract round size from title string.
+
+        RULE: The FIRST numeric value at the start of the title is the OD/round size.
+        Anything after is CB, OB, or other dimensions (not round size).
+
+        Examples:
+        - "7.5IN 78.3MM ID" -> 7.5" is round size
+        - "13.0 5.25IN/220MM" -> 13.0" is round size (5.25 is wheel size, not spacer size)
+        - "6.25 OD 141.3/170MM" -> 6.25" is round size
+        """
         if not title:
             return None
 
         import re
 
-        # Pattern: Look for numbers followed by optional decimal and "OD" or "rnd"
-        # Examples: "6.25 OD", "10.5 rnd", "7.0OD", "625OD"
+        # Pattern 1: Look for "X.X IN" or "X IN" at the START of title (most reliable)
+        # This captures the FIRST measurement which is always the OD/round size
         patterns = [
-            r'(\d+\.?\d*)\s*(?:OD|od|rnd|RND|round)',  # 6.25 OD, 10.5 rnd
-            r'(\d+)\.(\d+)',  # 6.25, 10.50
+            r'^(\d+)\.(\d+)\s*IN',     # Start: "6.25 IN", "7.5IN"
+            r'^(\d+)\s*IN',             # Start: "8 IN", "13IN"
+            r'^(\d+)\.(\d+)\s',         # Start: "6.25 " (with space after)
+            r'^(\d+\.?\d*)\s*(?:OD|od|DIA|dia)',  # Start: "6.25 OD", "8.0 DIA"
         ]
 
         for pattern in patterns:
