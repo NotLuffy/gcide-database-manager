@@ -6337,23 +6337,97 @@ class GCodeDatabaseGUI:
         program_number = self.tree.item(selected[0])['values'][0]
         EditEntryWindow(self, program_number, self.refresh_results)
         
+    def archive_program(self):
+        """Archive selected program - moves file to archive and removes from database"""
+        selected = self.tree.selection()
+        if not selected:
+            messagebox.showwarning("No Selection", "Please select a program to archive")
+            return
+
+        program_number = self.tree.item(selected[0])['values'][0]
+
+        # Get file path from database
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT file_path FROM programs WHERE program_number = ?", (program_number,))
+        result = cursor.fetchone()
+        conn.close()
+
+        if not result or not result[0]:
+            messagebox.showerror("Error", "No file path found for this program in the database.")
+            return
+
+        file_path = result[0]
+
+        if not os.path.exists(file_path):
+            messagebox.showerror("Error", f"File not found: {file_path}")
+            return
+
+        # Check if already archived
+        if 'archive' in file_path.lower():
+            messagebox.showinfo("Already Archived", f"{program_number} is already in the archive.")
+            return
+
+        # Confirm archive
+        if not messagebox.askyesno("Confirm Archive",
+                                   f"Archive program {program_number}?\n\n"
+                                   f"File: {os.path.basename(file_path)}\n\n"
+                                   f"This will:\n"
+                                   f"• Move the file to the archive folder\n"
+                                   f"• Remove the entry from the database\n"
+                                   f"• Create a versioned backup"):
+            return
+
+        try:
+            # Import repository manager
+            from repository_manager import RepositoryManager
+            repo_manager = RepositoryManager(self.config['repository_path'])
+
+            # Archive the file
+            archive_path = repo_manager.archive_old_file(file_path, program_number, reason='manual')
+
+            if archive_path:
+                # Remove from database
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM programs WHERE program_number = ?", (program_number,))
+                conn.commit()
+                conn.close()
+
+                self.refresh_results()
+                messagebox.showinfo("Archived",
+                                   f"{program_number} archived successfully\n\n"
+                                   f"Archive location:\n{archive_path}")
+
+                # Log activity
+                self.log_activity('archive_program', program_number, {
+                    'original_path': file_path,
+                    'archive_path': archive_path,
+                    'reason': 'manual'
+                })
+            else:
+                messagebox.showerror("Error", "Failed to archive file")
+
+        except Exception as e:
+            messagebox.showerror("Archive Error", f"Error archiving program:\n{str(e)}")
+
     def delete_entry(self):
         """Delete selected entry"""
         selected = self.tree.selection()
         if not selected:
             messagebox.showwarning("No Selection", "Please select a program to delete")
             return
-        
+
         program_number = self.tree.item(selected[0])['values'][0]
-        
-        if messagebox.askyesno("Confirm Delete", 
+
+        if messagebox.askyesno("Confirm Delete",
                               f"Delete program {program_number}?\n\nThis will only remove the database entry, not the file."):
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             cursor.execute("DELETE FROM programs WHERE program_number = ?", (program_number,))
             conn.commit()
             conn.close()
-            
+
             self.refresh_results()
             messagebox.showinfo("Deleted", "Entry deleted successfully")
             
@@ -8142,6 +8216,7 @@ class GCodeDatabaseGUI:
             menu.add_separator()
             menu.add_command(label="View Version History", command=self.show_version_history_window)
             menu.add_separator()
+            menu.add_command(label="Archive Program", command=self.archive_program)
             menu.add_command(label="Delete Entry", command=self.delete_entry)
 
             menu.post(event.x_root, event.y_root)
