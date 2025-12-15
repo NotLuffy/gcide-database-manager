@@ -2472,10 +2472,11 @@ class GCodeDatabaseGUI:
         row1 = tk.Frame(filter_container, bg=self.bg_color)
         row1.pack(fill=tk.X, pady=5)
 
-        # Program Number
-        tk.Label(row1, text="Program #:", bg=self.bg_color, fg=self.fg_color).pack(side=tk.LEFT, padx=5)
-        self.filter_program = tk.Entry(row1, bg=self.input_bg, fg=self.fg_color, width=15)
+        # Program Number (supports comma-separated list)
+        tk.Label(row1, text="Program # (or list):", bg=self.bg_color, fg=self.fg_color).pack(side=tk.LEFT, padx=5)
+        self.filter_program = tk.Entry(row1, bg=self.input_bg, fg=self.fg_color, width=20)
         self.filter_program.pack(side=tk.LEFT, padx=5)
+        self.filter_program.bind('<KeyRelease>', lambda e: self.refresh_results())
         
         # Spacer Type
         tk.Label(row1, text="Type:", bg=self.bg_color, fg=self.fg_color).pack(side=tk.LEFT, padx=5)
@@ -5791,10 +5792,23 @@ class GCodeDatabaseGUI:
                 query += " AND title LIKE ?"
                 params.append(f"%{search_text}%")
 
-        # Program number filter
+        # Program number filter - supports comma-separated values
         if self.filter_program.get():
-            query += " AND program_number LIKE ?"
-            params.append(f"%{self.filter_program.get()}%")
+            program_filter = self.filter_program.get().strip()
+
+            # Check if using comma-separated list
+            if ',' in program_filter:
+                # Split by comma and strip whitespace from each program number
+                program_numbers = [prog.strip() for prog in program_filter.split(',') if prog.strip()]
+
+                # Build OR condition for exact matches
+                placeholders = ','.join('?' * len(program_numbers))
+                query += f" AND program_number IN ({placeholders})"
+                params.extend(program_numbers)
+            else:
+                # Single program number search (supports wildcards)
+                query += " AND program_number LIKE ?"
+                params.append(f"%{program_filter}%")
         
         # Type filter (multi-select)
         selected_types = self.filter_type.get_selected()
