@@ -6381,7 +6381,15 @@ class GCodeDatabaseGUI:
         try:
             # Import repository manager
             from repository_manager import RepositoryManager
-            repo_manager = RepositoryManager(self.config['repository_path'])
+
+            # Use self.repository_path if available, otherwise derive from file path
+            if hasattr(self, 'repository_path') and self.repository_path:
+                repo_path = self.repository_path
+            else:
+                # Derive repository path from database path
+                repo_path = os.path.join(os.path.dirname(self.db_path), 'repository')
+
+            repo_manager = RepositoryManager(repo_path)
 
             # Archive the file
             archive_path = repo_manager.archive_old_file(file_path, program_number, reason='manual')
