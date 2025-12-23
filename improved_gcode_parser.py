@@ -1004,15 +1004,34 @@ class ImprovedGCodeParser:
                         # Check if it's "ID" format (like STEP: outer/inner) or "HC" format (CB/OB)
                         title_upper = title.upper()
 
-                        # If "ID" marker present (not "HC"), treat like STEP format: large/small
+                        # Check if "ID" is actually part of the CB/OB pattern (like "90/74 ID" or "90/74 B/C")
+                        # vs just appearing elsewhere in title (like "65.1MM/72.56MM ID 1.0" where ID is description)
+                        # If both values have "MM" explicitly (like "XXmm/YYmm"), it's a CB/OB format regardless of ID marker
+                        matched_pattern_upper = matched_pattern.upper()
+                        both_have_mm = matched_pattern_upper.count('MM') >= 2
+
+                        # If "ID" marker present RIGHT AFTER the pattern (not "HC"), treat like STEP format: large/small
                         # This handles hub-centric with support shelf where first=shelf, second=CB
-                        if 'ID' in title_upper and 'HC' not in title_upper:
-                            # Hub-centric with support shelf: outer shelf / CB
-                            # First value is the shelf (like counterbore), second is CB
-                            # OB (hub) will be determined from G-code
-                            result.center_bore = second_val
-                            # Store the shelf dimension - we can use counter_bore_diameter temporarily
-                            # or just ignore it since it's not the final hub
+                        # BUT: If both values have MM (like "65.1MM/72.56MM"), always treat as CB/OB
+                        if 'ID' in title_upper and 'HC' not in title_upper and not both_have_mm:
+                            # Check if ID appears right after the pattern (within 5 chars)
+                            # Pattern: "90/74 ID" or "90/74 B/C" → shelf/CB format
+                            # NOT Pattern: "65.1MM/72.56MM ID 1.0" → CB/OB format (ID is elsewhere)
+                            pattern_end_pos = title_upper.find(matched_pattern_upper) + len(matched_pattern_upper)
+                            id_pos = title_upper.find('ID', pattern_end_pos)
+                            id_is_adjacent = id_pos >= 0 and (id_pos - pattern_end_pos) < 10
+
+                            if id_is_adjacent:
+                                # Hub-centric with support shelf: outer shelf / CB
+                                # First value is the shelf (like counterbore), second is CB
+                                # OB (hub) will be determined from G-code
+                                result.center_bore = second_val
+                                # Store the shelf dimension - we can use counter_bore_diameter temporarily
+                                # or just ignore it since it's not the final hub
+                            else:
+                                # ID is elsewhere in title - treat as standard CB/OB
+                                result.center_bore = first_val
+                                result.hub_diameter = second_val  # OB = Hub OD
                         else:
                             # For HC parts, check if first > second (indicates Shelf/OB format)
                             # Standard HC: CB/OB where CB < OB (e.g., 66.9/106mm)
@@ -1031,7 +1050,8 @@ class ImprovedGCodeParser:
                 pass
         else:
             # Single CB value
-            cb_match = re.search(r'(\d+\.?\d*)\s*(?:MM|M)\s+(?:ID|CB|B/C)', title, re.IGNORECASE)
+            # Pattern handles typos like "78.3.MM" (extra dot before MM)
+            cb_match = re.search(r'(\d+\.?\d*)\s*\.?\s*(?:MM|M)\s+(?:ID|CB|B/C)', title, re.IGNORECASE)
             if cb_match:
                 try:
                     result.center_bore = float(cb_match.group(1))
@@ -1548,7 +1568,18 @@ class ImprovedGCodeParser:
                     # Use title spec to filter: CB should be close to title CB, not title OB
                     # IMPORTANT: Only do this if we have a title CB to compare against
                     # Otherwise OP2 chamfer values will incorrectly be selected as CB
-                    if z_val and z_val < 0.15:  # Shallow Z = chamfer area
+
+                    # Check if this is a SHELF DESIGN (CB ≈ OB within 2mm)
+                    is_shelf_design = False
+                    if result.center_bore and result.hub_diameter:
+                        cb_ob_diff = abs(result.center_bore - result.hub_diameter)
+                        is_shelf_design = cb_ob_diff < 2.0  # CB and OB within 2mm = shelf design
+
+                    # For shelf designs: collect from deeper Z values (shelf is cut at Z > 0.15)
+                    # For normal designs: only collect from shallow Z (chamfer area < 0.15)
+                    z_threshold = 0.6 if is_shelf_design else 0.15
+
+                    if z_val and z_val < z_threshold:
                         if 2.0 < x_val < 3.2:  # CB range
                             # Only add if we have title CB to compare and it's closer to CB than OB
                             if result.center_bore:  # Have title CB to compare
@@ -1558,8 +1589,16 @@ class ImprovedGCodeParser:
                                 dist_to_cb = abs(x_val - title_cb_inches)
                                 dist_to_ob = abs(x_val - title_ob_inches)
                                 # Only add if closer to CB spec than OB spec
-                                if dist_to_cb < dist_to_ob:
-                                    cb_candidates.append(x_val)
+                                # For shelf designs, be more lenient (within 0.2")
+                                # For normal designs, require closer to CB than OB
+                                if is_shelf_design:
+                                    # Shelf design: accept if within 0.2" of CB/OB spec
+                                    if dist_to_cb < 0.2 or dist_to_ob < 0.2:
+                                        cb_candidates.append(x_val)
+                                else:
+                                    # Normal design: only if closer to CB than OB
+                                    if dist_to_cb < dist_to_ob:
+                                        cb_candidates.append(x_val)
                             # If no title CB, don't add OP2 values - rely on OP1 full depth extraction
 
         # Select CB: FIXED to use closest to title spec instead of max

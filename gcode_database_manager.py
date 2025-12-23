@@ -3,15 +3,63 @@ from tkinter import ttk, messagebox, filedialog, scrolledtext
 import sqlite3
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from dataclasses import dataclass
 from typing import List, Optional, Tuple, Set
 import json
 import sys
 import shutil
+import logging
+from logging.handlers import RotatingFileHandler
 
 # Import the improved parser
 from improved_gcode_parser import ImprovedGCodeParser, GCodeParseResult
+
+# ============================================================================
+# LOGGING CONFIGURATION
+# ============================================================================
+def setup_logging():
+    """
+    Configure application-wide logging with file rotation.
+    Creates logs in a 'logs' subdirectory with automatic rotation.
+    """
+    # Create logs directory if it doesn't exist
+    log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+    os.makedirs(log_dir, exist_ok=True)
+
+    log_file = os.path.join(log_dir, "gcode_database.log")
+
+    # Create formatter
+    formatter = logging.Formatter(
+        '%(asctime)s | %(levelname)-8s | %(funcName)s:%(lineno)d | %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+
+    # File handler with rotation (5 MB max, keep 5 backups)
+    file_handler = RotatingFileHandler(
+        log_file,
+        maxBytes=5*1024*1024,  # 5 MB
+        backupCount=5,
+        encoding='utf-8'
+    )
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(formatter)
+
+    # Console handler for warnings and above
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.WARNING)
+    console_handler.setFormatter(formatter)
+
+    # Configure root logger
+    logger = logging.getLogger('GCodeDB')
+    logger.setLevel(logging.DEBUG)
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
+
+    return logger
+
+# Initialize global logger
+logger = setup_logging()
 
 
 class MultiSelectCombobox(ttk.Frame):
@@ -236,7 +284,66 @@ class GCodeDatabaseGUI:
         self.setup_drag_drop()
 
         self.refresh_results()
-        
+
+        # Run startup integrity check
+        self.run_startup_integrity_check()
+
+    def run_startup_integrity_check(self):
+        """
+        Run integrity check on startup to detect untracked files and orphaned records.
+        Automatically fixes issues found and populates missing content hashes.
+        """
+        try:
+            # Run integrity check
+            result = self.verify_repository_integrity(fix_issues=True)
+
+            # Report findings
+            total_issues = (
+                len(result['untracked_files']) +
+                len(result['orphaned_records']) +
+                len(result['registry_stale'])
+            )
+
+            if total_issues > 0:
+                fixed = result['fixed']
+                message = f"Startup integrity check completed:\n"
+
+                if result['untracked_files']:
+                    message += f"  - {fixed['files_added']} untracked files added to database\n"
+                if result['orphaned_records']:
+                    message += f"  - {fixed['records_removed']} orphaned records removed\n"
+                if result['registry_stale']:
+                    message += f"  - {fixed['registry_updated']} stale registry entries fixed\n"
+
+                logger.info(message.replace('\n', ' | '))
+
+                # Refresh the UI to show new files
+                if fixed['files_added'] > 0 or fixed['records_removed'] > 0:
+                    self.cascade_refresh('startup_integrity')
+
+            # Populate content hashes for files that don't have them (runs in background)
+            self.root.after(1000, self._populate_hashes_background)
+
+        except Exception as e:
+            logger.error(f"Startup integrity check error: {e}", exc_info=True)
+
+    def _populate_hashes_background(self):
+        """Background task to populate content hashes."""
+        try:
+            # Check how many files need hashes
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM programs WHERE content_hash IS NULL AND file_path IS NOT NULL")
+            count = cursor.fetchone()[0]
+            conn.close()
+
+            if count > 0:
+                logger.info(f"Populating content hashes for {count} files...")
+                result = self.populate_content_hashes()
+                logger.info(f"Hash population complete - Hashed: {result['updated']}, Skipped: {result['skipped']}, Errors: {result['errors']}")
+        except Exception as e:
+            logger.error(f"Background hash population error: {e}", exc_info=True)
+
     def init_database(self):
         """Initialize SQLite database with schema"""
         conn = sqlite3.connect(self.db_path)
@@ -397,6 +504,10 @@ class GCodeDatabaseGUI:
             pass
         try:
             cursor.execute("ALTER TABLE programs ADD COLUMN safety_blocks_issues TEXT")  # JSON list of missing safety blocks
+        except:
+            pass
+        try:
+            cursor.execute("ALTER TABLE programs ADD COLUMN content_hash TEXT")  # SHA256 hash for duplicate detection
         except:
             pass
 
@@ -585,10 +696,10 @@ class GCodeDatabaseGUI:
         os.makedirs(self.backups_path, exist_ok=True)
         os.makedirs(self.deleted_path, exist_ok=True)
 
-        print(f"[Repository] Initialized at: {self.repository_path}")
-        print(f"[Versions] Initialized at: {self.versions_path}")
-        print(f"[Backups] Initialized at: {self.backups_path}")
-        print(f"[Deleted] Initialized at: {self.deleted_path}")
+        logger.info(f"Repository initialized at: {self.repository_path}")
+        logger.debug(f"Versions path: {self.versions_path}")
+        logger.debug(f"Backups path: {self.backups_path}")
+        logger.debug(f"Deleted path: {self.deleted_path}")
 
     def is_managed_file(self, file_path):
         """Check if a file is in the managed repository"""
@@ -628,7 +739,7 @@ class GCodeDatabaseGUI:
                 return dest_path
 
             # Fallback to old behavior if repo manager fails
-            print(f"[Repository] Warning: Archive system failed, using legacy import")
+            logger.warning("Archive system failed, using legacy import")
 
             filename = os.path.basename(source_file)
             dest_path = os.path.join(self.repository_path, filename)
@@ -643,7 +754,7 @@ class GCodeDatabaseGUI:
 
                 if source_content == dest_content:
                     # Same file, just return existing path
-                    print(f"[Repository] File already exists (identical): {filename}")
+                    logger.debug(f"File already exists (identical): {filename}")
                     return dest_path
                 else:
                     # Different file with same name - create unique name
@@ -652,18 +763,19 @@ class GCodeDatabaseGUI:
                     while os.path.exists(dest_path):
                         dest_path = os.path.join(self.repository_path, f"{base}_{counter}{ext}")
                         counter += 1
-                    print(f"[Repository] Collision detected, using: {os.path.basename(dest_path)}")
+                    logger.info(f"Name collision detected, using: {os.path.basename(dest_path)}")
 
             # Copy file to repository
             shutil.copy2(source_file, dest_path)
-            print(f"[Repository] Imported: {filename}")
+            logger.info(f"Imported to repository: {filename}")
 
             return dest_path
 
+        except OSError as e:
+            logger.error(f"File operation error importing {source_file}: {e}", exc_info=True)
+            return None
         except Exception as e:
-            print(f"[Repository] Error importing file: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.error(f"Error importing file to repository: {e}", exc_info=True)
             return None
 
     def create_version_file(self, program_number, version_number, source_file_path):
@@ -686,14 +798,17 @@ class GCodeDatabaseGUI:
             # Copy file to version folder
             if os.path.exists(source_file_path):
                 shutil.copy2(source_file_path, version_path)
-                print(f"[Version] Saved version file: {version_filename}")
+                logger.debug(f"Saved version file: {version_filename}")
                 return version_path
             else:
-                print(f"[Version] Source file not found: {source_file_path}")
+                logger.warning(f"Source file not found for version: {source_file_path}")
                 return None
 
+        except OSError as e:
+            logger.error(f"File operation error creating version: {e}")
+            return None
         except Exception as e:
-            print(f"[Version] Error creating version file: {e}")
+            logger.error(f"Error creating version file: {e}", exc_info=True)
             return None
 
     def get_version_file_path(self, program_number, version_number):
@@ -732,13 +847,13 @@ class GCodeDatabaseGUI:
 
             # Already managed
             if is_managed:
-                print(f"[Migration] {program_number} already in repository")
+                logger.debug(f"Migration skipped - {program_number} already in repository")
                 conn.close()
                 return True
 
             # Check if file exists
             if not current_path or not os.path.exists(current_path):
-                print(f"[Migration] File not found: {current_path}")
+                logger.warning(f"Migration failed - file not found: {current_path}")
                 conn.close()
                 return False
 
@@ -752,7 +867,7 @@ class GCodeDatabaseGUI:
                 """, (new_path, program_number))
 
                 conn.commit()
-                print(f"[Migration] Successfully migrated {program_number}")
+                logger.info(f"Successfully migrated {program_number} to repository")
 
                 # Log activity
                 self.log_activity('migrate_to_repository', program_number, {
@@ -766,8 +881,11 @@ class GCodeDatabaseGUI:
                 conn.close()
                 return False
 
+        except sqlite3.Error as e:
+            logger.error(f"Database error migrating {program_number}: {e}")
+            return False
         except Exception as e:
-            print(f"[Migration] Error migrating {program_number}: {e}")
+            logger.error(f"Error migrating {program_number}: {e}", exc_info=True)
             return False
 
     def migrate_all_to_repository(self):
@@ -787,7 +905,7 @@ class GCodeDatabaseGUI:
         programs = [row[0] for row in cursor.fetchall()]
         conn.close()
 
-        print(f"[Migration] Found {len(programs)} external files to migrate")
+        logger.info(f"Found {len(programs)} external files to migrate")
 
         success = 0
         errors = 0
@@ -798,7 +916,7 @@ class GCodeDatabaseGUI:
             else:
                 errors += 1
 
-        print(f"[Migration] Complete: {success} successful, {errors} errors")
+        logger.info(f"Migration complete: {success} successful, {errors} errors")
         return success, errors
 
     def get_repository_stats(self):
@@ -870,11 +988,11 @@ class GCodeDatabaseGUI:
             conn.close()
         except sqlite3.OperationalError as e:
             if "locked" in str(e).lower():
-                print(f"[Activity Log] Database temporarily locked, activity not logged: {action_type}")
+                logger.debug(f"Database temporarily locked, activity not logged: {action_type}")
             else:
-                print(f"[Activity Log] Error logging activity: {e}")
+                logger.warning(f"Database error logging activity: {e}")
         except Exception as e:
-            print(f"[Activity Log] Error logging activity: {e}")
+            logger.warning(f"Error logging activity: {e}")
 
     def create_version(self, program_number, change_summary=None):
         """Create a new version of a program"""
@@ -960,8 +1078,11 @@ class GCodeDatabaseGUI:
 
             return version_id
 
+        except sqlite3.Error as e:
+            logger.error(f"Database error creating version for {program_number}: {e}")
+            return None
         except Exception as e:
-            print(f"[Version] Error creating version: {e}")
+            logger.error(f"Error creating version: {e}", exc_info=True)
             return None
 
     def get_version_history(self, program_number):
@@ -983,8 +1104,11 @@ class GCodeDatabaseGUI:
 
             return versions
 
+        except sqlite3.Error as e:
+            logger.error(f"Database error getting version history for {program_number}: {e}")
+            return []
         except Exception as e:
-            print(f"[Version] Error getting version history: {e}")
+            logger.error(f"Error getting version history: {e}", exc_info=True)
             return []
 
     def compare_versions(self, version_id1, version_id2):
@@ -1009,30 +1133,34 @@ class GCodeDatabaseGUI:
                 'version2': {'content': v2[0], 'version_number': v2[1]}
             }
 
+        except sqlite3.Error as e:
+            logger.error(f"Database error comparing versions: {e}")
+            return None
         except Exception as e:
-            print(f"[Version] Error comparing versions: {e}")
+            logger.error(f"Error comparing versions: {e}", exc_info=True)
             return None
 
     # ==================== ROUND SIZE DETECTION & RANGE MANAGEMENT ====================
 
     def get_round_size_ranges(self):
-        """Return dictionary of round size to program number ranges"""
+        """Return dictionary of round size to program number ranges (all 5-digit: o10000-o99999)"""
         return {
-            10.25: (10000, 12999, "10.25 & 10.50"),
-            10.50: (10000, 12999, "10.25 & 10.50"),
-            13.0:  (13000, 13999, "13.0"),
-            5.75:  (50000, 59999, "5.75"),
+            5.75:  (57500, 59999, "5.75"),
             6.0:   (60000, 62499, "6.0"),
             6.25:  (62500, 64999, "6.25"),
             6.5:   (65000, 69999, "6.5"),
             7.0:   (70000, 74999, "7.0"),
-            7.5:   (75000, 79000, "7.5"),
+            7.5:   (75000, 79999, "7.5"),
             8.0:   (80000, 84999, "8.0"),
             8.5:   (85000, 89999, "8.5"),
-            9.5:   (90000, 99999, "9.5"),
+            9.5:   (95000, 99999, "9.5"),
+            10.0:  (10000, 10999, "10.0"),
+            10.25: (11000, 11999, "10.25"),
+            10.50: (12000, 12999, "10.50"),
+            13.0:  (13000, 13999, "13.0"),
             # Free ranges (use when specific range is full)
-            0.0:   (1000, 9999, "Free Range 1"),
-            -1.0:  (14000, 49999, "Free Range 2")
+            0.0:   (14000, 49999, "Free Range 1"),
+            -1.0:  (50000, 57499, "Free Range 2")
         }
 
     def get_range_for_round_size(self, round_size):
@@ -1126,8 +1254,10 @@ class GCodeDatabaseGUI:
                 # ob_from_gcode is the outer bore/diameter
                 if 5.0 <= ob_value <= 15.0:
                     return ob_value
+        except sqlite3.Error as e:
+            logger.error(f"Database error getting round size from gcode: {e}")
         except Exception as e:
-            print(f"[RoundSize] Error getting from gcode: {e}")
+            logger.error(f"Error getting round size from gcode: {e}", exc_info=True)
 
         return None
 
@@ -1146,8 +1276,10 @@ class GCodeDatabaseGUI:
                 od_value = result[0]
                 if 5.0 <= od_value <= 15.0:
                     return od_value
+        except sqlite3.Error as e:
+            logger.error(f"Database error getting round size from dimension: {e}")
         except Exception as e:
-            print(f"[RoundSize] Error getting from dimension: {e}")
+            logger.error(f"Error getting round size from dimension: {e}", exc_info=True)
 
         return None
 
@@ -1182,9 +1314,11 @@ class GCodeDatabaseGUI:
         if not round_size:
             return True  # Can't validate without round size
 
-        # Extract numeric part of program number
+        # Extract numeric part of program number (strip suffixes like (1), (2), etc.)
         try:
-            prog_num = int(str(program_number).replace('o', '').replace('O', ''))
+            # Remove 'o' prefix and any suffix in parentheses
+            prog_str = str(program_number).replace('o', '').replace('O', '').split('(')[0]
+            prog_num = int(prog_str)
         except:
             return False
 
@@ -1223,8 +1357,11 @@ class GCodeDatabaseGUI:
             conn.close()
 
             return True
+        except sqlite3.Error as e:
+            logger.error(f"Database error updating round size for {program_number}: {e}")
+            return False
         except Exception as e:
-            print(f"[RoundSize] Error updating: {e}")
+            logger.error(f"Error updating round size: {e}", exc_info=True)
             return False
 
     def batch_detect_round_sizes(self, program_numbers=None):
@@ -1266,8 +1403,11 @@ class GCodeDatabaseGUI:
                 results['processed'] += 1
 
             return results
+        except sqlite3.Error as e:
+            logger.error(f"Database error in batch round size detection: {e}")
+            return None
         except Exception as e:
-            print(f"[RoundSize] Batch detection error: {e}")
+            logger.error(f"Batch round size detection error: {e}", exc_info=True)
             return None
 
     def populate_program_registry(self):
@@ -1507,6 +1647,1767 @@ class GCodeDatabaseGUI:
         except Exception as e:
             messagebox.showerror("Registry Error", f"Failed to get registry statistics:\n{str(e)}")
             return None
+
+    # ===========================================================================================
+    # UNIFIED FILE HANDLING SYSTEM
+    # ===========================================================================================
+
+    def compute_file_hash(self, file_path):
+        """
+        Compute SHA256 hash of a file for duplicate detection.
+
+        Args:
+            file_path: Path to the file
+
+        Returns:
+            str: SHA256 hex digest or None if error
+        """
+        import hashlib
+        try:
+            sha256 = hashlib.sha256()
+            with open(file_path, 'rb') as f:
+                for chunk in iter(lambda: f.read(4096), b''):
+                    sha256.update(chunk)
+            return sha256.hexdigest()
+        except OSError as e:
+            logger.error(f"File read error computing hash for {file_path}: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Error computing hash for {file_path}: {e}", exc_info=True)
+            return None
+
+    def extract_internal_program_number(self, file_path):
+        """
+        Extract the internal O-number from a G-code file.
+        Reads first 10 lines to find the O-number (may be after % delimiter).
+
+        Args:
+            file_path: Path to the G-code file
+
+        Returns:
+            str: Program number (e.g., 'o96002') or None if not found
+        """
+        import re
+        try:
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                for _ in range(10):
+                    line = f.readline().strip()
+                    if not line:
+                        continue
+                    match = re.match(r'^[oO](\d{4,})', line)
+                    if match:
+                        return f"o{match.group(1)}"
+        except OSError as e:
+            logger.error(f"File read error extracting program number from {file_path}: {e}")
+        except Exception as e:
+            logger.error(f"Error extracting program number from {file_path}: {e}", exc_info=True)
+        return None
+
+    def sync_registry_for_operation(self, operation, old_number=None, new_number=None, file_path=None):
+        """
+        Update registry to reflect a single operation.
+        Called automatically after every file operation.
+
+        Args:
+            operation: 'ADD', 'REMOVE', 'RENAME', 'UPDATE'
+            old_number: Previous program number (for RENAME/REMOVE)
+            new_number: New program number (for ADD/RENAME)
+            file_path: File path to associate
+
+        Returns:
+            bool: Success status
+        """
+        from datetime import datetime
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
+            cursor = conn.cursor()
+            now = datetime.now().isoformat()
+
+            if operation == 'ADD' and new_number:
+                # Mark new number as IN_USE
+                cursor.execute("""
+                    UPDATE program_number_registry
+                    SET status = 'IN_USE', file_path = ?, last_checked = ?
+                    WHERE program_number = ?
+                """, (file_path, now, new_number))
+
+                # If no registry entry exists, create one
+                if cursor.rowcount == 0:
+                    # Determine round_size from program number
+                    try:
+                        num = int(new_number.replace('o', '').replace('O', ''))
+                        ranges = self.get_round_size_ranges()
+                        round_size = None
+                        range_start = range_end = 0
+                        for rs, (start, end, _) in ranges.items():
+                            if start <= num <= end:
+                                round_size = rs
+                                range_start = start
+                                range_end = end
+                                break
+                        cursor.execute("""
+                            INSERT INTO program_number_registry
+                            (program_number, round_size, range_start, range_end, status, file_path, last_checked)
+                            VALUES (?, ?, ?, ?, 'IN_USE', ?, ?)
+                        """, (new_number, round_size, range_start, range_end, file_path, now))
+                    except:
+                        pass
+
+            elif operation == 'REMOVE' and old_number:
+                # Mark old number as AVAILABLE
+                cursor.execute("""
+                    UPDATE program_number_registry
+                    SET status = 'AVAILABLE', file_path = NULL, last_checked = ?
+                    WHERE program_number = ?
+                """, (now, old_number))
+
+            elif operation == 'RENAME' and old_number and new_number:
+                # Free old number
+                cursor.execute("""
+                    UPDATE program_number_registry
+                    SET status = 'AVAILABLE', file_path = NULL, last_checked = ?
+                    WHERE program_number = ?
+                """, (now, old_number))
+                # Claim new number
+                cursor.execute("""
+                    UPDATE program_number_registry
+                    SET status = 'IN_USE', file_path = ?, last_checked = ?
+                    WHERE program_number = ?
+                """, (file_path, now, new_number))
+
+            elif operation == 'UPDATE' and new_number:
+                # Just update file_path
+                cursor.execute("""
+                    UPDATE program_number_registry
+                    SET file_path = ?, last_checked = ?
+                    WHERE program_number = ?
+                """, (file_path, now, new_number))
+
+            conn.commit()
+            conn.close()
+            return True
+
+        except sqlite3.Error as e:
+            logger.error(f"Database error syncing registry for {operation}: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Error syncing registry for {operation}: {e}", exc_info=True)
+            return False
+
+    def populate_content_hashes(self, progress_callback=None):
+        """
+        Populate content_hash for all files that don't have one.
+        Should be run once to initialize hashes for existing files.
+
+        Args:
+            progress_callback: Optional function(current, total, message) for progress updates
+
+        Returns:
+            dict: {'updated': int, 'errors': int, 'skipped': int}
+        """
+        result = {'updated': 0, 'errors': 0, 'skipped': 0}
+
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
+            cursor = conn.cursor()
+
+            # Get all files without hash
+            cursor.execute("""
+                SELECT program_number, file_path
+                FROM programs
+                WHERE content_hash IS NULL AND file_path IS NOT NULL
+            """)
+            files_to_hash = cursor.fetchall()
+            total = len(files_to_hash)
+
+            for i, (prog_num, file_path) in enumerate(files_to_hash):
+                if progress_callback:
+                    progress_callback(i + 1, total, f"Hashing {prog_num}...")
+
+                if not file_path or not os.path.exists(file_path):
+                    result['skipped'] += 1
+                    continue
+
+                file_hash = self.compute_file_hash(file_path)
+                if file_hash:
+                    cursor.execute("""
+                        UPDATE programs SET content_hash = ? WHERE program_number = ?
+                    """, (file_hash, prog_num))
+                    result['updated'] += 1
+                else:
+                    result['errors'] += 1
+
+                # Commit every 100 files
+                if (i + 1) % 100 == 0:
+                    conn.commit()
+
+            conn.commit()
+            conn.close()
+            return result
+
+        except sqlite3.Error as e:
+            logger.error(f"Database error populating hashes: {e}")
+            return result
+        except Exception as e:
+            logger.error(f"Error populating hashes: {e}", exc_info=True)
+            return result
+
+    def find_similar_files(self, source_path):
+        """
+        Find files with similar dimensions to the source file.
+        Useful for detecting files that are slight variations (e.g., more passes).
+
+        Args:
+            source_path: Path to the file to compare
+
+        Returns:
+            list: List of similar files with comparison details
+        """
+        similar = []
+
+        try:
+            # Parse the source file
+            parse_result = self.parser.parse_file(source_path)
+
+            if not parse_result.outer_diameter:
+                return similar
+
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
+            cursor = conn.cursor()
+
+            # Find files with same outer_diameter and center_bore (within tolerance)
+            od_tolerance = 0.1  # 0.1" tolerance
+            cb_tolerance = 0.1  # 0.1mm tolerance
+
+            cursor.execute("""
+                SELECT program_number, title, file_path, outer_diameter, center_bore,
+                       thickness, hub_diameter, content_hash
+                FROM programs
+                WHERE outer_diameter BETWEEN ? AND ?
+                AND (center_bore IS NULL OR center_bore BETWEEN ? AND ?)
+                AND file_path IS NOT NULL
+            """, (
+                parse_result.outer_diameter - od_tolerance,
+                parse_result.outer_diameter + od_tolerance,
+                (parse_result.center_bore or 0) - cb_tolerance,
+                (parse_result.center_bore or 999) + cb_tolerance
+            ))
+
+            source_hash = self.compute_file_hash(source_path)
+
+            for row in cursor.fetchall():
+                prog_num, title, file_path, od, cb, thickness, hub_dia, existing_hash = row
+
+                # Skip if same file
+                if file_path and file_path.lower() == source_path.lower():
+                    continue
+
+                # Calculate similarity score
+                similarity = {
+                    'program_number': prog_num,
+                    'title': title,
+                    'file_path': file_path,
+                    'outer_diameter': od,
+                    'center_bore': cb,
+                    'thickness': thickness,
+                    'hub_diameter': hub_dia,
+                    'is_exact_match': existing_hash == source_hash if existing_hash else False,
+                    'dimension_match': True,  # Already filtered by query
+                    'differences': []
+                }
+
+                # Note differences
+                if parse_result.thickness and thickness:
+                    if abs(parse_result.thickness - thickness) > 0.01:
+                        similarity['differences'].append(
+                            f"Thickness: {parse_result.thickness} vs {thickness}"
+                        )
+
+                if parse_result.hub_diameter and hub_dia:
+                    if abs(parse_result.hub_diameter - hub_dia) > 0.1:
+                        similarity['differences'].append(
+                            f"Hub: {parse_result.hub_diameter} vs {hub_dia}"
+                        )
+
+                similar.append(similarity)
+
+            conn.close()
+            return similar
+
+        except sqlite3.Error as e:
+            logger.error(f"Database error finding similar files: {e}")
+            return similar
+        except Exception as e:
+            logger.error(f"Error finding similar files: {e}", exc_info=True)
+            return similar
+
+    def compare_file_contents(self, file1_path, file2_path):
+        """
+        Compare two G-code files focusing on DIMENSIONAL differences.
+        This is the key comparison - same OD but different CB, thickness, hub, etc.
+        indicates a variation made from the original.
+
+        Args:
+            file1_path: Path to first file
+            file2_path: Path to second file
+
+        Returns:
+            dict: Comparison results with dimensional analysis
+        """
+        result = {
+            'identical': False,
+            'line_count_diff': 0,
+            'file1_lines': 0,
+            'file2_lines': 0,
+            'file1_size': 0,
+            'file2_size': 0,
+            'common_lines_percent': 0,
+            'recommendation': None,
+            # Dimensional comparison
+            'file1_dimensions': {},
+            'file2_dimensions': {},
+            'dimension_differences': [],
+            'same_od': False,
+            'is_variation': False,  # Same OD but different other dimensions
+            'variation_type': None  # 'CB_DIFF', 'THICKNESS_DIFF', 'HUB_DIFF', 'MULTI_DIFF'
+        }
+
+        try:
+            # Get file sizes
+            result['file1_size'] = os.path.getsize(file1_path)
+            result['file2_size'] = os.path.getsize(file2_path)
+
+            # Read files for line comparison
+            with open(file1_path, 'r', encoding='utf-8', errors='ignore') as f:
+                lines1 = [l.strip() for l in f.readlines() if l.strip()]
+            with open(file2_path, 'r', encoding='utf-8', errors='ignore') as f:
+                lines2 = [l.strip() for l in f.readlines() if l.strip()]
+
+            result['file1_lines'] = len(lines1)
+            result['file2_lines'] = len(lines2)
+            result['line_count_diff'] = abs(len(lines1) - len(lines2))
+
+            # Check if identical content
+            if lines1 == lines2:
+                result['identical'] = True
+                result['common_lines_percent'] = 100.0
+                result['recommendation'] = 'SKIP_DUPLICATE'
+                return result
+
+            # Calculate common lines percentage
+            set1 = set(lines1)
+            set2 = set(lines2)
+            common = set1.intersection(set2)
+            total_unique = len(set1.union(set2))
+            result['common_lines_percent'] = (len(common) / total_unique * 100) if total_unique > 0 else 0
+
+            # Parse both files to get dimensions
+            try:
+                parse1 = self.parser.parse_file(file1_path)
+                parse2 = self.parser.parse_file(file2_path)
+
+                # Store dimensions
+                result['file1_dimensions'] = {
+                    'outer_diameter': parse1.outer_diameter,
+                    'center_bore': parse1.center_bore,
+                    'thickness': parse1.thickness,
+                    'hub_height': parse1.hub_height,
+                    'hub_diameter': parse1.hub_diameter,
+                    'counter_bore_diameter': parse1.counter_bore_diameter,
+                    'counter_bore_depth': parse1.counter_bore_depth,
+                    'title': parse1.title
+                }
+                result['file2_dimensions'] = {
+                    'outer_diameter': parse2.outer_diameter,
+                    'center_bore': parse2.center_bore,
+                    'thickness': parse2.thickness,
+                    'hub_height': parse2.hub_height,
+                    'hub_diameter': parse2.hub_diameter,
+                    'counter_bore_diameter': parse2.counter_bore_diameter,
+                    'counter_bore_depth': parse2.counter_bore_depth,
+                    'title': parse2.title
+                }
+
+                # Compare dimensions
+                od1, od2 = parse1.outer_diameter, parse2.outer_diameter
+                cb1, cb2 = parse1.center_bore, parse2.center_bore
+                th1, th2 = parse1.thickness, parse2.thickness
+                hh1, hh2 = parse1.hub_height, parse2.hub_height
+                hd1, hd2 = parse1.hub_diameter, parse2.hub_diameter
+                cbd1, cbd2 = parse1.counter_bore_diameter, parse2.counter_bore_diameter
+                cbdepth1, cbdepth2 = parse1.counter_bore_depth, parse2.counter_bore_depth
+
+                # Check if same OD (within 0.1" tolerance)
+                if od1 and od2 and abs(od1 - od2) < 0.1:
+                    result['same_od'] = True
+
+                # Track what's different
+                diff_types = []
+
+                if cb1 and cb2 and abs(cb1 - cb2) > 0.1:  # CB differs by more than 0.1mm
+                    result['dimension_differences'].append(f"Center Bore: {cb1}mm vs {cb2}mm")
+                    diff_types.append('CB')
+                elif (cb1 and not cb2) or (cb2 and not cb1):
+                    result['dimension_differences'].append(f"Center Bore: {cb1 or 'None'} vs {cb2 or 'None'}")
+                    diff_types.append('CB')
+
+                if th1 and th2 and abs(th1 - th2) > 0.01:  # Thickness differs
+                    result['dimension_differences'].append(f"Thickness: {th1}\" vs {th2}\"")
+                    diff_types.append('THICKNESS')
+
+                if hh1 and hh2 and abs(hh1 - hh2) > 0.01:  # Hub height differs
+                    result['dimension_differences'].append(f"Hub Height: {hh1}\" vs {hh2}\"")
+                    diff_types.append('HUB_HEIGHT')
+                elif (hh1 and not hh2) or (hh2 and not hh1):
+                    result['dimension_differences'].append(f"Hub Height: {hh1 or 'None'} vs {hh2 or 'None'}")
+                    diff_types.append('HUB_HEIGHT')
+
+                if hd1 and hd2 and abs(hd1 - hd2) > 0.1:  # Hub diameter differs
+                    result['dimension_differences'].append(f"Hub Diameter: {hd1}\" vs {hd2}\"")
+                    diff_types.append('HUB_DIA')
+
+                if cbd1 and cbd2 and abs(cbd1 - cbd2) > 0.1:  # Counter bore diameter differs by more than 0.1mm
+                    result['dimension_differences'].append(f"Counter Bore Dia: {cbd1}mm vs {cbd2}mm")
+                    diff_types.append('CB_DIA')
+                elif (cbd1 and not cbd2) or (cbd2 and not cbd1):
+                    result['dimension_differences'].append(f"Counter Bore Dia: {cbd1 or 'None'} vs {cbd2 or 'None'}")
+                    diff_types.append('CB_DIA')
+
+                if cbdepth1 and cbdepth2 and abs(cbdepth1 - cbdepth2) > 0.01:  # CB depth differs
+                    result['dimension_differences'].append(f"Counter Bore Depth: {cbdepth1}\" vs {cbdepth2}\"")
+                    diff_types.append('CB_DEPTH')
+
+                # Determine if this is a variation (same OD, different finishing dimensions)
+                if result['same_od'] and len(diff_types) > 0:
+                    result['is_variation'] = True
+                    if len(diff_types) == 1:
+                        result['variation_type'] = f"{diff_types[0]}_DIFF"
+                    else:
+                        result['variation_type'] = 'MULTI_DIFF'
+
+            except Exception as e:
+                logger.warning(f"Error parsing files for dimensional comparison: {e}")
+
+            # Recommendation based on analysis
+            if result['identical']:
+                result['recommendation'] = 'SKIP_DUPLICATE'
+            elif result['is_variation']:
+                # Same OD but different dimensions - these are intentional variations
+                result['recommendation'] = 'KEEP_BOTH_VARIATIONS'
+            elif result['same_od'] and result['common_lines_percent'] > 95:
+                # Same OD, very similar code - likely a copy with minor tweaks (more passes, etc.)
+                result['recommendation'] = 'REVIEW_KEEP_LARGER'
+            elif result['common_lines_percent'] > 80:
+                result['recommendation'] = 'SIMILAR_REVIEW_MANUALLY'
+            else:
+                result['recommendation'] = 'DIFFERENT_KEEP_BOTH'
+
+            return result
+
+        except OSError as e:
+            logger.error(f"File operation error comparing files: {e}")
+            result['recommendation'] = 'ERROR'
+            return result
+        except Exception as e:
+            logger.error(f"Error comparing files: {e}", exc_info=True)
+            result['recommendation'] = 'ERROR'
+            return result
+
+    def find_dimensional_variations(self, program_number=None, outer_diameter=None):
+        """
+        Find all files that are dimensional variations of each other.
+        These are files with the same OD but different CB, thickness, hub, etc.
+
+        Args:
+            program_number: Optional - find variations of this specific program
+            outer_diameter: Optional - find all variations for this OD
+
+        Returns:
+            dict: Groups of variations keyed by base OD
+        """
+        variations = {}
+
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
+            cursor = conn.cursor()
+
+            if program_number:
+                # Get the OD for this program
+                cursor.execute("SELECT outer_diameter FROM programs WHERE program_number = ?",
+                             (program_number,))
+                row = cursor.fetchone()
+                if row and row[0]:
+                    outer_diameter = row[0]
+                else:
+                    conn.close()
+                    return variations
+
+            if outer_diameter:
+                # Find all programs with this OD (within 0.1" tolerance)
+                cursor.execute("""
+                    SELECT program_number, title, file_path, outer_diameter,
+                           center_bore, thickness, hub_height, hub_diameter,
+                           counter_bore_diameter, counter_bore_depth
+                    FROM programs
+                    WHERE outer_diameter BETWEEN ? AND ?
+                    AND file_path IS NOT NULL
+                    ORDER BY program_number
+                """, (outer_diameter - 0.1, outer_diameter + 0.1))
+            else:
+                # Find ALL potential variations - group by OD
+                cursor.execute("""
+                    SELECT program_number, title, file_path, outer_diameter,
+                           center_bore, thickness, hub_height, hub_diameter,
+                           counter_bore_diameter, counter_bore_depth
+                    FROM programs
+                    WHERE outer_diameter IS NOT NULL
+                    AND file_path IS NOT NULL
+                    ORDER BY outer_diameter, program_number
+                """)
+
+            rows = cursor.fetchall()
+            conn.close()
+
+            # Group by OD (rounded to nearest 0.25")
+            od_groups = {}
+            for row in rows:
+                prog_num, title, file_path, od, cb, thickness, hh, hd, cbd, cbdepth = row
+
+                # Round OD to nearest 0.25 for grouping
+                od_key = round(od * 4) / 4 if od else 0
+
+                if od_key not in od_groups:
+                    od_groups[od_key] = []
+
+                od_groups[od_key].append({
+                    'program_number': prog_num,
+                    'title': title,
+                    'file_path': file_path,
+                    'outer_diameter': od,
+                    'center_bore': cb,
+                    'thickness': thickness,
+                    'hub_height': hh,
+                    'hub_diameter': hd,
+                    'counter_bore_diameter': cbd,
+                    'counter_bore_depth': cbdepth
+                })
+
+            # For each OD group, find actual variations (different dimensions)
+            for od_key, programs in od_groups.items():
+                if len(programs) < 2:
+                    continue
+
+                # Create dimension signature for each program
+                # Programs with same signature are true duplicates
+                # Programs with different signatures are variations
+                signatures = {}
+                for prog in programs:
+                    # Create a signature from key dimensions
+                    sig = (
+                        round(prog['center_bore'] or 0, 1),
+                        round(prog['thickness'] or 0, 3),
+                        round(prog['hub_height'] or 0, 3) if prog['hub_height'] else None,
+                        round(prog['hub_diameter'] or 0, 2) if prog['hub_diameter'] else None,
+                        round(prog['counter_bore_diameter'] or 0, 1) if prog['counter_bore_diameter'] else None
+                    )
+
+                    if sig not in signatures:
+                        signatures[sig] = []
+                    signatures[sig].append(prog)
+
+                # If there are multiple different signatures, we have variations
+                if len(signatures) > 1:
+                    variations[od_key] = {
+                        'outer_diameter': od_key,
+                        'variation_count': len(signatures),
+                        'total_programs': len(programs),
+                        'groups': []
+                    }
+
+                    for sig, progs in signatures.items():
+                        group_desc = []
+                        if sig[0]: group_desc.append(f"CB:{sig[0]}mm")
+                        if sig[1]: group_desc.append(f"T:{sig[1]}\"")
+                        if sig[2]: group_desc.append(f"HH:{sig[2]}\"")
+                        if sig[3]: group_desc.append(f"HD:{sig[3]}\"")
+                        if sig[4]: group_desc.append(f"CBD:{sig[4]}mm")
+
+                        variations[od_key]['groups'].append({
+                            'signature': ' | '.join(group_desc) if group_desc else 'Base dimensions',
+                            'programs': progs,
+                            'count': len(progs)
+                        })
+
+            return variations
+
+        except sqlite3.Error as e:
+            logger.error(f"Database error finding dimensional variations: {e}")
+            return variations
+        except Exception as e:
+            logger.error(f"Error finding dimensional variations: {e}", exc_info=True)
+            return variations
+
+    def find_suffix_programs(self):
+        """
+        Find all programs that have temporary suffix placeholders like (1), (2), _1, _2.
+        These need to be resolved to proper unique numbers.
+
+        Returns:
+            list: List of dicts with program info and detected suffix
+        """
+        import re
+        suffix_programs = []
+
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                SELECT program_number, title, file_path, outer_diameter, round_size
+                FROM programs
+                WHERE file_path IS NOT NULL
+            """)
+
+            # Pattern to match suffixes: (1), (2), _1, _2, etc.
+            suffix_pattern = re.compile(r'^(o\d+)([(_]\d+[)]?)$', re.IGNORECASE)
+
+            for row in cursor.fetchall():
+                prog_num, title, file_path, od, round_size = row
+
+                match = suffix_pattern.match(prog_num)
+                if match:
+                    base_number = match.group(1)
+                    suffix = match.group(2)
+
+                    suffix_programs.append({
+                        'program_number': prog_num,
+                        'base_number': base_number,
+                        'suffix': suffix,
+                        'title': title,
+                        'file_path': file_path,
+                        'outer_diameter': od,
+                        'round_size': round_size or od
+                    })
+
+            conn.close()
+            return suffix_programs
+
+        except sqlite3.Error as e:
+            logger.error(f"Database error finding suffix programs: {e}")
+            return suffix_programs
+        except Exception as e:
+            logger.error(f"Error finding suffix programs: {e}", exc_info=True)
+            return suffix_programs
+
+    def resolve_suffix_program(self, program_number, dry_run=False):
+        """
+        Resolve a single program with suffix to a proper unique number.
+
+        Args:
+            program_number: Program number with suffix (e.g., 'o80001(1)')
+            dry_run: If True, only simulate without making changes
+
+        Returns:
+            dict: Result with old_number, new_number, success, error
+        """
+        import re
+        from datetime import datetime
+
+        result = {
+            'success': False,
+            'old_number': program_number,
+            'new_number': None,
+            'old_file_path': None,
+            'new_file_path': None,
+            'error': None
+        }
+
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
+            cursor = conn.cursor()
+
+            # Get program info
+            cursor.execute("""
+                SELECT title, file_path, outer_diameter, round_size
+                FROM programs
+                WHERE program_number = ?
+            """, (program_number,))
+
+            row = cursor.fetchone()
+            if not row:
+                result['error'] = f"Program {program_number} not found"
+                conn.close()
+                return result
+
+            title, file_path, od, round_size = row
+            result['old_file_path'] = file_path
+
+            # Determine round size for finding new number
+            effective_round_size = round_size or od
+            if not effective_round_size:
+                # Try to parse from file
+                if file_path and os.path.exists(file_path):
+                    try:
+                        parse_result = self.parser.parse_file(file_path)
+                        effective_round_size = parse_result.outer_diameter
+                    except:
+                        pass
+
+            if not effective_round_size:
+                result['error'] = f"Cannot determine round size for {program_number}"
+                conn.close()
+                return result
+
+            # Find next available number in correct range
+            new_number = self.find_next_available_number(effective_round_size)
+            if not new_number:
+                result['error'] = f"No available numbers in range for round size {effective_round_size}"
+                conn.close()
+                return result
+
+            result['new_number'] = new_number
+
+            if dry_run:
+                conn.close()
+                result['success'] = True
+                return result
+
+            # Perform the rename
+            if file_path and os.path.exists(file_path):
+                # Generate new file path in repository
+                old_dir = os.path.dirname(file_path)
+                new_filename = f"{new_number}.nc"
+                new_file_path = os.path.join(old_dir, new_filename)
+                result['new_file_path'] = new_file_path
+
+                # Check if destination already exists
+                if os.path.exists(new_file_path):
+                    result['error'] = f"Destination file already exists: {new_file_path}"
+                    conn.close()
+                    return result
+
+                # Read file content
+                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    content = f.read()
+
+                # Extract base number without suffix for replacement
+                # The DB program number might be o80001(1), but file content has O80001
+                suffix_pattern = re.compile(r'^(o?)(\d+)([(_]\d+[)]?)$', re.IGNORECASE)
+                match = suffix_pattern.match(program_number)
+                if match:
+                    old_num_base = match.group(2)
+                else:
+                    old_num_base = program_number.replace('o', '').replace('O', '')
+
+                new_num_plain = new_number.replace('o', '').replace('O', '')
+
+                # Also try to find the actual O-number in the file (might be different)
+                internal_number = self.extract_internal_program_number(file_path)
+                if internal_number:
+                    internal_num_plain = internal_number.replace('o', '').replace('O', '')
+                else:
+                    internal_num_plain = old_num_base
+
+                # Replace program number in file content - try both the base number and internal number
+                updated_content = content
+
+                # First try the internal number from the file
+                updated_content = re.sub(
+                    rf'^[oO]{internal_num_plain}\b',
+                    f'O{new_num_plain}',
+                    updated_content,
+                    flags=re.MULTILINE
+                )
+
+                # Also replace if base number is different from internal
+                if internal_num_plain != old_num_base:
+                    updated_content = re.sub(
+                        rf'^[oO]{old_num_base}\b',
+                        f'O{new_num_plain}',
+                        updated_content,
+                        flags=re.MULTILINE
+                    )
+
+                # Write to new file
+                with open(new_file_path, 'w', encoding='utf-8') as f:
+                    f.write(updated_content)
+
+                # Delete old file if different path and new file was created successfully
+                if os.path.exists(new_file_path):
+                    if file_path.lower() != new_file_path.lower() and os.path.exists(file_path):
+                        os.remove(file_path)
+                else:
+                    result['error'] = f"Failed to create new file: {new_file_path}"
+                    conn.close()
+                    return result
+
+            else:
+                new_file_path = None
+                result['new_file_path'] = None
+
+            # Update database
+            cursor.execute("""
+                UPDATE programs
+                SET program_number = ?,
+                    file_path = ?,
+                    last_modified = ?
+                WHERE program_number = ?
+            """, (new_number, new_file_path or file_path, datetime.now().isoformat(), program_number))
+
+            # Update registry
+            self.sync_registry_for_operation('RENAME', program_number, new_number, new_file_path or file_path)
+
+            conn.commit()
+            conn.close()
+
+            result['success'] = True
+            return result
+
+        except Exception as e:
+            result['error'] = str(e)
+            return result
+
+    def resolve_all_suffix_programs(self, dry_run=False, progress_callback=None):
+        """
+        Resolve all programs with suffix placeholders to proper unique numbers.
+
+        Args:
+            dry_run: If True, only simulate without making changes
+            progress_callback: Function(current, total, message) for progress updates
+
+        Returns:
+            dict: Statistics about the resolution process
+        """
+        stats = {
+            'total': 0,
+            'resolved': 0,
+            'failed': 0,
+            'skipped': 0,
+            'errors': [],
+            'renames': []
+        }
+
+        try:
+            # Find all suffix programs
+            suffix_programs = self.find_suffix_programs()
+            stats['total'] = len(suffix_programs)
+
+            if stats['total'] == 0:
+                return stats
+
+            for i, prog in enumerate(suffix_programs):
+                if progress_callback:
+                    progress_callback(i + 1, stats['total'], f"Resolving {prog['program_number']}...")
+
+                result = self.resolve_suffix_program(prog['program_number'], dry_run=dry_run)
+
+                if result['success']:
+                    stats['resolved'] += 1
+                    stats['renames'].append({
+                        'old': result['old_number'],
+                        'new': result['new_number'],
+                        'title': prog['title']
+                    })
+                else:
+                    stats['failed'] += 1
+                    stats['errors'].append({
+                        'program': prog['program_number'],
+                        'error': result['error']
+                    })
+
+            return stats
+
+        except Exception as e:
+            stats['errors'].append({'program': 'BATCH', 'error': str(e)})
+            return stats
+
+    def check_for_duplicates(self, source_path, file_hash=None):
+        """
+        Multi-layered duplicate detection with enhanced similarity checking.
+
+        Args:
+            source_path: Path to file being imported
+            file_hash: Pre-computed hash (optional, will compute if not provided)
+
+        Returns:
+            dict: {
+                'is_duplicate': bool,
+                'duplicate_type': str | None,  # 'CONTENT_EXACT', 'CONTENT_SIMILAR', 'FILENAME', 'NUMBER'
+                'existing_record': dict | None,
+                'similar_files': list,  # Files with similar dimensions
+                'recommendation': str,  # 'SKIP', 'REPLACE', 'ASSIGN_NEW_NUMBER', 'REVIEW', 'PROCEED'
+                'comparison': dict | None  # Detailed comparison if similar
+            }
+        """
+        result = {
+            'is_duplicate': False,
+            'duplicate_type': None,
+            'existing_record': None,
+            'similar_files': [],
+            'recommendation': 'PROCEED',
+            'comparison': None
+        }
+
+        try:
+            # Compute hash if not provided
+            if file_hash is None:
+                file_hash = self.compute_file_hash(source_path)
+
+            if not file_hash:
+                return result
+
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
+            cursor = conn.cursor()
+
+            # Check 1: EXACT content hash match (regardless of filename)
+            cursor.execute("""
+                SELECT program_number, title, file_path
+                FROM programs
+                WHERE content_hash = ?
+            """, (file_hash,))
+            existing = cursor.fetchone()
+            if existing:
+                result['is_duplicate'] = True
+                result['duplicate_type'] = 'CONTENT_EXACT'
+                result['existing_record'] = {
+                    'program_number': existing[0],
+                    'title': existing[1],
+                    'file_path': existing[2]
+                }
+                result['recommendation'] = 'SKIP'
+                conn.close()
+                return result
+
+            # Get filename and internal O-number
+            filename = os.path.basename(source_path)
+            filename_base = os.path.splitext(filename)[0].lower()
+            internal_number = self.extract_internal_program_number(source_path)
+
+            # Check 2: Filename collision (same filename exists but different content)
+            cursor.execute("""
+                SELECT program_number, title, file_path, content_hash
+                FROM programs
+                WHERE LOWER(program_number) = ?
+            """, (filename_base,))
+            existing = cursor.fetchone()
+            if existing:
+                result['is_duplicate'] = True
+                result['duplicate_type'] = 'FILENAME'
+                result['existing_record'] = {
+                    'program_number': existing[0],
+                    'title': existing[1],
+                    'file_path': existing[2],
+                    'content_hash': existing[3]
+                }
+
+                # Compare the files to decide what to do
+                if existing[2] and os.path.exists(existing[2]):
+                    comparison = self.compare_file_contents(source_path, existing[2])
+                    result['comparison'] = comparison
+
+                    if comparison['identical']:
+                        result['duplicate_type'] = 'CONTENT_EXACT'
+                        result['recommendation'] = 'SKIP'
+                    elif comparison['common_lines_percent'] > 95:
+                        result['duplicate_type'] = 'CONTENT_SIMILAR'
+                        # Keep the larger file (more complete)
+                        if comparison['file1_size'] > comparison['file2_size']:
+                            result['recommendation'] = 'REPLACE_EXISTING'
+                        else:
+                            result['recommendation'] = 'SKIP'
+                    else:
+                        result['recommendation'] = 'ASSIGN_NEW_NUMBER'
+                else:
+                    result['recommendation'] = 'ASSIGN_NEW_NUMBER'
+
+                conn.close()
+                return result
+
+            # Check 3: Internal O-number collision (file has O-number already in use)
+            if internal_number:
+                cursor.execute("""
+                    SELECT program_number, title, file_path
+                    FROM programs
+                    WHERE LOWER(program_number) = ?
+                """, (internal_number.lower(),))
+                existing = cursor.fetchone()
+                if existing:
+                    result['is_duplicate'] = True
+                    result['duplicate_type'] = 'NUMBER'
+                    result['existing_record'] = {
+                        'program_number': existing[0],
+                        'title': existing[1],
+                        'file_path': existing[2]
+                    }
+                    result['recommendation'] = 'ASSIGN_NEW_NUMBER'
+                    conn.close()
+                    return result
+
+            conn.close()
+            return result
+
+        except sqlite3.Error as e:
+            logger.error(f"Database error checking for duplicates: {e}")
+            return result
+        except Exception as e:
+            logger.error(f"Error checking for duplicates: {e}", exc_info=True)
+            return result
+
+    def cascade_refresh(self, trigger='unknown', affected_numbers=None):
+        """
+        Refresh all dependent systems after a file operation.
+
+        Args:
+            trigger: What caused the refresh ('import', 'delete', 'rename', 'sync', 'integrity')
+            affected_numbers: Specific program numbers affected (for targeted refresh)
+        """
+        try:
+            # 1. Refresh the UI tree view
+            self.refresh_results()
+
+            # 2. Refresh filter values (in case new values appeared)
+            self.refresh_filter_values()
+
+            # 3. Log the refresh for debugging
+            logger.debug(f"Cascade refresh triggered by: {trigger}, affected: {affected_numbers}")
+
+        except Exception as e:
+            logger.error(f"Error during cascade refresh: {e}", exc_info=True)
+
+    def process_new_file(self, source_path, import_mode='repository', auto_resolve_collision=True):
+        """
+        Central entry point for ALL file additions to the system.
+
+        Args:
+            source_path: Path to the file to import
+            import_mode: 'repository' (copy to managed folder) or 'external' (reference only)
+            auto_resolve_collision: If True, automatically assign new number on collision
+
+        Returns:
+            dict: {
+                'success': bool,
+                'program_number': str,
+                'file_path': str,
+                'collision_type': str | None,
+                'original_number': str | None,
+                'new_number': str | None,
+                'warnings': list[str],
+                'errors': list[str]
+            }
+        """
+        import re
+        from datetime import datetime
+        import json
+
+        result = {
+            'success': False,
+            'program_number': None,
+            'file_path': None,
+            'collision_type': None,
+            'original_number': None,
+            'new_number': None,
+            'warnings': [],
+            'errors': []
+        }
+
+        try:
+            # Step 1: Validate file exists
+            if not os.path.exists(source_path):
+                result['errors'].append(f"File not found: {source_path}")
+                return result
+
+            # Step 2: Compute content hash
+            file_hash = self.compute_file_hash(source_path)
+            if not file_hash:
+                result['errors'].append("Could not compute file hash")
+                return result
+
+            # Step 3: Check for duplicates
+            dup_check = self.check_for_duplicates(source_path, file_hash)
+
+            if dup_check['is_duplicate']:
+                if dup_check['duplicate_type'] == 'CONTENT_EXACT':
+                    # Exact content duplicate - skip (file already exists with same content)
+                    result['warnings'].append(
+                        f"Exact duplicate of {dup_check['existing_record']['program_number']} - skipped"
+                    )
+                    result['collision_type'] = 'CONTENT_EXACT'
+                    result['program_number'] = dup_check['existing_record']['program_number']
+                    return result
+
+                elif dup_check['duplicate_type'] == 'CONTENT_SIMILAR':
+                    # Very similar content (>95% same) - handle based on recommendation
+                    if dup_check['recommendation'] == 'SKIP':
+                        result['warnings'].append(
+                            f"Very similar to {dup_check['existing_record']['program_number']} (existing is larger) - skipped"
+                        )
+                        result['collision_type'] = 'CONTENT_SIMILAR'
+                        result['program_number'] = dup_check['existing_record']['program_number']
+                        return result
+                    elif dup_check['recommendation'] == 'REPLACE_EXISTING':
+                        # New file is larger/more complete - will replace existing
+                        result['collision_type'] = 'CONTENT_SIMILAR'
+                        result['original_number'] = dup_check['existing_record']['program_number']
+                        result['warnings'].append(
+                            f"Replacing {result['original_number']} with more complete version"
+                        )
+                        # Use the existing program number (will overwrite)
+                        result['new_number'] = None  # Not assigning new, just replacing
+
+                elif dup_check['duplicate_type'] in ('FILENAME', 'NUMBER'):
+                    if auto_resolve_collision:
+                        result['collision_type'] = dup_check['duplicate_type']
+                        result['original_number'] = dup_check['existing_record']['program_number']
+                        result['warnings'].append(
+                            f"Collision with {result['original_number']} - will assign new number"
+                        )
+                    else:
+                        result['errors'].append(
+                            f"Collision with {dup_check['existing_record']['program_number']}"
+                        )
+                        return result
+
+            # Step 4: Parse the G-code file
+            try:
+                parse_result = self.parser.parse_file(source_path)
+            except Exception as e:
+                result['errors'].append(f"Parse error: {e}")
+                return result
+
+            # Step 5: Determine program number
+            internal_number = self.extract_internal_program_number(source_path)
+            filename_base = os.path.splitext(os.path.basename(source_path))[0].lower()
+
+            # Decide what program number to use
+            if result['collision_type']:
+                # Need to assign a new number
+                round_size = parse_result.outer_diameter
+                new_number = self.find_next_available_number(round_size)
+                if not new_number:
+                    result['errors'].append("No available program numbers in range")
+                    return result
+                result['new_number'] = new_number
+                program_number = new_number
+            elif internal_number:
+                program_number = internal_number
+            else:
+                program_number = filename_base
+
+            result['program_number'] = program_number
+
+            # Step 6: Copy to repository if needed
+            if import_mode == 'repository':
+                new_filename = f"{program_number}.nc"
+                final_path = os.path.join(self.repository_path, new_filename)
+
+                # If file already exists at destination and it's different, archive it
+                if os.path.exists(final_path) and final_path.lower() != source_path.lower():
+                    # Archive the existing file
+                    if hasattr(self, 'repo_manager') and self.repo_manager:
+                        self.repo_manager.archive_file(final_path, "replaced_by_import")
+
+                # Copy or move file
+                if source_path.lower() != final_path.lower():
+                    import shutil
+                    shutil.copy2(source_path, final_path)
+
+                # Update internal O-number if we assigned a new one
+                if result['new_number']:
+                    self._update_internal_program_number(final_path, result['new_number'])
+
+                result['file_path'] = final_path
+            else:
+                result['file_path'] = source_path
+
+            # Step 7: Update database
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
+            cursor = conn.cursor()
+
+            # Determine validation status
+            validation_status = "PASS"
+            if parse_result.validation_issues:
+                validation_status = "CRITICAL"
+            elif parse_result.bore_warnings:
+                validation_status = "BORE_WARNING"
+            elif parse_result.dimensional_issues:
+                validation_status = "DIMENSIONAL"
+            elif parse_result.validation_warnings:
+                validation_status = "WARNING"
+
+            # Check if program exists
+            cursor.execute("SELECT 1 FROM programs WHERE program_number = ?", (program_number,))
+            exists = cursor.fetchone()
+
+            now = datetime.now().isoformat()
+
+            if exists:
+                # Update existing record
+                cursor.execute("""
+                    UPDATE programs SET
+                        title = ?, outer_diameter = ?, thickness = ?, thickness_display = ?,
+                        center_bore = ?, hub_height = ?, hub_diameter = ?,
+                        counter_bore_diameter = ?, counter_bore_depth = ?,
+                        material = ?, file_path = ?, last_modified = ?,
+                        validation_status = ?, validation_issues = ?, validation_warnings = ?,
+                        bore_warnings = ?, dimensional_issues = ?,
+                        cb_from_gcode = ?, ob_from_gcode = ?, content_hash = ?,
+                        is_managed = ?, round_size = ?
+                    WHERE program_number = ?
+                """, (
+                    parse_result.title, parse_result.outer_diameter,
+                    parse_result.thickness, parse_result.thickness_display,
+                    parse_result.center_bore, parse_result.hub_height, parse_result.hub_diameter,
+                    parse_result.counter_bore_diameter, parse_result.counter_bore_depth,
+                    parse_result.material, result['file_path'], now,
+                    validation_status,
+                    json.dumps(parse_result.validation_issues) if parse_result.validation_issues else None,
+                    json.dumps(parse_result.validation_warnings) if parse_result.validation_warnings else None,
+                    json.dumps(parse_result.bore_warnings) if parse_result.bore_warnings else None,
+                    json.dumps(parse_result.dimensional_issues) if parse_result.dimensional_issues else None,
+                    parse_result.cb_from_gcode, parse_result.ob_from_gcode, file_hash,
+                    1 if import_mode == 'repository' else 0,
+                    parse_result.outer_diameter,
+                    program_number
+                ))
+            else:
+                # Insert new record
+                cursor.execute("""
+                    INSERT INTO programs (
+                        program_number, title, spacer_type, outer_diameter, thickness, thickness_display,
+                        center_bore, hub_height, hub_diameter, counter_bore_diameter, counter_bore_depth,
+                        material, file_path, date_created, last_modified,
+                        validation_status, validation_issues, validation_warnings,
+                        bore_warnings, dimensional_issues, cb_from_gcode, ob_from_gcode,
+                        content_hash, is_managed, round_size, round_size_confidence, round_size_source, in_correct_range
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    program_number, parse_result.title, parse_result.spacer_type or 'Unknown',
+                    parse_result.outer_diameter, parse_result.thickness, parse_result.thickness_display,
+                    parse_result.center_bore, parse_result.hub_height, parse_result.hub_diameter,
+                    parse_result.counter_bore_diameter, parse_result.counter_bore_depth,
+                    parse_result.material, result['file_path'], now, now,
+                    validation_status,
+                    json.dumps(parse_result.validation_issues) if parse_result.validation_issues else None,
+                    json.dumps(parse_result.validation_warnings) if parse_result.validation_warnings else None,
+                    json.dumps(parse_result.bore_warnings) if parse_result.bore_warnings else None,
+                    json.dumps(parse_result.dimensional_issues) if parse_result.dimensional_issues else None,
+                    parse_result.cb_from_gcode, parse_result.ob_from_gcode,
+                    file_hash,
+                    1 if import_mode == 'repository' else 0,
+                    parse_result.outer_diameter, 'HIGH', 'PARSED',
+                    1 if self.is_in_correct_range(program_number, parse_result.outer_diameter) else 0
+                ))
+
+            conn.commit()
+            conn.close()
+
+            # Step 8: Sync registry
+            if result['original_number'] and result['new_number']:
+                self.sync_registry_for_operation('RENAME', result['original_number'], result['new_number'], result['file_path'])
+            else:
+                self.sync_registry_for_operation('ADD', None, program_number, result['file_path'])
+
+            result['success'] = True
+            return result
+
+        except Exception as e:
+            result['errors'].append(f"Unexpected error: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return result
+
+    def _update_internal_program_number(self, file_path, new_number):
+        """
+        Update the internal O-number in a G-code file.
+
+        Args:
+            file_path: Path to the file
+            new_number: New program number (e.g., 'o80645')
+        """
+        import re
+        try:
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+
+            # Extract just the number part
+            num = new_number.replace('o', '').replace('O', '')
+
+            # Replace the O-number (first occurrence on its own line)
+            lines = content.split('\n')
+            updated = False
+            for i, line in enumerate(lines):
+                if re.match(r'^[oO]\d{4,}', line.strip()):
+                    lines[i] = re.sub(r'^[oO]\d{4,}', f'O{num}', line)
+                    updated = True
+                    break
+
+            if updated:
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.write('\n'.join(lines))
+
+        except OSError as e:
+            logger.error(f"File operation error updating internal program number in {file_path}: {e}")
+        except Exception as e:
+            logger.error(f"Error updating internal program number: {e}", exc_info=True)
+
+    def verify_repository_integrity(self, fix_issues=False):
+        """
+        Comprehensive integrity check between filesystem and database.
+
+        Args:
+            fix_issues: If True, automatically fix detected issues
+
+        Returns:
+            dict: {
+                'untracked_files': list,      # Files in repository/ not in DB
+                'orphaned_records': list,     # DB records with missing files
+                'registry_stale': list,       # Registry entries out of sync
+                'fixed': dict                 # What was fixed (if fix_issues=True)
+            }
+        """
+        import glob
+
+        result = {
+            'untracked_files': [],
+            'orphaned_records': [],
+            'registry_stale': [],
+            'fixed': {
+                'files_added': 0,
+                'records_removed': 0,
+                'registry_updated': 0
+            }
+        }
+
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
+            cursor = conn.cursor()
+
+            # Get all file_paths from database (managed files only)
+            cursor.execute("""
+                SELECT program_number, file_path
+                FROM programs
+                WHERE is_managed = 1 AND file_path IS NOT NULL
+            """)
+            db_records = {row[1].lower(): row[0] for row in cursor.fetchall() if row[1]}
+
+            # Get all files in repository
+            repo_files = glob.glob(os.path.join(self.repository_path, '*'))
+            repo_files = [f for f in repo_files if os.path.isfile(f)]
+
+            # Find untracked files (in repo but not in DB)
+            for file_path in repo_files:
+                if file_path.lower() not in db_records:
+                    # Skip non-gcode files
+                    import re
+                    if re.match(r'^[oO]\d{4,}', os.path.basename(file_path)):
+                        result['untracked_files'].append(file_path)
+
+            # Find orphaned records (in DB but file missing)
+            for file_path_lower, prog_num in db_records.items():
+                if not os.path.exists(file_path_lower):
+                    # Try case-insensitive check
+                    found = False
+                    for repo_file in repo_files:
+                        if repo_file.lower() == file_path_lower:
+                            found = True
+                            break
+                    if not found:
+                        result['orphaned_records'].append({
+                            'program_number': prog_num,
+                            'file_path': file_path_lower
+                        })
+
+            # Check registry sync
+            cursor.execute("""
+                SELECT program_number, file_path, status
+                FROM program_number_registry
+                WHERE status = 'IN_USE'
+            """)
+            for prog_num, reg_path, status in cursor.fetchall():
+                if reg_path and not os.path.exists(reg_path):
+                    result['registry_stale'].append({
+                        'program_number': prog_num,
+                        'file_path': reg_path
+                    })
+
+            # Fix issues if requested
+            if fix_issues:
+                # Add untracked files
+                for file_path in result['untracked_files']:
+                    import_result = self.process_new_file(file_path, import_mode='repository')
+                    if import_result['success']:
+                        result['fixed']['files_added'] += 1
+
+                # Remove orphaned records
+                for orphan in result['orphaned_records']:
+                    cursor.execute("DELETE FROM programs WHERE program_number = ?",
+                                 (orphan['program_number'],))
+                    self.sync_registry_for_operation('REMOVE', orphan['program_number'])
+                    result['fixed']['records_removed'] += 1
+
+                # Fix stale registry entries
+                for stale in result['registry_stale']:
+                    cursor.execute("""
+                        UPDATE program_number_registry
+                        SET status = 'AVAILABLE', file_path = NULL
+                        WHERE program_number = ?
+                    """, (stale['program_number'],))
+                    result['fixed']['registry_updated'] += 1
+
+                conn.commit()
+
+            conn.close()
+            return result
+
+        except sqlite3.Error as e:
+            logger.error(f"Database error verifying integrity: {e}")
+            return result
+        except Exception as e:
+            logger.error(f"Error verifying integrity: {e}", exc_info=True)
+            return result
+
+    def check_missing_m30(self, file_path):
+        """
+        Check if a G-code file is missing the M30 program end code.
+
+        Args:
+            file_path: Path to the G-code file
+
+        Returns:
+            bool: True if M30 is missing, False if present
+        """
+        try:
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read().upper()
+
+            # Check for M30 (program end) or M02 (program stop - also acceptable)
+            # Should be near the end of the file
+            last_500_chars = content[-500:] if len(content) > 500 else content
+
+            has_m30 = 'M30' in last_500_chars or 'M02' in last_500_chars
+            return not has_m30
+
+        except OSError as e:
+            logger.warning(f"File read error checking M30 in {file_path}: {e}")
+            return False  # Can't verify, assume OK
+        except Exception as e:
+            logger.warning(f"Error checking M30 in {file_path}: {e}")
+            return False  # Can't verify, assume OK
+
+    def find_missing_m30_programs(self):
+        """
+        Find all programs missing the M30 program end code.
+
+        Returns:
+            list: List of dicts with program_number, title, file_path
+        """
+        missing = []
+
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                SELECT program_number, title, file_path
+                FROM programs
+                WHERE file_path IS NOT NULL AND is_managed = 1
+            """)
+
+            for prog_num, title, file_path in cursor.fetchall():
+                if file_path and os.path.exists(file_path):
+                    if self.check_missing_m30(file_path):
+                        missing.append({
+                            'program_number': prog_num,
+                            'title': title,
+                            'file_path': file_path
+                        })
+
+            conn.close()
+            return missing
+
+        except sqlite3.Error as e:
+            logger.error(f"Database error finding missing M30 programs: {e}")
+            return missing
+        except Exception as e:
+            logger.error(f"Error finding missing M30 programs: {e}", exc_info=True)
+            return missing
+
+    def find_duplicate_internal_onumbers(self):
+        """
+        Find files where the internal O-number doesn't match the filename,
+        or multiple files have the same internal O-number.
+
+        Returns:
+            dict: {
+                'mismatched': list of files where internal != filename,
+                'duplicates': dict mapping internal O-number to list of files
+            }
+        """
+        result = {
+            'mismatched': [],
+            'duplicates': {}
+        }
+
+        internal_numbers = {}  # {internal_number: [(prog_num, file_path), ...]}
+
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                SELECT program_number, file_path
+                FROM programs
+                WHERE file_path IS NOT NULL AND is_managed = 1
+            """)
+
+            for prog_num, file_path in cursor.fetchall():
+                if not file_path or not os.path.exists(file_path):
+                    continue
+
+                internal_num = self.extract_internal_program_number(file_path)
+                if not internal_num:
+                    continue
+
+                # Check for mismatch between filename and internal number
+                if internal_num.lower() != prog_num.lower():
+                    result['mismatched'].append({
+                        'program_number': prog_num,
+                        'internal_number': internal_num,
+                        'file_path': file_path
+                    })
+
+                # Track for duplicate detection
+                if internal_num.lower() not in internal_numbers:
+                    internal_numbers[internal_num.lower()] = []
+                internal_numbers[internal_num.lower()].append((prog_num, file_path))
+
+            # Find duplicates (same internal number in multiple files)
+            for internal_num, files in internal_numbers.items():
+                if len(files) > 1:
+                    result['duplicates'][internal_num] = [
+                        {'program_number': f[0], 'file_path': f[1]} for f in files
+                    ]
+
+            conn.close()
+            return result
+
+        except sqlite3.Error as e:
+            logger.error(f"Database error finding duplicate internal O-numbers: {e}")
+            return result
+        except Exception as e:
+            logger.error(f"Error finding duplicate internal O-numbers: {e}", exc_info=True)
+            return result
+
+    def find_stale_records(self):
+        """
+        Find database records where the file has been modified since last scan.
+
+        Returns:
+            list: List of dicts with program_number, db_modified, file_modified, file_path
+        """
+        stale = []
+
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                SELECT program_number, last_modified, file_path
+                FROM programs
+                WHERE file_path IS NOT NULL AND is_managed = 1
+            """)
+
+            for prog_num, db_modified, file_path in cursor.fetchall():
+                if not file_path or not os.path.exists(file_path):
+                    continue
+
+                try:
+                    file_mtime = os.path.getmtime(file_path)
+                    file_modified = datetime.fromtimestamp(file_mtime).isoformat()
+
+                    # Compare timestamps
+                    if db_modified:
+                        db_time = datetime.fromisoformat(db_modified.replace('Z', '+00:00').split('+')[0])
+                        file_time = datetime.fromtimestamp(file_mtime)
+
+                        # File is newer than DB record by more than 1 second
+                        if file_time > db_time + timedelta(seconds=1):
+                            stale.append({
+                                'program_number': prog_num,
+                                'db_modified': db_modified,
+                                'file_modified': file_modified,
+                                'file_path': file_path
+                            })
+                except (ValueError, OSError):
+                    continue
+
+            conn.close()
+            return stale
+
+        except sqlite3.Error as e:
+            logger.error(f"Database error finding stale records: {e}")
+            return stale
+        except Exception as e:
+            logger.error(f"Error finding stale records: {e}", exc_info=True)
+            return stale
+
+    def find_zero_byte_files(self):
+        """
+        Find files in the repository that are empty (zero bytes).
+
+        Returns:
+            list: List of dicts with program_number, file_path, in_database
+        """
+        zero_byte = []
+
+        try:
+            import glob
+
+            # Get all files in repository
+            repo_files = glob.glob(os.path.join(self.repository_path, '*'))
+
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
+            cursor = conn.cursor()
+
+            for file_path in repo_files:
+                if not os.path.isfile(file_path):
+                    continue
+
+                try:
+                    if os.path.getsize(file_path) == 0:
+                        # Check if in database
+                        filename = os.path.basename(file_path)
+                        prog_num = os.path.splitext(filename)[0].lower()
+
+                        cursor.execute("SELECT 1 FROM programs WHERE LOWER(program_number) = ?", (prog_num,))
+                        in_db = cursor.fetchone() is not None
+
+                        zero_byte.append({
+                            'program_number': prog_num,
+                            'file_path': file_path,
+                            'in_database': in_db
+                        })
+                except OSError:
+                    continue
+
+            conn.close()
+            return zero_byte
+
+        except sqlite3.Error as e:
+            logger.error(f"Database error finding zero-byte files: {e}")
+            return zero_byte
+        except Exception as e:
+            logger.error(f"Error finding zero-byte files: {e}", exc_info=True)
+            return zero_byte
+
+    def run_extended_integrity_check(self, fix_issues=False):
+        """
+        Run all integrity checks including the new extended checks.
+
+        Args:
+            fix_issues: If True, automatically fix issues where possible
+
+        Returns:
+            dict: Comprehensive results from all checks
+        """
+        from datetime import datetime, timedelta
+
+        result = {
+            'basic': None,  # From verify_repository_integrity
+            'missing_m30': [],
+            'duplicate_internal_numbers': {'mismatched': [], 'duplicates': {}},
+            'stale_records': [],
+            'zero_byte_files': [],
+            'fixed': {
+                'stale_refreshed': 0,
+                'zero_byte_removed': 0
+            },
+            'summary': {
+                'total_issues': 0,
+                'critical': 0,
+                'warnings': 0
+            }
+        }
+
+        try:
+            # Run basic integrity check
+            result['basic'] = self.verify_repository_integrity(fix_issues=fix_issues)
+
+            # Check for missing M30
+            result['missing_m30'] = self.find_missing_m30_programs()
+
+            # Check for duplicate internal O-numbers
+            result['duplicate_internal_numbers'] = self.find_duplicate_internal_onumbers()
+
+            # Check for stale records
+            result['stale_records'] = self.find_stale_records()
+
+            # Check for zero-byte files
+            result['zero_byte_files'] = self.find_zero_byte_files()
+
+            # Fix issues if requested
+            if fix_issues:
+                # Refresh stale records
+                for stale in result['stale_records']:
+                    try:
+                        # Re-parse and update the file
+                        parse_result = self.parser.parse_file(stale['file_path'])
+                        if parse_result:
+                            conn = sqlite3.connect(self.db_path, timeout=30.0)
+                            cursor = conn.cursor()
+                            cursor.execute("""
+                                UPDATE programs SET last_modified = ?
+                                WHERE program_number = ?
+                            """, (datetime.now().isoformat(), stale['program_number']))
+                            conn.commit()
+                            conn.close()
+                            result['fixed']['stale_refreshed'] += 1
+                    except:
+                        pass
+
+                # Remove zero-byte files from database (but don't delete files - user should decide)
+                for zb in result['zero_byte_files']:
+                    if zb['in_database']:
+                        try:
+                            conn = sqlite3.connect(self.db_path, timeout=30.0)
+                            cursor = conn.cursor()
+                            cursor.execute("DELETE FROM programs WHERE LOWER(program_number) = ?",
+                                         (zb['program_number'].lower(),))
+                            conn.commit()
+                            conn.close()
+                            result['fixed']['zero_byte_removed'] += 1
+                        except:
+                            pass
+
+            # Calculate summary
+            result['summary']['critical'] = (
+                len(result['zero_byte_files']) +
+                len(result['duplicate_internal_numbers']['duplicates'])
+            )
+            result['summary']['warnings'] = (
+                len(result['missing_m30']) +
+                len(result['stale_records']) +
+                len(result['duplicate_internal_numbers']['mismatched'])
+            )
+            result['summary']['total_issues'] = (
+                result['summary']['critical'] + result['summary']['warnings']
+            )
+
+            if result['basic']:
+                result['summary']['total_issues'] += (
+                    len(result['basic'].get('untracked_files', [])) +
+                    len(result['basic'].get('orphaned_records', [])) +
+                    len(result['basic'].get('registry_stale', []))
+                )
+
+            return result
+
+        except sqlite3.Error as e:
+            logger.error(f"Database error in extended integrity check: {e}")
+            return result
+        except Exception as e:
+            logger.error(f"Error in extended integrity check: {e}", exc_info=True)
+            return result
 
     def get_out_of_range_programs(self):
         """
@@ -2133,6 +4034,11 @@ class GCodeDatabaseGUI:
                  bg=self.accent_color, fg=self.fg_color, font=("Arial", 9, "bold"),
                  width=10, height=1).pack(side=tk.RIGHT, padx=5)
 
+        # Refresh button
+        tk.Button(info_frame, text="🔄 Refresh", command=self.refresh_repository_scan,
+                 bg="#4CAF50", fg=self.fg_color, font=("Arial", 9, "bold"),
+                 width=10, height=1).pack(side=tk.RIGHT, padx=5)
+
         # Repository management buttons - Row 1 (Basic operations)
         repo_buttons1 = tk.Frame(self.repository_tab, bg=self.bg_color)
         repo_buttons1.pack(fill=tk.X, pady=5, padx=10)
@@ -2286,6 +4192,10 @@ class GCodeDatabaseGUI:
         files_group = tk.Frame(tab_files, bg=self.bg_color)
         files_group.pack(fill=tk.X, padx=5, pady=5)
 
+        tk.Button(files_group, text="⚡ Process New", command=self.process_new_files_workflow,
+                 bg="#4CAF50", fg=self.fg_color, font=("Arial", 9, "bold"),
+                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+
         tk.Button(files_group, text="📁 Scan Folder", command=self.scan_folder,
                  bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
                  width=14, height=2).pack(side=tk.LEFT, padx=3)
@@ -2339,6 +4249,10 @@ class GCodeDatabaseGUI:
 
         tk.Button(dup_group, text="🗑️ Delete Duplicates", command=self.delete_duplicates,
                  bg="#D32F2F", fg=self.fg_color, font=("Arial", 9, "bold"),
+                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+
+        tk.Button(dup_group, text="📐 View Variations", command=self.show_dimensional_variations,
+                 bg="#9C27B0", fg=self.fg_color, font=("Arial", 9, "bold"),
                  width=14, height=2).pack(side=tk.LEFT, padx=3)
 
         # Tab 3: Reports
@@ -2443,6 +4357,14 @@ class GCodeDatabaseGUI:
 
         tk.Button(maint_group, text="❌ Delete Filtered", command=self.delete_filtered_view,
                  bg="#D32F2F", fg=self.fg_color, font=("Arial", 9, "bold"),
+                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+
+        tk.Button(maint_group, text="🔍 Integrity Check", command=self.show_extended_integrity_check,
+                 bg="#FF9800", fg=self.fg_color, font=("Arial", 9, "bold"),
+                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+
+        tk.Button(maint_group, text="🔢 Resolve Suffixes", command=self.show_resolve_suffixes,
+                 bg="#9C27B0", fg=self.fg_color, font=("Arial", 9, "bold"),
                  width=14, height=2).pack(side=tk.LEFT, padx=3)
 
     def create_filter_section(self, parent):
@@ -2583,6 +4505,7 @@ class GCodeDatabaseGUI:
         # Combobox with common error types (editable for custom searches)
         common_errors = [
             "",  # Empty for "all"
+            "FILENAME MISMATCH",
             "CB TOO LARGE",
             "CB TOO SMALL",
             "THICKNESS ERROR",
@@ -3221,11 +5144,9 @@ class GCodeDatabaseGUI:
             )
 
         except Exception as e:
-            print(f"Error parsing {filepath}: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.error(f"Error parsing {filepath}: {e}", exc_info=True)
             return None
-            
+
     def extract_dimension(self, text: str, patterns: List[str]) -> Optional[float]:
         """Extract dimension using multiple regex patterns"""
         for pattern in patterns:
@@ -3279,8 +5200,11 @@ class GCodeDatabaseGUI:
                     f.writelines(lines)
                 return True
 
+        except OSError as e:
+            logger.error(f"File operation error updating G-code program number: {e}")
+            return False
         except Exception as e:
-            print(f"Error updating G-code program number: {e}")
+            logger.error(f"Error updating G-code program number: {e}", exc_info=True)
             return False
 
     def scan_folder(self):
@@ -3694,6 +5618,361 @@ class GCodeDatabaseGUI:
         # Refresh filter dropdowns with new values
         self.refresh_filter_values()
         self.refresh_results()
+
+    def process_new_files_workflow(self):
+        """
+        One-click workflow to process new files:
+        1. Scan folder for new files
+        2. Import to repository
+        3. Detect round sizes
+        4. Check for duplicates
+        5. Resolve any suffix placeholders
+        6. Sync filenames if needed
+        7. Refresh display
+        """
+        # Select folder to scan
+        folder = filedialog.askdirectory(
+            title="Select Folder with New G-Code Files",
+            initialdir=self.config.get("last_folder", "")
+        )
+
+        if not folder:
+            return
+
+        self.config["last_folder"] = folder
+        self.save_config()
+
+        # Create auto-backup before processing
+        backup_path = self.create_auto_backup("process_new_files")
+        if backup_path:
+            logger.info("Auto-backup created before processing new files")
+
+        # Create workflow window
+        workflow_win = tk.Toplevel(self.root)
+        workflow_win.title("Processing New Files")
+        workflow_win.geometry("900x700")
+        workflow_win.configure(bg=self.bg_color)
+        workflow_win.transient(self.root)
+
+        # Header
+        tk.Label(workflow_win, text="⚡ Processing New Files Workflow",
+                bg=self.bg_color, fg=self.fg_color,
+                font=("Arial", 14, "bold")).pack(pady=10)
+
+        # Progress frame with steps
+        steps_frame = tk.Frame(workflow_win, bg=self.bg_color)
+        steps_frame.pack(fill=tk.X, padx=20, pady=10)
+
+        steps = [
+            "1. Scanning folder for G-code files",
+            "2. Checking for duplicates",
+            "3. Importing to repository",
+            "4. Detecting round sizes",
+            "5. Resolving suffix placeholders",
+            "6. Syncing filenames",
+            "7. Refreshing display"
+        ]
+
+        step_labels = []
+        for step in steps:
+            lbl = tk.Label(steps_frame, text=f"⏳ {step}",
+                          bg=self.bg_color, fg="#888888",
+                          font=("Arial", 10), anchor='w')
+            lbl.pack(fill=tk.X, pady=2)
+            step_labels.append(lbl)
+
+        # Progress bar
+        progress_var = tk.DoubleVar()
+        progress_bar = ttk.Progressbar(workflow_win, variable=progress_var,
+                                       maximum=100, length=800)
+        progress_bar.pack(pady=10, padx=20)
+
+        # Log text
+        log_frame = tk.Frame(workflow_win, bg=self.bg_color)
+        log_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+
+        log_text = scrolledtext.ScrolledText(log_frame, bg=self.input_bg, fg=self.fg_color,
+                                            font=("Consolas", 9), wrap=tk.WORD)
+        log_text.pack(fill=tk.BOTH, expand=True)
+
+        def log(message):
+            log_text.insert(tk.END, message + "\n")
+            log_text.see(tk.END)
+            workflow_win.update()
+
+        def update_step(step_idx, status='done'):
+            """Update step status: 'done', 'active', 'error', 'skip'"""
+            colors = {'done': '#4CAF50', 'active': '#2196F3', 'error': '#F44336', 'skip': '#FF9800'}
+            icons = {'done': '✓', 'active': '▶', 'error': '✗', 'skip': '⏭'}
+            step_labels[step_idx].config(
+                text=f"{icons[status]} {steps[step_idx]}",
+                fg=colors[status]
+            )
+            workflow_win.update()
+
+        # Statistics
+        stats = {
+            'files_found': 0,
+            'duplicates_skipped': 0,
+            'files_imported': 0,
+            'round_sizes_detected': 0,
+            'suffixes_resolved': 0,
+            'filenames_synced': 0,
+            'errors': []
+        }
+
+        try:
+            # Step 1: Scan folder
+            update_step(0, 'active')
+            log("=" * 60)
+            log("STEP 1: Scanning folder for G-code files...")
+            log("=" * 60)
+
+            import glob
+            gcode_patterns = ['*.nc', '*.NC', '*.tap', '*.TAP', '*.txt', '*.TXT', '*.gcode']
+            all_files = []
+            for pattern in gcode_patterns:
+                all_files.extend(glob.glob(os.path.join(folder, pattern)))
+                all_files.extend(glob.glob(os.path.join(folder, '**', pattern), recursive=True))
+
+            # Remove duplicates
+            all_files = list(set(all_files))
+            stats['files_found'] = len(all_files)
+            log(f"Found {len(all_files)} G-code files")
+            progress_var.set(10)
+            update_step(0, 'done')
+
+            if not all_files:
+                log("\nNo G-code files found in the selected folder.")
+                update_step(1, 'skip')
+                update_step(2, 'skip')
+                update_step(3, 'skip')
+                update_step(4, 'skip')
+                update_step(5, 'skip')
+                update_step(6, 'done')
+                progress_var.set(100)
+                return
+
+            # Step 2: Check for duplicates
+            update_step(1, 'active')
+            log("\n" + "=" * 60)
+            log("STEP 2: Checking for duplicates...")
+            log("=" * 60)
+
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
+            cursor = conn.cursor()
+
+            files_to_import = []
+            for filepath in all_files:
+                filename = os.path.basename(filepath)
+                prog_num = os.path.splitext(filename)[0].lower()
+
+                # Check if already in database
+                cursor.execute("SELECT program_number FROM programs WHERE program_number = ?", (prog_num,))
+                if cursor.fetchone():
+                    stats['duplicates_skipped'] += 1
+                    log(f"  Skip (exists): {filename}")
+                else:
+                    # Check content hash if we have it
+                    file_hash = self.compute_file_hash(filepath)
+                    cursor.execute("SELECT program_number FROM programs WHERE content_hash = ?", (file_hash,))
+                    existing = cursor.fetchone()
+                    if existing:
+                        stats['duplicates_skipped'] += 1
+                        log(f"  Skip (content match with {existing[0]}): {filename}")
+                    else:
+                        files_to_import.append(filepath)
+
+            conn.close()
+            log(f"\nFiles to import: {len(files_to_import)}")
+            log(f"Duplicates skipped: {stats['duplicates_skipped']}")
+            progress_var.set(25)
+            update_step(1, 'done')
+
+            if not files_to_import:
+                log("\nNo new files to import.")
+                update_step(2, 'skip')
+                update_step(3, 'skip')
+                update_step(4, 'skip')
+                update_step(5, 'skip')
+                update_step(6, 'done')
+                progress_var.set(100)
+                self.refresh_results()
+                return
+
+            # Step 3: Import to repository
+            update_step(2, 'active')
+            log("\n" + "=" * 60)
+            log("STEP 3: Importing files to repository...")
+            log("=" * 60)
+
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
+            cursor = conn.cursor()
+
+            imported_programs = []
+            for i, filepath in enumerate(files_to_import):
+                try:
+                    # Parse the file
+                    record = self.parse_gcode_file(filepath)
+                    if not record:
+                        log(f"  Error parsing: {os.path.basename(filepath)}")
+                        stats['errors'].append(f"Parse error: {os.path.basename(filepath)}")
+                        continue
+
+                    # Import to repository
+                    imported_path = self.import_to_repository(filepath, record.program_number)
+                    if imported_path:
+                        record.file_path = imported_path
+                        is_managed = 1
+                    else:
+                        is_managed = 0
+
+                    # Compute hash
+                    file_hash = self.compute_file_hash(record.file_path or filepath)
+
+                    # Insert into database
+                    cursor.execute('''
+                        INSERT OR REPLACE INTO programs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (record.program_number, record.title, record.spacer_type, record.outer_diameter,
+                         record.thickness, record.thickness_display, record.center_bore, record.hub_height,
+                         record.hub_diameter, record.counter_bore_diameter,
+                         record.counter_bore_depth, record.paired_program,
+                         record.material, record.notes, record.date_created,
+                         record.last_modified, record.file_path, record.detection_confidence,
+                         record.detection_method, record.validation_status,
+                         record.validation_issues, record.validation_warnings,
+                         record.bore_warnings, record.dimensional_issues,
+                         record.cb_from_gcode, record.ob_from_gcode, record.lathe,
+                         None, None, None,  # duplicate_type, parent_file, duplicate_group
+                         file_hash, self.current_username, is_managed,
+                         None, None, None, None,  # round_size, round_size_confidence, round_size_source, in_correct_range
+                         None, None, None,  # legacy_names, last_renamed_date, rename_reason
+                         None, None, None, None, None, None))  # tools_used, tool_sequence, etc.
+
+                    imported_programs.append(record.program_number)
+                    stats['files_imported'] += 1
+                    log(f"  Imported: {record.program_number} - {record.title or 'No title'}")
+
+                except Exception as e:
+                    log(f"  Error: {os.path.basename(filepath)} - {str(e)}")
+                    stats['errors'].append(f"{os.path.basename(filepath)}: {str(e)}")
+
+                # Update progress
+                progress_var.set(25 + (i / len(files_to_import)) * 25)
+                workflow_win.update()
+
+            conn.commit()
+            conn.close()
+
+            log(f"\nImported {stats['files_imported']} files")
+            progress_var.set(50)
+            update_step(2, 'done')
+
+            # Step 4: Detect round sizes
+            update_step(3, 'active')
+            log("\n" + "=" * 60)
+            log("STEP 4: Detecting round sizes...")
+            log("=" * 60)
+
+            for prog_num in imported_programs:
+                try:
+                    result = self.detect_round_size(prog_num)
+                    if result and result.get('round_size'):
+                        stats['round_sizes_detected'] += 1
+                except:
+                    pass
+
+            log(f"Round sizes detected: {stats['round_sizes_detected']}")
+            progress_var.set(65)
+            update_step(3, 'done')
+
+            # Step 5: Resolve suffix placeholders
+            update_step(4, 'active')
+            log("\n" + "=" * 60)
+            log("STEP 5: Checking for suffix placeholders...")
+            log("=" * 60)
+
+            suffix_programs = self.find_suffix_programs()
+            if suffix_programs:
+                log(f"Found {len(suffix_programs)} programs with suffixes")
+                resolve_stats = self.resolve_all_suffix_programs(dry_run=False)
+                stats['suffixes_resolved'] = resolve_stats['resolved']
+                log(f"Resolved: {resolve_stats['resolved']}")
+                if resolve_stats['errors']:
+                    for err in resolve_stats['errors'][:5]:
+                        log(f"  Error: {err['program']} - {err['error']}")
+            else:
+                log("No suffix placeholders found")
+
+            progress_var.set(80)
+            update_step(4, 'done')
+
+            # Step 6: Sync filenames (check only, don't auto-sync)
+            update_step(5, 'active')
+            log("\n" + "=" * 60)
+            log("STEP 6: Checking filename sync status...")
+            log("=" * 60)
+
+            # Check for mismatches
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT program_number, file_path FROM programs
+                WHERE is_managed = 1 AND file_path IS NOT NULL
+            """)
+
+            mismatches = 0
+            for prog_num, file_path in cursor.fetchall():
+                if file_path and os.path.exists(file_path):
+                    filename = os.path.splitext(os.path.basename(file_path))[0].lower()
+                    if filename != prog_num.lower():
+                        mismatches += 1
+
+            conn.close()
+
+            if mismatches > 0:
+                log(f"Found {mismatches} filename mismatches")
+                log("Use 'Sync Filenames' button to fix these")
+            else:
+                log("All filenames are in sync")
+
+            progress_var.set(90)
+            update_step(5, 'done')
+
+            # Step 7: Refresh display
+            update_step(6, 'active')
+            log("\n" + "=" * 60)
+            log("STEP 7: Refreshing display...")
+            log("=" * 60)
+
+            self.refresh_filter_values()
+            self.refresh_results()
+
+            progress_var.set(100)
+            update_step(6, 'done')
+
+            # Summary
+            log("\n" + "=" * 60)
+            log("WORKFLOW COMPLETE")
+            log("=" * 60)
+            log(f"Files found: {stats['files_found']}")
+            log(f"Duplicates skipped: {stats['duplicates_skipped']}")
+            log(f"Files imported: {stats['files_imported']}")
+            log(f"Round sizes detected: {stats['round_sizes_detected']}")
+            log(f"Suffixes resolved: {stats['suffixes_resolved']}")
+            if stats['errors']:
+                log(f"Errors: {len(stats['errors'])}")
+            log("\nDone!")
+
+        except Exception as e:
+            log(f"\nERROR: {str(e)}")
+            import traceback
+            log(traceback.format_exc())
+
+        # Close button
+        tk.Button(workflow_win, text="Close", command=workflow_win.destroy,
+                 bg=self.button_bg, fg=self.fg_color,
+                 font=("Arial", 10, "bold"), width=15).pack(pady=10)
 
     def scan_for_new_files(self):
         """Scan a folder for gcode files and import only NEW files not already in database"""
@@ -5051,6 +7330,11 @@ class GCodeDatabaseGUI:
 
         if not result2:
             return
+
+        # Create auto-backup before destructive operation
+        backup_path = self.create_auto_backup("clear_database")
+        if backup_path:
+            logger.info("Auto-backup created before clearing database")
 
         try:
             conn = sqlite3.connect(self.db_path, timeout=30.0)
@@ -8247,6 +10531,645 @@ class GCodeDatabaseGUI:
 
             menu.post(event.x_root, event.y_root)
 
+    def show_dimensional_variations(self):
+        """Show all dimensional variations - programs with same OD but different finishing dimensions"""
+
+        # Create progress dialog
+        progress_win = tk.Toplevel(self.root)
+        progress_win.title("Finding Variations...")
+        progress_win.geometry("400x150")
+        progress_win.configure(bg=self.bg_color)
+        progress_win.transient(self.root)
+        progress_win.grab_set()
+
+        tk.Label(progress_win, text="Scanning for dimensional variations...",
+                bg=self.bg_color, fg=self.fg_color, font=("Arial", 12)).pack(pady=20)
+        tk.Label(progress_win, text="This may take a moment for large databases",
+                bg=self.bg_color, fg="#888888", font=("Arial", 10)).pack(pady=10)
+
+        progress_win.update()
+
+        # Find variations
+        try:
+            variations = self.find_dimensional_variations()
+        except Exception as e:
+            progress_win.destroy()
+            messagebox.showerror("Error", f"Failed to find variations: {str(e)}")
+            return
+
+        progress_win.destroy()
+
+        if not variations:
+            messagebox.showinfo("No Variations", "No dimensional variations found.\n\n"
+                "Variations are programs with the same OD but different:\n"
+                "- Center bore\n"
+                "- Thickness\n"
+                "- Hub dimensions\n"
+                "- Counter bore")
+            return
+
+        # Create results window
+        var_win = tk.Toplevel(self.root)
+        var_win.title("Dimensional Variations")
+        var_win.geometry("1100x700")
+        var_win.configure(bg=self.bg_color)
+
+        # Header
+        header_frame = tk.Frame(var_win, bg=self.bg_color)
+        header_frame.pack(fill=tk.X, padx=10, pady=10)
+
+        total_od_groups = len(variations)
+        total_variations = sum(v['variation_count'] for v in variations.values())
+        total_programs = sum(v['total_programs'] for v in variations.values())
+
+        tk.Label(header_frame,
+                text=f"Found {total_variations} variation groups across {total_od_groups} OD sizes ({total_programs} total programs)",
+                bg=self.bg_color, fg=self.fg_color, font=("Arial", 12, "bold")).pack(pady=5)
+
+        tk.Label(header_frame,
+                text="Programs with same OD but different CB, thickness, hub, or counter bore dimensions",
+                bg=self.bg_color, fg="#888888", font=("Arial", 10)).pack()
+
+        # Create treeview
+        tree_frame = tk.Frame(var_win, bg=self.bg_color)
+        tree_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+
+        columns = ('od', 'variations', 'programs', 'signature', 'prog_num', 'title', 'cb', 'thickness')
+        tree = ttk.Treeview(tree_frame, columns=columns, show='tree headings', height=25)
+
+        tree.heading('#0', text='')
+        tree.heading('od', text='OD')
+        tree.heading('variations', text='Variations')
+        tree.heading('programs', text='Programs')
+        tree.heading('signature', text='Dimension Signature')
+        tree.heading('prog_num', text='Program #')
+        tree.heading('title', text='Title')
+        tree.heading('cb', text='CB (mm)')
+        tree.heading('thickness', text='Thickness')
+
+        tree.column('#0', width=30)
+        tree.column('od', width=60)
+        tree.column('variations', width=70)
+        tree.column('programs', width=70)
+        tree.column('signature', width=200)
+        tree.column('prog_num', width=100)
+        tree.column('title', width=250)
+        tree.column('cb', width=70)
+        tree.column('thickness', width=80)
+
+        # Scrollbars
+        vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
+        hsb = ttk.Scrollbar(tree_frame, orient="horizontal", command=tree.xview)
+        tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+
+        tree.grid(row=0, column=0, sticky='nsew')
+        vsb.grid(row=0, column=1, sticky='ns')
+        hsb.grid(row=1, column=0, sticky='ew')
+
+        tree_frame.grid_rowconfigure(0, weight=1)
+        tree_frame.grid_columnconfigure(0, weight=1)
+
+        # Populate tree
+        for od_key in sorted(variations.keys()):
+            var_data = variations[od_key]
+
+            # Parent node for OD
+            od_id = tree.insert('', 'end', text='▶',
+                              values=(f'{od_key}"', var_data['variation_count'],
+                                     var_data['total_programs'], '', '', '', '', ''))
+
+            # Child nodes for each variation group
+            for group in var_data['groups']:
+                group_id = tree.insert(od_id, 'end', text='  ▷',
+                                      values=('', '', group['count'],
+                                             group['signature'], '', '', '', ''))
+
+                # Child nodes for each program in this variation
+                for prog in group['programs']:
+                    tree.insert(group_id, 'end', text='',
+                              values=('', '', '',
+                                     '',
+                                     prog['program_number'],
+                                     prog['title'] or '',
+                                     prog['center_bore'] or '',
+                                     f"{prog['thickness']}\"" if prog['thickness'] else ''))
+
+        # Button frame
+        btn_frame = tk.Frame(var_win, bg=self.bg_color)
+        btn_frame.pack(fill=tk.X, padx=10, pady=10)
+
+        def compare_selected():
+            """Compare two selected programs"""
+            selection = tree.selection()
+            if len(selection) != 2:
+                messagebox.showwarning("Selection Required",
+                    "Please select exactly 2 programs to compare.\n"
+                    "Hold Ctrl and click to select multiple.")
+                return
+
+            # Get program numbers from selection
+            progs = []
+            for item in selection:
+                values = tree.item(item, 'values')
+                prog_num = values[4] if len(values) > 4 else None
+                if prog_num:
+                    progs.append(prog_num)
+
+            if len(progs) != 2:
+                messagebox.showwarning("Selection Required",
+                    "Please select two program rows (not group headers)")
+                return
+
+            # Get file paths
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
+            cursor = conn.cursor()
+            paths = []
+            for prog in progs:
+                cursor.execute("SELECT file_path FROM programs WHERE program_number = ?", (prog,))
+                row = cursor.fetchone()
+                if row and row[0]:
+                    paths.append(row[0])
+            conn.close()
+
+            if len(paths) != 2:
+                messagebox.showerror("Error", "Could not find file paths for selected programs")
+                return
+
+            # Run comparison
+            comparison = self.compare_file_contents(paths[0], paths[1])
+
+            # Show results
+            comp_msg = f"Comparing {progs[0]} vs {progs[1]}\n\n"
+            comp_msg += f"Same OD: {'Yes' if comparison['same_od'] else 'No'}\n"
+            comp_msg += f"Is Variation: {'Yes' if comparison['is_variation'] else 'No'}\n"
+            comp_msg += f"Variation Type: {comparison['variation_type'] or 'N/A'}\n\n"
+
+            if comparison['dimension_differences']:
+                comp_msg += "Dimensional Differences:\n"
+                for diff in comparison['dimension_differences']:
+                    comp_msg += f"  • {diff}\n"
+            else:
+                comp_msg += "No dimensional differences detected\n"
+
+            comp_msg += f"\nCode Similarity: {comparison['common_lines_percent']:.1f}%\n"
+            comp_msg += f"Recommendation: {comparison['recommendation']}"
+
+            messagebox.showinfo("Comparison Results", comp_msg)
+
+        def export_variations():
+            """Export variations to CSV"""
+            from tkinter import filedialog
+            import csv
+
+            filepath = filedialog.asksaveasfilename(
+                defaultextension=".csv",
+                filetypes=[("CSV files", "*.csv")],
+                title="Export Variations"
+            )
+
+            if not filepath:
+                return
+
+            try:
+                with open(filepath, 'w', newline='', encoding='utf-8') as f:
+                    writer = csv.writer(f)
+                    writer.writerow(['OD', 'Variation Group', 'Program #', 'Title',
+                                   'Center Bore', 'Thickness', 'Hub Height', 'Hub Dia',
+                                   'CB Diameter', 'CB Depth'])
+
+                    for od_key in sorted(variations.keys()):
+                        var_data = variations[od_key]
+                        for i, group in enumerate(var_data['groups'], 1):
+                            for prog in group['programs']:
+                                writer.writerow([
+                                    od_key,
+                                    f"Group {i}: {group['signature']}",
+                                    prog['program_number'],
+                                    prog['title'] or '',
+                                    prog['center_bore'] or '',
+                                    prog['thickness'] or '',
+                                    prog['hub_height'] or '',
+                                    prog['hub_diameter'] or '',
+                                    prog['counter_bore_diameter'] or '',
+                                    prog['counter_bore_depth'] or ''
+                                ])
+
+                messagebox.showinfo("Exported", f"Variations exported to:\n{filepath}")
+
+            except Exception as e:
+                messagebox.showerror("Export Error", f"Failed to export: {str(e)}")
+
+        tk.Button(btn_frame, text="⚖️ Compare Selected", command=compare_selected,
+                 bg="#2196F3", fg="white", font=("Arial", 10, "bold"),
+                 width=15).pack(side=tk.LEFT, padx=5)
+
+        tk.Button(btn_frame, text="📊 Export CSV", command=export_variations,
+                 bg="#4CAF50", fg="white", font=("Arial", 10, "bold"),
+                 width=12).pack(side=tk.LEFT, padx=5)
+
+        tk.Button(btn_frame, text="Close", command=var_win.destroy,
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 10),
+                 width=10).pack(side=tk.RIGHT, padx=5)
+
+        # Info label
+        tk.Label(btn_frame,
+                text="Tip: Select 2 programs and click 'Compare Selected' to see detailed differences",
+                bg=self.bg_color, fg="#888888", font=("Arial", 9)).pack(side=tk.LEFT, padx=20)
+
+    def show_resolve_suffixes(self):
+        """Show dialog to find and resolve programs with suffix placeholders like (1), _1"""
+
+        # Find suffix programs
+        suffix_programs = self.find_suffix_programs()
+
+        if not suffix_programs:
+            messagebox.showinfo("No Suffixes Found",
+                "No programs with suffix placeholders found.\n\n"
+                "Suffixes like (1), (2), _1, _2 are temporary placeholders\n"
+                "assigned during batch scanning to avoid collisions.\n\n"
+                "All programs have proper unique numbers.")
+            return
+
+        # Create dialog
+        suffix_win = tk.Toplevel(self.root)
+        suffix_win.title("Resolve Suffix Placeholders")
+        suffix_win.geometry("900x600")
+        suffix_win.configure(bg=self.bg_color)
+
+        # Header
+        header_frame = tk.Frame(suffix_win, bg=self.bg_color)
+        header_frame.pack(fill=tk.X, padx=10, pady=10)
+
+        tk.Label(header_frame,
+                text=f"Found {len(suffix_programs)} programs with suffix placeholders",
+                bg=self.bg_color, fg="#FF9800", font=("Arial", 14, "bold")).pack(pady=5)
+
+        tk.Label(header_frame,
+                text="These temporary suffixes will be replaced with proper unique program numbers",
+                bg=self.bg_color, fg="#888888", font=("Arial", 10)).pack()
+
+        # Create treeview
+        tree_frame = tk.Frame(suffix_win, bg=self.bg_color)
+        tree_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+
+        columns = ('program', 'base', 'suffix', 'title', 'od', 'new_number')
+        tree = ttk.Treeview(tree_frame, columns=columns, show='headings', height=20)
+
+        tree.heading('program', text='Current Program #')
+        tree.heading('base', text='Base Number')
+        tree.heading('suffix', text='Suffix')
+        tree.heading('title', text='Title')
+        tree.heading('od', text='OD')
+        tree.heading('new_number', text='New Number (Preview)')
+
+        tree.column('program', width=120)
+        tree.column('base', width=100)
+        tree.column('suffix', width=60)
+        tree.column('title', width=300)
+        tree.column('od', width=60)
+        tree.column('new_number', width=120)
+
+        # Scrollbar
+        vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=vsb.set)
+
+        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Populate tree
+        for prog in suffix_programs:
+            tree.insert('', 'end', values=(
+                prog['program_number'],
+                prog['base_number'],
+                prog['suffix'],
+                prog['title'] or '',
+                f"{prog['outer_diameter']}\"" if prog['outer_diameter'] else '',
+                '(click Preview)'
+            ))
+
+        # Button frame
+        btn_frame = tk.Frame(suffix_win, bg=self.bg_color)
+        btn_frame.pack(fill=tk.X, padx=10, pady=10)
+
+        def preview_resolution():
+            """Preview what new numbers would be assigned"""
+            # Clear existing previews
+            for item in tree.get_children():
+                values = list(tree.item(item, 'values'))
+                values[5] = '...'
+                tree.item(item, values=values)
+
+            suffix_win.update()
+
+            # Run dry run
+            stats = self.resolve_all_suffix_programs(dry_run=True)
+
+            # Update tree with preview numbers
+            rename_map = {r['old']: r['new'] for r in stats['renames']}
+            error_map = {e['program']: e['error'] for e in stats['errors']}
+
+            for item in tree.get_children():
+                values = list(tree.item(item, 'values'))
+                prog_num = values[0]
+
+                if prog_num in rename_map:
+                    values[5] = rename_map[prog_num]
+                elif prog_num in error_map:
+                    values[5] = f"ERROR: {error_map[prog_num][:30]}"
+                else:
+                    values[5] = '?'
+
+                tree.item(item, values=values)
+
+            messagebox.showinfo("Preview Complete",
+                f"Preview generated:\n\n"
+                f"Can resolve: {stats['resolved']}\n"
+                f"Errors: {stats['failed']}\n\n"
+                f"Click 'Resolve All' to apply these changes.")
+
+        def resolve_all():
+            """Actually resolve all suffix programs"""
+            if not messagebox.askyesno("Confirm Resolution",
+                f"This will rename {len(suffix_programs)} programs to proper unique numbers.\n\n"
+                "Both the database records AND the actual files will be renamed.\n\n"
+                "This operation cannot be undone. Continue?"):
+                return
+
+            # Create auto-backup before this destructive operation
+            backup_path = self.create_auto_backup("resolve_suffixes")
+            if backup_path:
+                logger.info("Auto-backup created before resolving suffixes")
+
+            # Create progress dialog
+            progress_win = tk.Toplevel(suffix_win)
+            progress_win.title("Resolving Suffixes...")
+            progress_win.geometry("400x150")
+            progress_win.configure(bg=self.bg_color)
+            progress_win.transient(suffix_win)
+            progress_win.grab_set()
+
+            progress_label = tk.Label(progress_win, text="Starting...",
+                                     bg=self.bg_color, fg=self.fg_color, font=("Arial", 10))
+            progress_label.pack(pady=30)
+
+            progress_bar = ttk.Progressbar(progress_win, length=300, mode='determinate')
+            progress_bar.pack(pady=10)
+
+            def update_progress(current, total, message):
+                progress_label.config(text=message)
+                progress_bar['value'] = (current / total) * 100
+                progress_win.update()
+
+            # Run resolution
+            stats = self.resolve_all_suffix_programs(dry_run=False, progress_callback=update_progress)
+
+            progress_win.destroy()
+
+            # Show results
+            result_msg = f"Resolution Complete!\n\n"
+            result_msg += f"Resolved: {stats['resolved']}\n"
+            result_msg += f"Failed: {stats['failed']}\n"
+
+            if stats['errors']:
+                result_msg += f"\nErrors:\n"
+                for err in stats['errors'][:5]:  # Show first 5 errors
+                    result_msg += f"  {err['program']}: {err['error'][:40]}\n"
+                if len(stats['errors']) > 5:
+                    result_msg += f"  ... and {len(stats['errors']) - 5} more\n"
+
+            messagebox.showinfo("Resolution Complete", result_msg)
+
+            # Refresh UI
+            self.cascade_refresh('suffix_resolution')
+            suffix_win.destroy()
+
+        tk.Button(btn_frame, text="👁️ Preview", command=preview_resolution,
+                 bg="#2196F3", fg="white", font=("Arial", 10, "bold"),
+                 width=12).pack(side=tk.LEFT, padx=5)
+
+        tk.Button(btn_frame, text="✅ Resolve All", command=resolve_all,
+                 bg="#4CAF50", fg="white", font=("Arial", 10, "bold"),
+                 width=12).pack(side=tk.LEFT, padx=5)
+
+        tk.Button(btn_frame, text="Close", command=suffix_win.destroy,
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 10),
+                 width=10).pack(side=tk.RIGHT, padx=5)
+
+        # Info
+        tk.Label(btn_frame,
+                text="Click 'Preview' first to see what numbers will be assigned",
+                bg=self.bg_color, fg="#888888", font=("Arial", 9)).pack(side=tk.LEFT, padx=20)
+
+    def show_extended_integrity_check(self):
+        """Show extended integrity check results in a dialog"""
+        from datetime import datetime, timedelta
+
+        # Create progress dialog
+        progress_win = tk.Toplevel(self.root)
+        progress_win.title("Running Integrity Check...")
+        progress_win.geometry("400x150")
+        progress_win.configure(bg=self.bg_color)
+        progress_win.transient(self.root)
+        progress_win.grab_set()
+
+        tk.Label(progress_win, text="Running extended integrity check...",
+                bg=self.bg_color, fg=self.fg_color, font=("Arial", 12)).pack(pady=20)
+
+        progress_label = tk.Label(progress_win, text="Please wait...",
+                                 bg=self.bg_color, fg="#888888", font=("Arial", 10))
+        progress_label.pack(pady=10)
+
+        progress_win.update()
+
+        # Run the check
+        try:
+            result = self.run_extended_integrity_check(fix_issues=False)
+        except Exception as e:
+            progress_win.destroy()
+            messagebox.showerror("Error", f"Integrity check failed: {str(e)}")
+            return
+
+        progress_win.destroy()
+
+        # Create results window
+        results_win = tk.Toplevel(self.root)
+        results_win.title("Extended Integrity Check Results")
+        results_win.geometry("900x700")
+        results_win.configure(bg=self.bg_color)
+
+        # Summary header
+        summary_frame = tk.Frame(results_win, bg=self.bg_color)
+        summary_frame.pack(fill=tk.X, padx=10, pady=10)
+
+        summary = result['summary']
+        if summary['total_issues'] == 0:
+            summary_text = "All checks passed! No issues found."
+            summary_color = "#4CAF50"
+        else:
+            summary_text = f"Found {summary['total_issues']} issues: {summary['critical']} critical, {summary['warnings']} warnings"
+            summary_color = "#F44336" if summary['critical'] > 0 else "#FF9800"
+
+        tk.Label(summary_frame, text=summary_text,
+                bg=self.bg_color, fg=summary_color, font=("Arial", 14, "bold")).pack(pady=10)
+
+        # Notebook for different check results
+        notebook = ttk.Notebook(results_win)
+        notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+
+        # Tab 1: Basic Integrity (untracked, orphaned, registry)
+        tab_basic = tk.Frame(notebook, bg=self.bg_color)
+        notebook.add(tab_basic, text=f'📁 Basic ({len(result["basic"]["untracked_files"]) + len(result["basic"]["orphaned_records"]) if result["basic"] else 0})')
+
+        basic_text = scrolledtext.ScrolledText(tab_basic, bg=self.input_bg, fg=self.fg_color,
+                                               font=("Courier", 9), wrap=tk.WORD)
+        basic_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        if result['basic']:
+            basic_text.insert(tk.END, "=== UNTRACKED FILES (in repo but not in DB) ===\n\n")
+            if result['basic']['untracked_files']:
+                for f in result['basic']['untracked_files']:
+                    basic_text.insert(tk.END, f"  {os.path.basename(f)}\n")
+            else:
+                basic_text.insert(tk.END, "  None found\n")
+
+            basic_text.insert(tk.END, "\n=== ORPHANED RECORDS (in DB but file missing) ===\n\n")
+            if result['basic']['orphaned_records']:
+                for rec in result['basic']['orphaned_records']:
+                    basic_text.insert(tk.END, f"  {rec['program_number']}: {rec['file_path']}\n")
+            else:
+                basic_text.insert(tk.END, "  None found\n")
+
+            basic_text.insert(tk.END, "\n=== STALE REGISTRY ENTRIES ===\n\n")
+            if result['basic']['registry_stale']:
+                for rec in result['basic']['registry_stale']:
+                    basic_text.insert(tk.END, f"  {rec['program_number']}\n")
+            else:
+                basic_text.insert(tk.END, "  None found\n")
+
+        # Tab 2: Missing M30
+        tab_m30 = tk.Frame(notebook, bg=self.bg_color)
+        notebook.add(tab_m30, text=f'⚠️ Missing M30 ({len(result["missing_m30"])})')
+
+        m30_text = scrolledtext.ScrolledText(tab_m30, bg=self.input_bg, fg=self.fg_color,
+                                            font=("Courier", 9), wrap=tk.WORD)
+        m30_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        m30_text.insert(tk.END, "=== PROGRAMS MISSING M30/M02 END CODE ===\n\n")
+        m30_text.insert(tk.END, "These programs may not have proper program end codes.\n")
+        m30_text.insert(tk.END, "This could cause issues on some CNC machines.\n\n")
+
+        if result['missing_m30']:
+            for prog in result['missing_m30']:
+                m30_text.insert(tk.END, f"  {prog['program_number']}: {prog['title'] or 'No title'}\n")
+        else:
+            m30_text.insert(tk.END, "  All programs have proper end codes!\n")
+
+        # Tab 3: Duplicate Internal O-Numbers
+        tab_dup = tk.Frame(notebook, bg=self.bg_color)
+        dup_count = len(result['duplicate_internal_numbers']['mismatched']) + len(result['duplicate_internal_numbers']['duplicates'])
+        notebook.add(tab_dup, text=f'🔢 O-Number Issues ({dup_count})')
+
+        dup_text = scrolledtext.ScrolledText(tab_dup, bg=self.input_bg, fg=self.fg_color,
+                                            font=("Courier", 9), wrap=tk.WORD)
+        dup_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        dup_text.insert(tk.END, "=== FILENAME/INTERNAL O-NUMBER MISMATCHES ===\n\n")
+        dup_text.insert(tk.END, "Files where the filename differs from the internal O-number.\n")
+        dup_text.insert(tk.END, "Use 'Sync Filenames' to fix these.\n\n")
+
+        if result['duplicate_internal_numbers']['mismatched']:
+            for mis in result['duplicate_internal_numbers']['mismatched']:
+                dup_text.insert(tk.END, f"  {mis['program_number']} -> Internal: {mis['internal_number']}\n")
+        else:
+            dup_text.insert(tk.END, "  None found\n")
+
+        dup_text.insert(tk.END, "\n=== DUPLICATE INTERNAL O-NUMBERS ===\n\n")
+        dup_text.insert(tk.END, "Multiple files with the same internal O-number (CRITICAL).\n\n")
+
+        if result['duplicate_internal_numbers']['duplicates']:
+            for internal_num, files in result['duplicate_internal_numbers']['duplicates'].items():
+                dup_text.insert(tk.END, f"  Internal {internal_num}:\n")
+                for f in files:
+                    dup_text.insert(tk.END, f"    - {f['program_number']}\n")
+        else:
+            dup_text.insert(tk.END, "  None found\n")
+
+        # Tab 4: Stale Records
+        tab_stale = tk.Frame(notebook, bg=self.bg_color)
+        notebook.add(tab_stale, text=f'📅 Stale Records ({len(result["stale_records"])})')
+
+        stale_text = scrolledtext.ScrolledText(tab_stale, bg=self.input_bg, fg=self.fg_color,
+                                              font=("Courier", 9), wrap=tk.WORD)
+        stale_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        stale_text.insert(tk.END, "=== STALE DATABASE RECORDS ===\n\n")
+        stale_text.insert(tk.END, "Files that have been modified since last database scan.\n")
+        stale_text.insert(tk.END, "Use 'Rescan Changed' to update these.\n\n")
+
+        if result['stale_records']:
+            for rec in result['stale_records']:
+                stale_text.insert(tk.END, f"  {rec['program_number']}:\n")
+                stale_text.insert(tk.END, f"    DB: {rec['db_modified']}\n")
+                stale_text.insert(tk.END, f"    File: {rec['file_modified']}\n\n")
+        else:
+            stale_text.insert(tk.END, "  All records are up to date!\n")
+
+        # Tab 5: Zero-Byte Files
+        tab_zero = tk.Frame(notebook, bg=self.bg_color)
+        notebook.add(tab_zero, text=f'📄 Zero-Byte ({len(result["zero_byte_files"])})')
+
+        zero_text = scrolledtext.ScrolledText(tab_zero, bg=self.input_bg, fg=self.fg_color,
+                                             font=("Courier", 9), wrap=tk.WORD)
+        zero_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        zero_text.insert(tk.END, "=== ZERO-BYTE (EMPTY) FILES ===\n\n")
+        zero_text.insert(tk.END, "These files are empty and should be investigated.\n")
+        zero_text.insert(tk.END, "They may be corrupted or placeholder files.\n\n")
+
+        if result['zero_byte_files']:
+            for zb in result['zero_byte_files']:
+                status = "IN DB" if zb['in_database'] else "NOT IN DB"
+                zero_text.insert(tk.END, f"  {zb['program_number']} [{status}]\n")
+                zero_text.insert(tk.END, f"    {zb['file_path']}\n\n")
+        else:
+            zero_text.insert(tk.END, "  No empty files found!\n")
+
+        # Button frame
+        btn_frame = tk.Frame(results_win, bg=self.bg_color)
+        btn_frame.pack(fill=tk.X, padx=10, pady=10)
+
+        def fix_all_issues():
+            if messagebox.askyesno("Fix Issues",
+                "This will:\n"
+                "- Add untracked files to database\n"
+                "- Remove orphaned records\n"
+                "- Fix stale registry entries\n"
+                "- Refresh stale file records\n"
+                "- Remove zero-byte entries from DB\n\n"
+                "Continue?"):
+                results_win.destroy()
+                fix_result = self.run_extended_integrity_check(fix_issues=True)
+                self.cascade_refresh('integrity_fix')
+                messagebox.showinfo("Fixed",
+                    f"Issues fixed:\n"
+                    f"- Files added: {fix_result['basic']['fixed']['files_added'] if fix_result['basic'] else 0}\n"
+                    f"- Records removed: {fix_result['basic']['fixed']['records_removed'] if fix_result['basic'] else 0}\n"
+                    f"- Registry updated: {fix_result['basic']['fixed']['registry_updated'] if fix_result['basic'] else 0}\n"
+                    f"- Stale refreshed: {fix_result['fixed']['stale_refreshed']}\n"
+                    f"- Zero-byte removed: {fix_result['fixed']['zero_byte_removed']}")
+
+        tk.Button(btn_frame, text="🔧 Fix All Issues", command=fix_all_issues,
+                 bg="#4CAF50", fg="white", font=("Arial", 10, "bold"),
+                 width=15).pack(side=tk.LEFT, padx=5)
+
+        tk.Button(btn_frame, text="🔄 Refresh Check", command=lambda: [results_win.destroy(), self.show_extended_integrity_check()],
+                 bg="#2196F3", fg="white", font=("Arial", 10, "bold"),
+                 width=15).pack(side=tk.LEFT, padx=5)
+
+        tk.Button(btn_frame, text="Close", command=results_win.destroy,
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 10),
+                 width=10).pack(side=tk.RIGHT, padx=5)
+
     def show_statistics(self):
         """Show comprehensive database statistics with filtering support"""
         stats_window = tk.Toplevel(self.root)
@@ -9271,6 +12194,68 @@ For more documentation, see project README files in the application directory.
                              font=("Arial", 11, "bold"), width=20, height=2)
         btn_close.pack(pady=10)
 
+    def create_auto_backup(self, operation_name="operation"):
+        """
+        Create an automatic backup before destructive operations.
+        Silent operation - no user prompts, returns backup path or None if failed.
+
+        Args:
+            operation_name: Name of the operation triggering backup (for filename)
+
+        Returns:
+            str: Path to backup file if successful, None if failed
+        """
+        import shutil
+        from datetime import datetime
+
+        try:
+            backups_dir = os.path.join(os.path.dirname(self.db_path), "database_backups", "auto")
+            os.makedirs(backups_dir, exist_ok=True)
+
+            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            # Sanitize operation name for filename
+            safe_op_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in operation_name)
+            backup_filename = f"auto_backup_{safe_op_name}_{timestamp}.db"
+            backup_path = os.path.join(backups_dir, backup_filename)
+
+            shutil.copy2(self.db_path, backup_path)
+            logger.info(f"Auto-backup created: {backup_filename}")
+
+            # Clean up old auto-backups (keep last 20)
+            self._cleanup_old_auto_backups(backups_dir, keep=20)
+
+            return backup_path
+
+        except OSError as e:
+            logger.error(f"Auto-backup file operation failed: {str(e)}")
+            return None
+        except Exception as e:
+            logger.error(f"Auto-backup failed: {str(e)}", exc_info=True)
+            return None
+
+    def _cleanup_old_auto_backups(self, backups_dir, keep=20):
+        """Remove old auto-backups, keeping only the most recent ones."""
+        try:
+            backup_files = []
+            for f in os.listdir(backups_dir):
+                if f.startswith("auto_backup_") and f.endswith(".db"):
+                    full_path = os.path.join(backups_dir, f)
+                    backup_files.append((full_path, os.path.getmtime(full_path)))
+
+            # Sort by modification time (newest first)
+            backup_files.sort(key=lambda x: x[1], reverse=True)
+
+            # Remove old backups beyond the keep limit
+            for backup_path, _ in backup_files[keep:]:
+                try:
+                    os.remove(backup_path)
+                    logger.debug(f"Cleaned up old auto-backup: {os.path.basename(backup_path)}")
+                except OSError:
+                    pass  # Silently skip if cleanup fails
+
+        except Exception as e:
+            logger.warning(f"Auto-backup cleanup error: {str(e)}")
+
     def create_manual_backup(self):
         """Create a manual backup with timestamp"""
         import shutil
@@ -9682,6 +12667,194 @@ For more documentation, see project README files in the application directory.
 
     # ===== Repository Management Methods =====
 
+    def refresh_repository_scan(self):
+        """Refresh repository scan - rescan all repository files and update database values"""
+        try:
+            # Confirm with user
+            confirm = messagebox.askyesno(
+                "Refresh Repository Scan",
+                "This will RE-PARSE all files in the repository folder and update:\n"
+                "  • CB/OB dimensions (from G-code)\n"
+                "  • Round size detection\n"
+                "  • Thickness and hub dimensions\n"
+                "  • Validation status (clear incorrect warnings)\n"
+                "  • In-correct-range status\n\n"
+                "This will take several minutes for all files.\n\n"
+                "Continue?",
+                icon='question'
+            )
+
+            if not confirm:
+                return
+
+            # Create progress window
+            progress_window = tk.Toplevel(self.root)
+            progress_window.title("Refreshing Repository")
+            progress_window.geometry("600x400")
+            progress_window.configure(bg=self.bg_color)
+            progress_window.transient(self.root)
+            progress_window.grab_set()
+
+            tk.Label(progress_window, text="🔄 Refreshing Repository Scan...",
+                    bg=self.bg_color, fg=self.fg_color,
+                    font=("Arial", 12, "bold")).pack(pady=10)
+
+            # Progress text
+            progress_text = tk.Text(progress_window, height=20, width=70,
+                                   bg="#2B2B2B", fg="#FFFFFF", font=("Consolas", 9))
+            progress_text.pack(pady=10, padx=20, fill=tk.BOTH, expand=True)
+
+            def log(message):
+                progress_text.insert(tk.END, message + "\n")
+                progress_text.see(tk.END)
+                progress_window.update()
+
+            log("Starting repository refresh...")
+            log("-" * 60)
+
+            # Get all managed programs
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                SELECT program_number, file_path
+                FROM programs
+                WHERE is_managed = 1
+                ORDER BY program_number
+            """)
+
+            programs = cursor.fetchall()
+            total = len(programs)
+            log(f"Found {total} programs in repository")
+            log("")
+
+            # Statistics
+            stats = {
+                'reparsed': 0,
+                'errors': 0
+            }
+
+            # Process each program
+            for i, (prog_num, file_path) in enumerate(programs):
+                if i % 100 == 0:
+                    log(f"Progress: {i}/{total} programs processed...")
+
+                try:
+                    # Re-parse the entire file to update all values
+                    if file_path and os.path.exists(file_path):
+                        # Parse the file
+                        parse_result = self.parser.parse_file(file_path)
+
+                        # Determine validation status (prioritized by severity)
+                        import json
+                        validation_status = "PASS"
+                        if parse_result.validation_issues:
+                            validation_status = "CRITICAL"  # RED - Critical errors
+                        elif parse_result.bore_warnings:
+                            validation_status = "BORE_WARNING"  # ORANGE - Bore dimension warnings
+                        elif parse_result.dimensional_issues:
+                            validation_status = "DIMENSIONAL"  # PURPLE - P-code/thickness mismatches
+                        elif parse_result.validation_warnings:
+                            validation_status = "WARNING"  # YELLOW - General warnings
+
+                        # Update database with all parsed values including validation
+                        cursor.execute("""
+                            UPDATE programs
+                            SET title = ?,
+                                outer_diameter = ?,
+                                thickness = ?,
+                                thickness_display = ?,
+                                center_bore = ?,
+                                hub_diameter = ?,
+                                hub_height = ?,
+                                counter_bore_diameter = ?,
+                                counter_bore_depth = ?,
+                                cb_from_gcode = ?,
+                                ob_from_gcode = ?,
+                                round_size = ?,
+                                round_size_confidence = ?,
+                                round_size_source = ?,
+                                validation_status = ?,
+                                validation_issues = ?,
+                                validation_warnings = ?,
+                                bore_warnings = ?,
+                                dimensional_issues = ?
+                            WHERE program_number = ?
+                        """, (
+                            parse_result.title,
+                            parse_result.outer_diameter,
+                            parse_result.thickness,
+                            parse_result.thickness_display,
+                            parse_result.center_bore,
+                            parse_result.hub_diameter,
+                            parse_result.hub_height,
+                            parse_result.counter_bore_diameter,
+                            parse_result.counter_bore_depth,
+                            parse_result.cb_from_gcode,
+                            parse_result.ob_from_gcode,
+                            parse_result.outer_diameter,  # round_size = OD
+                            'HIGH',  # confidence
+                            'Re-parsed',  # source
+                            validation_status,
+                            json.dumps(parse_result.validation_issues) if parse_result.validation_issues else None,
+                            json.dumps(parse_result.validation_warnings) if parse_result.validation_warnings else None,
+                            json.dumps(parse_result.bore_warnings) if parse_result.bore_warnings else None,
+                            json.dumps(parse_result.dimensional_issues) if parse_result.dimensional_issues else None,
+                            prog_num
+                        ))
+
+                        # Update in_correct_range status
+                        if parse_result.outer_diameter:
+                            in_range = 1 if self.is_in_correct_range(prog_num, parse_result.outer_diameter) else 0
+                            cursor.execute("""
+                                UPDATE programs
+                                SET in_correct_range = ?
+                                WHERE program_number = ?
+                            """, (in_range, prog_num))
+
+                        stats['reparsed'] += 1
+
+                except Exception as e:
+                    log(f"  ERROR {prog_num}: {str(e)}")
+                    stats['errors'] += 1
+
+            conn.commit()
+            conn.close()
+
+            log("")
+            log("-" * 60)
+            log("REFRESH COMPLETE!")
+            log(f"Total programs: {total}")
+            log(f"Files re-parsed: {stats['reparsed']}")
+            log(f"Errors: {stats['errors']}")
+            log("")
+            log("Refreshing display...")
+
+            # Refresh the results display
+            self.refresh_results()
+
+            # Refresh available filter values to update dropdowns
+            self.refresh_filter_values()
+
+            log("Done!")
+
+            # Add close button
+            tk.Button(progress_window, text="Close",
+                     command=progress_window.destroy,
+                     bg=self.button_bg, fg=self.fg_color,
+                     font=("Arial", 10, "bold")).pack(pady=10)
+
+            messagebox.showinfo(
+                "Refresh Complete",
+                f"Repository scan refreshed!\n\n"
+                f"Programs scanned: {total:,}\n"
+                f"Files re-parsed: {stats['reparsed']}\n"
+                f"Errors: {stats['errors']}"
+            )
+
+        except Exception as e:
+            messagebox.showerror("Refresh Error", f"Error refreshing repository:\n{str(e)}")
+
     def show_repository_stats(self):
         """Show ONLY repository (managed) files statistics"""
         conn = sqlite3.connect(self.db_path)
@@ -9973,11 +13146,16 @@ For more documentation, see project README files in the application directory.
         if response is None:  # Cancel
             return
 
+        # Create auto-backup before this destructive operation
+        backup_path = self.create_auto_backup("delete_from_repository")
+        if backup_path:
+            logger.info("Auto-backup created before deletion from repository")
+
         try:
             # Delete the file from repository
             if file_path and os.path.exists(file_path):
                 os.remove(file_path)
-                print(f"[Repository] Deleted file: {file_path}")
+                logger.info(f"Deleted file from repository: {file_path}")
 
             if response:  # YES - also remove from database
                 conn = sqlite3.connect(self.db_path)
@@ -11577,12 +14755,13 @@ For more documentation, see project README files in the application directory.
 
             # Find all repository files with underscore suffix patterns in program_number or filename
             # Pattern: o#####_# (5 digits followed by underscore and more digits)
+            # Use INSTR to find actual underscore characters (not SQL wildcard _)
             cursor.execute("""
                 SELECT program_number, file_path, round_size, title
                 FROM programs
                 WHERE is_managed = 1
                 AND (
-                    program_number LIKE 'o%_%'
+                    INSTR(program_number, '_') > 0
                     OR program_number LIKE 'o%(%'
                 )
                 ORDER BY program_number
@@ -11857,6 +15036,11 @@ For more documentation, see project README files in the application directory.
     def sync_filenames_with_database(self):
         """Synchronize filenames with their program numbers in the database"""
 
+        # Create auto-backup before this destructive operation
+        backup_path = self.create_auto_backup("sync_filenames")
+        if backup_path:
+            logger.info("Auto-backup created before syncing filenames")
+
         # Create progress window
         progress_window = tk.Toplevel(self.root)
         progress_window.title("Sync Filenames with Database")
@@ -11907,11 +15091,28 @@ For more documentation, see project README files in the application directory.
                 current_filename = os.path.basename(file_path)
                 current_base = os.path.splitext(current_filename)[0]
 
-                # Expected filename from program number
-                expected_base = prog_num
+                # Read the ACTUAL internal program number from the G-code file
+                import re
+                internal_prog_num = None
+                try:
+                    with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                        # Check first 10 lines for program number (might be after % delimiter)
+                        for _ in range(10):
+                            line = f.readline().strip()
+                            if not line:
+                                continue
+                            # Look for O-number at start of line (e.g., O96002, o80366)
+                            match = re.match(r'^[oO](\d{4,})', line)
+                            if match:
+                                internal_prog_num = f"o{match.group(1)}"
+                                break
+                except:
+                    pass
 
-                # Check if they match
-                if current_base != expected_base:
+                # If we found an internal program number and it doesn't match filename
+                if internal_prog_num and current_base.lower() != internal_prog_num.lower():
+                    # Expected filename = internal program number
+                    expected_base = internal_prog_num
                     mismatches.append((prog_num, file_path, current_base, expected_base, title))
 
             if not mismatches:
@@ -11924,16 +15125,167 @@ For more documentation, see project README files in the application directory.
                 conn.close()
                 return
 
-            progress_text.insert(tk.END, f"Found {len(mismatches)} filename mismatches\n\n")
+            # Handle collisions by assigning new program numbers in correct range
+            resolved_mismatches = []
+            reassigned_files = []  # Files that got new program numbers due to collision
+
+            # Track numbers we assign during this operation to avoid duplicates
+            newly_assigned_numbers = set()
+
+            # Also track target program numbers we've decided to use (not just newly assigned)
+            target_program_numbers = set()
+
+            def find_next_available_number(round_size, cursor, repo_dir):
+                """Find the next available program number for this round size using the registry"""
+                ranges = self.get_round_size_ranges()
+                if round_size in ranges:
+                    range_start, range_end, _ = ranges[round_size]
+                else:
+                    # Use free range
+                    range_start, range_end, _ = ranges.get(0.0, (14000, 49999, "Free Range"))
+
+                # Query registry for available numbers in this range
+                cursor.execute("""
+                    SELECT program_number FROM program_number_registry
+                    WHERE status = 'AVAILABLE'
+                    ORDER BY program_number
+                """)
+
+                available_from_registry = []
+                for row in cursor.fetchall():
+                    try:
+                        num = int(row[0].replace('o', '').replace('O', ''))
+                        if range_start <= num <= range_end:
+                            if num not in newly_assigned_numbers:
+                                available_from_registry.append(num)
+                    except:
+                        pass
+
+                # Return first available from registry in this range
+                if available_from_registry:
+                    num = min(available_from_registry)
+                    newly_assigned_numbers.add(num)
+                    return f"o{num}"
+
+                # If no available in registry for this range, find gaps
+                cursor.execute("""
+                    SELECT program_number FROM program_number_registry
+                    WHERE status = 'IN_USE'
+                """)
+                used_numbers = set()
+                for row in cursor.fetchall():
+                    try:
+                        num = int(row[0].replace('o', '').replace('O', ''))
+                        used_numbers.add(num)
+                    except:
+                        pass
+
+                # Add newly assigned numbers to used set
+                used_numbers.update(newly_assigned_numbers)
+
+                # Also check existing files in repository (in case registry is out of sync)
+                for f in os.listdir(repo_dir):
+                    match = re.match(r'^[oO](\d+)', f)
+                    if match:
+                        used_numbers.add(int(match.group(1)))
+
+                # Find first available number in range
+                for num in range(range_start, range_end + 1):
+                    if num not in used_numbers:
+                        newly_assigned_numbers.add(num)
+                        return f"o{num}"
+
+                return None  # No available numbers
+
+            for prog_num, file_path, current_base, expected_base, title in mismatches:
+                old_dir = os.path.dirname(file_path)
+                new_filename = f"{expected_base}.nc"
+                new_file_path = os.path.join(old_dir, new_filename)
+
+                # Check if target file already exists or program number is taken
+                file_collision = os.path.exists(new_file_path) and new_file_path.lower() != file_path.lower()
+
+                cursor.execute("""
+                    SELECT program_number FROM programs
+                    WHERE program_number = ? AND program_number != ?
+                """, (expected_base, prog_num))
+                db_collision = cursor.fetchone() is not None
+
+                # Also check if we've already decided to use this program number for another file
+                already_assigned = expected_base.lower() in target_program_numbers
+
+                if file_collision or db_collision or already_assigned:
+                    # Collision! Need to assign a new program number
+                    # Get round size from the file to determine correct range
+                    round_size = None
+                    try:
+                        # Parse the file to get round size
+                        parse_result = self.parser.parse_file(file_path)
+                        round_size = parse_result.outer_diameter
+                    except:
+                        pass
+
+                    # Find next available number in the correct range
+                    new_prog_num = find_next_available_number(round_size, cursor, old_dir)
+
+                    if new_prog_num:
+                        new_filename = f"{new_prog_num}.nc"
+                        new_file_path = os.path.join(old_dir, new_filename)
+                        reassigned_files.append((current_base, expected_base, new_prog_num, round_size))
+                        resolved_mismatches.append((prog_num, file_path, current_base, new_prog_num, title))
+                        # Track this program number as used
+                        target_program_numbers.add(new_prog_num.lower())
+                    else:
+                        # No available numbers - skip this file
+                        progress_text.insert(tk.END, f"WARNING: No available numbers for {current_base}.nc\n")
+                        continue
+                else:
+                    # No collision - use the internal program number
+                    resolved_mismatches.append((prog_num, file_path, current_base, expected_base, title))
+                    # Track this program number as used
+                    target_program_numbers.add(expected_base.lower())
+
+            # Use resolved_mismatches for the rest of the operation
+            mismatches = resolved_mismatches
+
+            progress_text.insert(tk.END, f"Found {len(mismatches)} filename mismatches to process\n")
+            if reassigned_files:
+                progress_text.insert(tk.END, f"  - {len(reassigned_files)} files reassigned to new numbers (duplicates)\n")
+            progress_text.insert(tk.END, "\n")
+
+            if reassigned_files:
+                progress_text.insert(tk.END, "="*80 + "\n")
+                progress_text.insert(tk.END, "DUPLICATE FILES - ASSIGNED NEW PROGRAM NUMBERS\n")
+                progress_text.insert(tk.END, "="*80 + "\n\n")
+                for current, original_internal, new_num, round_size in reassigned_files:
+                    progress_text.insert(tk.END, f"File: {current}.nc\n")
+                    progress_text.insert(tk.END, f"  Original internal #: {original_internal} (already in use)\n")
+                    progress_text.insert(tk.END, f"  New program #: {new_num}")
+                    if round_size:
+                        progress_text.insert(tk.END, f" ({round_size}\" range)\n")
+                    else:
+                        progress_text.insert(tk.END, "\n")
+                    progress_text.insert(tk.END, "\n")
+
+            if not mismatches:
+                progress_text.insert(tk.END, "\n✓ No files to rename.\n")
+                progress_text.see(tk.END)
+
+                tk.Button(progress_window, text="Close", command=progress_window.destroy,
+                         bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold")).pack(pady=10)
+                conn.close()
+                return
+
             progress_text.insert(tk.END, "="*80 + "\n")
-            progress_text.insert(tk.END, "FILENAME MISMATCHES (will rename files to match program numbers)\n")
+            progress_text.insert(tk.END, "FILES TO RENAME\n")
             progress_text.insert(tk.END, "="*80 + "\n\n")
 
             # Show preview
             for prog_num, file_path, current_base, expected_base, title in mismatches[:50]:
-                progress_text.insert(tk.END, f"Program: {prog_num}\n")
-                progress_text.insert(tk.END, f"  Current filename: {current_base}.nc\n")
-                progress_text.insert(tk.END, f"  Will rename to:   {expected_base}.nc\n")
+                progress_text.insert(tk.END, f"File: {current_base}.nc\n")
+                progress_text.insert(tk.END, f"  Internal program #: {expected_base}\n")
+                progress_text.insert(tk.END, f"  Will rename to:     {expected_base}.nc\n")
+                progress_text.insert(tk.END, f"  Database will be updated: {prog_num} → {expected_base}\n")
                 if title:
                     progress_text.insert(tk.END, f"  Title: {title}\n")
                 progress_text.insert(tk.END, "\n")
@@ -11954,51 +15306,206 @@ For more documentation, see project README files in the application directory.
                 renamed_count = 0
                 error_count = 0
 
+                # Build a set of reassigned program numbers (duplicates that got new numbers)
+                reassigned_prog_nums = set(new_num for _, _, new_num, _ in reassigned_files)
+
+                # PHASE 1: Rename all files to temporary names (to handle swaps)
+                progress_text.insert(tk.END, "PHASE 1: Moving files to temporary names...\n\n")
+                temp_mappings = []  # (prog_num, temp_path, final_path, old_path, rename_type, is_reassigned)
+
                 for prog_num, old_file_path, current_base, expected_base, title in mismatches:
                     try:
-                        progress_text.insert(tk.END, f"Processing: {current_base}.nc → {expected_base}.nc\n")
+                        progress_text.insert(tk.END, f"Processing: {current_base}.nc\n")
 
-                        # Generate new file path
+                        # Check if this file was reassigned a new number
+                        is_reassigned = expected_base in reassigned_prog_nums
+
+                        # Generate paths
                         old_dir = os.path.dirname(old_file_path)
                         new_filename = f"{expected_base}.nc"
                         new_file_path = os.path.join(old_dir, new_filename)
 
                         # Check if this is just a case change (Windows is case-insensitive)
                         if old_file_path.lower() == new_file_path.lower():
-                            # Case-only change - use temporary rename
-                            import tempfile
-                            temp_name = os.path.join(old_dir, f"temp_{os.path.basename(old_file_path)}")
-                            os.rename(old_file_path, temp_name)
-                            os.rename(temp_name, new_file_path)
+                            # Case-only change - handle in phase 2
+                            temp_mappings.append((prog_num, old_file_path, new_file_path, old_file_path, 'case-change', is_reassigned))
+                            progress_text.insert(tk.END, f"  -> Will handle as case change\n\n")
+                            continue
+
+                        # Create temporary name
+                        import time
+                        temp_filename = f"_SYNC_TEMP_{int(time.time()*1000)}_{expected_base}.nc"
+                        temp_file_path = os.path.join(old_dir, temp_filename)
+
+                        # Rename to temporary
+                        os.rename(old_file_path, temp_file_path)
+                        temp_mappings.append((prog_num, temp_file_path, new_file_path, old_file_path, 'normal', is_reassigned))
+                        progress_text.insert(tk.END, f"  ✓ Moved to temporary location\n\n")
+
+                        if len(temp_mappings) % 10 == 0:
+                            progress_text.see(tk.END)
+                            self.root.update()
+
+                    except Exception as e:
+                        progress_text.insert(tk.END, f"  ✗ ERROR in phase 1: {e}\n\n")
+                        error_count += 1
+
+                # PHASE 2: Rename from temporary to final names
+                progress_text.insert(tk.END, "\n" + "="*80 + "\n")
+                progress_text.insert(tk.END, "PHASE 2: Moving files to final names...\n\n")
+                progress_text.see(tk.END)
+
+                for prog_num, temp_path, final_path, old_path, rename_type, is_reassigned in temp_mappings:
+                    try:
+                        final_base = os.path.splitext(os.path.basename(final_path))[0]
+                        progress_text.insert(tk.END, f"Finalizing: {final_base}.nc\n")
+
+                        if rename_type == 'case-change':
+                            # Case-only change
+                            temp_name = os.path.join(os.path.dirname(temp_path), f"temp_{os.path.basename(temp_path)}")
+                            os.rename(temp_path, temp_name)
+                            os.rename(temp_name, final_path)
                             progress_text.insert(tk.END, f"  ✓ File renamed (case change)\n")
                         else:
-                            # Different filename - check if target already exists
-                            if os.path.exists(new_file_path):
-                                progress_text.insert(tk.END, f"  ⚠️ SKIP: {new_filename} already exists\n\n")
-                                error_count += 1
-                                continue
-
-                            # Rename the file
-                            os.rename(old_file_path, new_file_path)
+                            # Normal rename from temp to final
+                            os.rename(temp_path, final_path)
                             progress_text.insert(tk.END, f"  ✓ File renamed\n")
 
-                        # Update database with new file path
+                        # If this file was reassigned a new program number (duplicate),
+                        # update the internal program number in the G-code file
+                        if is_reassigned:
+                            try:
+                                with open(final_path, 'r', encoding='utf-8', errors='ignore') as f:
+                                    content = f.read()
+
+                                # Replace O-number in the file (first occurrence)
+                                new_o_number = final_base.upper().replace('O', 'O')  # Ensure uppercase O
+                                new_num = final_base.replace('o', '').replace('O', '')
+
+                                # Find and replace the O-number line
+                                lines = content.split('\n')
+                                for i, line in enumerate(lines):
+                                    if re.match(r'^[oO]\d{4,}', line.strip()):
+                                        # Replace just the O-number, keep the rest of the line (title etc)
+                                        lines[i] = re.sub(r'^[oO]\d{4,}', f'O{new_num}', line)
+                                        break
+
+                                with open(final_path, 'w', encoding='utf-8') as f:
+                                    f.write('\n'.join(lines))
+
+                                progress_text.insert(tk.END, f"  ✓ Internal program # updated to O{new_num}\n")
+                            except Exception as e:
+                                progress_text.insert(tk.END, f"  ⚠ Could not update internal #: {e}\n")
+
+                        # Update database - FIRST update file_path so we can always find the file
+                        # Then update program_number separately
+                        new_program_number = final_base
+
+                        # Step 1: Update file_path immediately (critical - so we can find the file)
                         cursor.execute("""
                             UPDATE programs
                             SET file_path = ?
                             WHERE program_number = ?
-                        """, (new_file_path, prog_num))
-                        progress_text.insert(tk.END, f"  ✓ Database updated\n")
+                        """, (final_path, prog_num))
+                        conn.commit()  # Commit file_path change immediately
 
-                        # Update registry with new file path
+                        # Step 2: Try to update program_number (may fail if duplicate)
+                        try:
+                            if prog_num != new_program_number:
+                                cursor.execute("""
+                                    UPDATE programs
+                                    SET program_number = ?
+                                    WHERE program_number = ?
+                                """, (new_program_number, prog_num))
+                        except sqlite3.IntegrityError:
+                            # Program number already exists - delete this duplicate entry
+                            # The file was already renamed, so just remove this orphan record
+                            cursor.execute("DELETE FROM programs WHERE program_number = ?", (prog_num,))
+                            progress_text.insert(tk.END, f"  ⚠ Removed duplicate record (merged with existing {new_program_number})\n")
+                        progress_text.insert(tk.END, f"  ✓ Database updated (program_number: {prog_num} → {new_program_number})\n")
+
+                        # Update registry: mark old number as AVAILABLE, new number as IN_USE
+                        if prog_num != new_program_number:
+                            cursor.execute("""
+                                UPDATE program_number_registry
+                                SET status = 'AVAILABLE', file_path = NULL
+                                WHERE program_number = ?
+                            """, (prog_num,))
+
+                            cursor.execute("""
+                                UPDATE program_number_registry
+                                SET status = 'IN_USE', file_path = ?
+                                WHERE program_number = ?
+                            """, (final_path, new_program_number))
+                            progress_text.insert(tk.END, f"  ✓ Registry updated (freed {prog_num}, assigned {new_program_number})\n")
+                        else:
+                            # Same program number, just update file path
+                            cursor.execute("""
+                                UPDATE program_number_registry
+                                SET file_path = ?
+                                WHERE program_number = ?
+                            """, (final_path, prog_num))
+                            progress_text.insert(tk.END, f"  ✓ Registry updated\n")
+
+                        # Clear FILENAME MISMATCH warning (keep other issues)
+                        # Note: We must use new_program_number since we already updated it
                         cursor.execute("""
-                            UPDATE program_number_registry
-                            SET file_path = ?
+                            SELECT validation_issues, validation_status
+                            FROM programs
                             WHERE program_number = ?
-                        """, (new_file_path, prog_num))
-                        progress_text.insert(tk.END, f"  ✓ Registry updated\n")
+                        """, (new_program_number,))
+                        val_result = cursor.fetchone()
 
-                        progress_text.insert(tk.END, f"  ✅ Complete: {current_base}.nc → {expected_base}.nc\n\n")
+                        if val_result and val_result[0] and 'FILENAME MISMATCH' in val_result[0]:
+                            old_issues = val_result[0]
+                            # Remove FILENAME MISMATCH portion
+                            # Handle both JSON arrays and pipe-separated strings
+                            import json
+                            issues_list = []
+
+                            # Try parsing as JSON first
+                            try:
+                                if isinstance(old_issues, str) and old_issues.strip().startswith('['):
+                                    issues_list = json.loads(old_issues)
+                                else:
+                                    # Fall back to pipe-separated
+                                    issues_list = [issue.strip() for issue in old_issues.split('|')]
+                            except:
+                                # Fall back to pipe-separated
+                                issues_list = [issue.strip() for issue in old_issues.split('|')]
+
+                            # Keep only non-filename-mismatch issues
+                            remaining_issues = [i for i in issues_list if not str(i).startswith('FILENAME MISMATCH')]
+
+                            if remaining_issues:
+                                # Keep other issues, just remove filename mismatch
+                                # Store back as JSON if original was JSON
+                                if isinstance(old_issues, str) and old_issues.strip().startswith('['):
+                                    new_issues = json.dumps(remaining_issues)
+                                else:
+                                    new_issues = '|'.join(remaining_issues)
+                                new_status = 'CRITICAL' if any('CRITICAL' in str(i) for i in remaining_issues) else 'WARN'
+                                cursor.execute("""
+                                    UPDATE programs
+                                    SET validation_issues = ?,
+                                        validation_status = ?
+                                    WHERE program_number = ?
+                                """, (new_issues, new_status, new_program_number))
+                                progress_text.insert(tk.END, f"  ✓ Filename mismatch cleared (other issues remain)\n")
+                            else:
+                                # No other issues - clear everything
+                                cursor.execute("""
+                                    UPDATE programs
+                                    SET validation_status = NULL,
+                                        validation_issues = NULL,
+                                        validation_warnings = NULL
+                                    WHERE program_number = ?
+                                """, (new_program_number,))
+                                progress_text.insert(tk.END, f"  ✓ All validation errors cleared\n")
+                        else:
+                            progress_text.insert(tk.END, f"  ✓ No validation errors to clear\n")
+
+                        progress_text.insert(tk.END, f"  ✅ Complete\n\n")
                         renamed_count += 1
 
                         if renamed_count % 10 == 0:
@@ -12006,7 +15513,7 @@ For more documentation, see project README files in the application directory.
                             self.root.update()
 
                     except Exception as e:
-                        progress_text.insert(tk.END, f"  ✗ ERROR: {e}\n\n")
+                        progress_text.insert(tk.END, f"  ✗ ERROR in phase 2: {e}\n\n")
                         error_count += 1
 
                 conn.commit()
@@ -15874,6 +19381,11 @@ Legacy names will be tracked in the database and added as comments in the files.
 
         if not confirm:
             return
+
+        # Create auto-backup before this destructive operation
+        backup_path = self.db_manager.create_auto_backup("batch_rename")
+        if backup_path:
+            logger.info("Auto-backup created before batch rename")
 
         # Create progress window
         progress_window = tk.Toplevel(self.window)
