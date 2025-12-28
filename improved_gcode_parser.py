@@ -1022,12 +1022,20 @@ class ImprovedGCodeParser:
                             id_is_adjacent = id_pos >= 0 and (id_pos - pattern_end_pos) < 10
 
                             if id_is_adjacent:
-                                # Hub-centric with support shelf: outer shelf / CB
-                                # First value is the shelf (like counterbore), second is CB
-                                # OB (hub) will be determined from G-code
-                                result.center_bore = second_val
-                                # Store the shelf dimension - we can use counter_bore_diameter temporarily
-                                # or just ignore it since it's not the final hub
+                                # ID is adjacent - need to determine format based on value order
+                                # RULE: First value is ALWAYS the inner bore (CB), second is outer (shelf/counterbore)
+                                # This is true for dash-separated patterns like "65.1-121 MM ID"
+                                # The smaller value is the CB (inner), larger is the shelf/counterbore (outer)
+                                if first_val < second_val:
+                                    # Standard CB/Shelf format: first=CB (smaller), second=Shelf (larger)
+                                    # Example: "65.1-121 MM ID" -> CB=65.1, Shelf=121
+                                    result.center_bore = first_val
+                                    result.counter_bore_diameter = second_val  # Store shelf as counterbore
+                                else:
+                                    # Reversed format: first=Shelf (larger), second=CB (smaller)
+                                    # Example: "121-65.1 MM ID" -> Shelf=121, CB=65.1
+                                    result.center_bore = second_val
+                                    result.counter_bore_diameter = first_val
                             else:
                                 # ID is elsewhere in title - treat as standard CB/OB
                                 result.center_bore = first_val
@@ -1054,7 +1062,12 @@ class ImprovedGCodeParser:
             cb_match = re.search(r'(\d+\.?\d*)\s*\.?\s*(?:MM|M)\s+(?:ID|CB|B/C)', title, re.IGNORECASE)
             if cb_match:
                 try:
-                    result.center_bore = float(cb_match.group(1))
+                    cb_val = float(cb_match.group(1))
+                    # Validate CB is in reasonable range (38-250mm for typical wheel spacers)
+                    # Values like 15mm are thickness, not CB!
+                    if 38.0 <= cb_val <= 250.0:
+                        result.center_bore = cb_val
+                    # Else: value too small/large to be CB, leave it unset for G-code extraction
                 except:
                     pass
 
@@ -1385,6 +1398,67 @@ class ImprovedGCodeParser:
                         if z_match:
                             max_z_depth = float(z_match.group(1))
                             initial_z_depth = max_z_depth
+
+                        # =============================================================
+                        # CHAMFER DIAGONAL PATTERN DETECTION (PRIORITY CHECK)
+                        # =============================================================
+                        # Pattern: X[CB] Z-0.15 (chamfer diagonal) followed by Z-[full_depth]
+                        # Example from o57798:
+                        #   Line 34: G01 X2.567 Z-0.15 F0.009  <- X is CB, Z is chamfer depth
+                        #   Line 35: Z-2.15                    <- Full depth confirms CB
+                        #
+                        # The chamfer start is ~0.3" larger than CB (creates chamfer by moving diagonally)
+                        # CB value is the X in the diagonal move, NOT the chamfer start position
+                        # =============================================================
+                        is_chamfer_diagonal = False
+                        if z_match:
+                            z_on_same_line = float(z_match.group(1))
+                            # Chamfer diagonal: Z is shallow (0.1-0.2") on SAME line as X
+                            if 0.1 <= z_on_same_line <= 0.25:
+                                # Check if NEXT line is Z-only to full depth (confirms this X is CB)
+                                for j in range(i+1, min(i+3, len(lines))):
+                                    next_line = lines[j].strip()
+                                    next_z = re.search(r'Z\s*-\s*([\d.]+)', next_line, re.IGNORECASE)
+                                    next_x = re.search(r'X\s*([\d.]+)', next_line, re.IGNORECASE)
+
+                                    # Z-only line to full depth = confirms chamfer diagonal pattern
+                                    if next_z and not next_x:
+                                        full_z = float(next_z.group(1))
+                                        # Check if this Z reaches thickness or drill depth
+                                        reaches_depth = False
+                                        if drill_depth and full_z >= drill_depth * 0.9:
+                                            reaches_depth = True
+                                        elif result.thickness and full_z >= result.thickness * 0.9:
+                                            reaches_depth = True
+                                        elif full_z >= 0.8:  # At least 0.8" deep (most parts are > 1")
+                                            reaches_depth = True
+
+                                        if reaches_depth:
+                                            # This is the chamfer diagonal pattern - X IS the CB!
+                                            is_chamfer_diagonal = True
+                                            max_z_depth = full_z
+                                            break
+                                    elif next_x:
+                                        # Another X before deep Z - not chamfer diagonal
+                                        break
+
+                        # If chamfer diagonal detected, this X is the CB (high confidence)
+                        if is_chamfer_diagonal and not cb_found:
+                            # Validate against title CB if available
+                            if result.center_bore:
+                                x_val_mm = x_val * 25.4
+                                # Allow up to 2mm difference (machining tolerance)
+                                if abs(x_val_mm - result.center_bore) < 5.0:
+                                    cb_candidates = [x_val]  # Definitive CB
+                                    cb_found = True
+                                # If doesn't match title, still add as candidate but don't set cb_found
+                                else:
+                                    cb_candidates.append(x_val)
+                            else:
+                                # No title CB - trust chamfer pattern
+                                cb_candidates = [x_val]
+                                cb_found = True
+                            continue  # Skip the rest of the X processing for this line
 
                         # Look ahead for Z movements (check if reaches full drill depth)
                         for j in range(i+1, min(i+5, len(lines))):

@@ -647,6 +647,43 @@ class GCodeDatabaseGUI:
             )
         ''')
 
+        # =============================================================
+        # DATABASE INDEXES FOR PERFORMANCE
+        # =============================================================
+        # These indexes significantly speed up filtering and searching
+        # CREATE INDEX IF NOT EXISTS prevents errors on existing DBs
+
+        # Spacer type - used for type filtering
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_spacer_type ON programs(spacer_type)')
+
+        # Validation status - used for status filtering
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_validation_status ON programs(validation_status)')
+
+        # Outer diameter - used for OD range filtering
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_outer_diameter ON programs(outer_diameter)')
+
+        # Round size - used for round size filtering and grouping
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_round_size ON programs(round_size)')
+
+        # Is managed - used to separate repository vs external files
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_is_managed ON programs(is_managed)')
+
+        # Material - used for material filtering
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_material ON programs(material)')
+
+        # Duplicate type - used for duplicate filtering
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_duplicate_type ON programs(duplicate_type)')
+
+        # Content hash - used for duplicate detection
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_content_hash ON programs(content_hash)')
+
+        # File path - used for file lookup
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_file_path ON programs(file_path)')
+
+        # Composite index for common filter combinations
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_type_status ON programs(spacer_type, validation_status)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_od_type ON programs(outer_diameter, spacer_type)')
+
         conn.commit()
         conn.close()
 
@@ -4327,6 +4364,10 @@ class GCodeDatabaseGUI:
 
         workflow_group = tk.Frame(tab_workflow, bg=self.bg_color)
         workflow_group.pack(fill=tk.X, padx=5, pady=5)
+
+        tk.Button(workflow_group, text="🧙 Workflow Wizard", command=self.show_workflow_wizard,
+                 bg="#E91E63", fg=self.fg_color, font=("Arial", 9, "bold"),
+                 width=14, height=2).pack(side=tk.LEFT, padx=3)
 
         tk.Button(workflow_group, text="🔄 Sync Registry", command=self.sync_registry_ui,
                  bg="#9C27B0", fg=self.fg_color, font=("Arial", 9, "bold"),
@@ -17518,6 +17559,308 @@ Range Validation:
 
         except Exception as e:
             messagebox.showerror("Statistics Error", f"Failed to get statistics:\n{str(e)}")
+
+    def show_workflow_wizard(self):
+        """
+        Interactive Workflow Wizard for different database operations.
+        Provides step-by-step guidance for:
+        1. Fresh database from new folder
+        2. Adding files to existing database
+        3. Archive current and start fresh
+        4. Export and backup workflows
+        """
+        wizard = tk.Toplevel(self.root)
+        wizard.title("Workflow Wizard")
+        wizard.geometry("700x600")
+        wizard.configure(bg=self.bg_color)
+        wizard.transient(self.root)
+        wizard.grab_set()
+
+        # Header
+        header = tk.Frame(wizard, bg="#2196F3", height=60)
+        header.pack(fill=tk.X)
+        header.pack_propagate(False)
+
+        tk.Label(header, text="🧙 Workflow Wizard",
+                font=("Arial", 18, "bold"),
+                bg="#2196F3", fg="white").pack(pady=15)
+
+        # Main content
+        content = tk.Frame(wizard, bg=self.bg_color)
+        content.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
+
+        tk.Label(content, text="What would you like to do?",
+                font=("Arial", 14, "bold"),
+                bg=self.bg_color, fg=self.fg_color).pack(pady=(0, 20))
+
+        # Workflow options
+        workflows = [
+            {
+                "title": "🆕 Fresh Start - Scan New Folder",
+                "desc": "Create a new database from scratch by scanning a folder of G-code files.\nBest for: First-time setup or starting with a new file collection.",
+                "color": "#4CAF50",
+                "command": lambda: self.run_workflow_fresh_start(wizard)
+            },
+            {
+                "title": "➕ Add to Existing Database",
+                "desc": "Scan a folder and add new files to your current database.\nBest for: Adding new programs without losing existing data.",
+                "color": "#2196F3",
+                "command": lambda: self.run_workflow_add_files(wizard)
+            },
+            {
+                "title": "📦 Archive & Start Fresh",
+                "desc": "Save current database as a profile, then clear it for a fresh scan.\nBest for: Seasonal cleanup or reorganization.",
+                "color": "#FF9800",
+                "command": lambda: self.run_workflow_archive_fresh(wizard)
+            },
+            {
+                "title": "💾 Export & Backup",
+                "desc": "Export database to Excel/CSV and create backups.\nBest for: Data preservation and reporting.",
+                "color": "#9C27B0",
+                "command": lambda: self.run_workflow_export_backup(wizard)
+            },
+            {
+                "title": "🔄 Rescan Repository",
+                "desc": "Re-parse all files in the repository folder to update dimensions.\nBest for: After parser updates or to refresh validation.",
+                "color": "#00BCD4",
+                "command": lambda: self.run_workflow_rescan(wizard)
+            }
+        ]
+
+        for wf in workflows:
+            frame = tk.Frame(content, bg=self.bg_color, relief=tk.RAISED, borderwidth=1)
+            frame.pack(fill=tk.X, pady=8)
+
+            btn = tk.Button(frame, text=wf["title"],
+                          font=("Arial", 12, "bold"),
+                          bg=wf["color"], fg="white",
+                          anchor="w", padx=15,
+                          command=wf["command"])
+            btn.pack(fill=tk.X, ipady=8)
+
+            tk.Label(frame, text=wf["desc"],
+                    font=("Arial", 9),
+                    bg=self.bg_color, fg="#888888",
+                    justify=tk.LEFT, anchor="w",
+                    padx=15).pack(fill=tk.X, pady=(5, 10))
+
+        # Close button
+        tk.Button(content, text="Close", command=wizard.destroy,
+                 bg=self.button_bg, fg=self.fg_color,
+                 font=("Arial", 10), width=15).pack(pady=20)
+
+    def run_workflow_fresh_start(self, wizard):
+        """Workflow: Fresh database from new folder"""
+        wizard.destroy()
+
+        result = messagebox.askyesnocancel(
+            "Fresh Start Workflow",
+            "This workflow will:\n\n"
+            "1. Clear the current database\n"
+            "2. Ask you to select a folder to scan\n"
+            "3. Import all G-code files found\n"
+            "4. Sync the registry and detect round sizes\n\n"
+            "Do you want to save the current database first?\n\n"
+            "Yes = Save profile first, then proceed\n"
+            "No = Clear and proceed without saving\n"
+            "Cancel = Abort workflow"
+        )
+
+        if result is None:  # Cancel
+            return
+
+        if result:  # Yes - save first
+            self.save_database_profile()
+
+        # Clear database
+        confirm = messagebox.askyesno(
+            "Confirm Clear",
+            "Are you sure you want to clear the database?\n\n"
+            "This will delete all current records."
+        )
+
+        if not confirm:
+            return
+
+        # Clear the database
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM programs")
+            conn.commit()
+            conn.close()
+            self.refresh_results()
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to clear database:\n{str(e)}")
+            return
+
+        # Scan folder
+        self.scan_folder()
+
+        # After scan, offer to sync registry
+        if messagebox.askyesno("Sync Registry?",
+                              "Scan complete! Would you like to sync the program registry?"):
+            self.sync_registry_ui()
+
+        # Detect round sizes
+        if messagebox.askyesno("Detect Round Sizes?",
+                              "Would you like to auto-detect round sizes?"):
+            self.detect_round_sizes_ui()
+
+        messagebox.showinfo("Complete", "Fresh start workflow complete!")
+
+    def run_workflow_add_files(self, wizard):
+        """Workflow: Add files to existing database"""
+        wizard.destroy()
+
+        # Get current count
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM programs")
+        before_count = cursor.fetchone()[0]
+        conn.close()
+
+        messagebox.showinfo(
+            "Add Files Workflow",
+            f"Current database has {before_count} programs.\n\n"
+            "You'll be asked to select a folder to scan.\n"
+            "Only NEW files (not already in DB) will be added."
+        )
+
+        # Use scan_for_new_files which only adds new ones
+        self.scan_for_new_files()
+
+        # Get new count
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM programs")
+        after_count = cursor.fetchone()[0]
+        conn.close()
+
+        added = after_count - before_count
+        messagebox.showinfo("Complete",
+                           f"Added {added} new files.\n"
+                           f"Total programs: {after_count}")
+
+    def run_workflow_archive_fresh(self, wizard):
+        """Workflow: Archive current database and start fresh"""
+        wizard.destroy()
+
+        # Get current stats
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM programs")
+        count = cursor.fetchone()[0]
+        conn.close()
+
+        if count == 0:
+            messagebox.showinfo("Empty Database",
+                              "Database is already empty. Use 'Fresh Start' to scan files.")
+            return
+
+        confirm = messagebox.askyesno(
+            "Archive & Fresh Start",
+            f"This will:\n\n"
+            f"1. Save current database ({count} programs) as a profile\n"
+            f"2. Export to Excel as backup\n"
+            f"3. Clear the database\n"
+            f"4. Let you scan a new folder\n\n"
+            f"Continue?"
+        )
+
+        if not confirm:
+            return
+
+        # Step 1: Save profile
+        self.save_database_profile()
+
+        # Step 2: Export CSV
+        if messagebox.askyesno("Export Excel?",
+                              "Would you also like to export to Excel/CSV?"):
+            self.export_csv()
+
+        # Step 3: Clear database
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM programs")
+            conn.commit()
+            conn.close()
+            self.refresh_results()
+            messagebox.showinfo("Cleared", "Database cleared successfully!")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to clear: {str(e)}")
+            return
+
+        # Step 4: Ask to scan new folder
+        if messagebox.askyesno("Scan New Folder?",
+                              "Database is now empty.\n\nWould you like to scan a new folder?"):
+            self.scan_folder()
+
+    def run_workflow_export_backup(self, wizard):
+        """Workflow: Export and backup options"""
+        wizard.destroy()
+
+        # Create export options window
+        export_win = tk.Toplevel(self.root)
+        export_win.title("Export & Backup Options")
+        export_win.geometry("400x350")
+        export_win.configure(bg=self.bg_color)
+        export_win.transient(self.root)
+
+        tk.Label(export_win, text="Export & Backup Options",
+                font=("Arial", 14, "bold"),
+                bg=self.bg_color, fg=self.fg_color).pack(pady=15)
+
+        options = [
+            ("📊 Export to Excel/CSV", self.export_csv),
+            ("📈 Export to Google Sheets", self.export_google_sheets),
+            ("💾 Create Database Backup", self.create_manual_backup),
+            ("📦 Create Full Backup (DB + Files)", self.create_full_backup),
+            ("💾 Save as Named Profile", self.save_database_profile),
+            ("📋 Export Unused Numbers", self.export_unused_numbers),
+        ]
+
+        for text, cmd in options:
+            def make_cmd(c, w):
+                return lambda: (c(), None)
+
+            tk.Button(export_win, text=text,
+                     font=("Arial", 10),
+                     bg=self.button_bg, fg=self.fg_color,
+                     anchor="w", padx=20,
+                     command=cmd).pack(fill=tk.X, padx=20, pady=5, ipady=5)
+
+        tk.Button(export_win, text="Close", command=export_win.destroy,
+                 bg=self.accent_color, fg=self.fg_color,
+                 font=("Arial", 10), width=15).pack(pady=20)
+
+    def run_workflow_rescan(self, wizard):
+        """Workflow: Rescan repository"""
+        wizard.destroy()
+
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM programs WHERE is_managed = 1")
+        repo_count = cursor.fetchone()[0]
+        conn.close()
+
+        if repo_count == 0:
+            messagebox.showinfo("No Repository Files",
+                              "No files in repository to rescan.\n\n"
+                              "Use 'Add to Repository' from External tab first.")
+            return
+
+        confirm = messagebox.askyesno(
+            "Rescan Repository",
+            f"This will re-parse all {repo_count} files in the repository\n"
+            f"to update dimensions and validation.\n\n"
+            f"This is useful after parser updates.\n\n"
+            f"Continue?"
+        )
+
+        if confirm:
+            self.refresh_repository_scan()
 
     def show_workflow_guide(self):
         """Show the workflow guide"""
