@@ -5,15 +5,99 @@ import os
 import re
 from datetime import datetime, timedelta
 from dataclasses import dataclass
-from typing import List, Optional, Tuple, Set
+from typing import List, Optional, Tuple, Set, Dict
 import json
 import sys
 import shutil
 import logging
 from logging.handlers import RotatingFileHandler
+import hashlib
+import secrets
 
 # Import the improved parser
 from improved_gcode_parser import ImprovedGCodeParser, GCodeParseResult
+
+
+# ============================================================================
+# USER PERMISSIONS SYSTEM
+# ============================================================================
+
+# Permission definitions for each role
+ROLE_PERMISSIONS = {
+    'admin': {
+        'view_files': True,
+        'add_files': True,
+        'edit_files': True,
+        'delete_files': True,
+        'move_files': True,
+        'export_data': True,
+        'clear_database': True,
+        'manage_users': True,
+        'backup_restore': True,
+        'batch_operations': True,
+        'manage_duplicates': True,
+    },
+    'editor': {
+        'view_files': True,
+        'add_files': True,
+        'edit_files': True,
+        'delete_files': False,
+        'move_files': True,
+        'export_data': True,
+        'clear_database': False,
+        'manage_users': False,
+        'backup_restore': True,
+        'batch_operations': True,
+        'manage_duplicates': True,
+    },
+    'operator': {
+        'view_files': True,
+        'add_files': True,
+        'edit_files': False,
+        'delete_files': False,
+        'move_files': False,
+        'export_data': True,
+        'clear_database': False,
+        'manage_users': False,
+        'backup_restore': False,
+        'batch_operations': False,
+        'manage_duplicates': False,
+    },
+    'viewer': {
+        'view_files': True,
+        'add_files': False,
+        'edit_files': False,
+        'delete_files': False,
+        'move_files': False,
+        'export_data': True,
+        'clear_database': False,
+        'manage_users': False,
+        'backup_restore': False,
+        'batch_operations': False,
+        'manage_duplicates': False,
+    }
+}
+
+ROLE_DESCRIPTIONS = {
+    'admin': 'Full access - Can manage users and all operations',
+    'editor': 'Can add, edit, move files - Cannot delete or manage users',
+    'operator': 'Can view and add files - Cannot edit or delete',
+    'viewer': 'Read-only access - Can only view and export'
+}
+
+
+def hash_password(password: str, salt: str = None) -> Tuple[str, str]:
+    """Hash a password with salt using SHA256"""
+    if salt is None:
+        salt = secrets.token_hex(16)
+    password_hash = hashlib.sha256((password + salt).encode()).hexdigest()
+    return password_hash, salt
+
+
+def verify_password(password: str, stored_hash: str, salt: str) -> bool:
+    """Verify a password against stored hash"""
+    password_hash, _ = hash_password(password, salt)
+    return password_hash == stored_hash
 
 # ============================================================================
 # LOGGING CONFIGURATION
@@ -237,25 +321,26 @@ class GCodeDatabaseGUI:
         self.root = root
         self.root.title("G-Code Database Manager - Wheel Spacer Programs")
         self.root.geometry("1600x900")
-        
+
         # Dark mode colors
         self.bg_color = "#2b2b2b"
         self.fg_color = "#ffffff"
         self.input_bg = "#3c3c3c"
         self.button_bg = "#4a4a4a"
         self.accent_color = "#4a90e2"
-        
+
         self.root.configure(bg=self.bg_color)
-        
+
         # Database setup
         self.db_path = "gcode_database.db"
         self.init_database()
 
-        # User session (will be set after login, for now use default admin)
+        # User session - will be set after login
         self.current_user = None
         self.current_user_id = None
-        self.current_username = "admin"  # Default to admin for now
-        self.current_user_role = "admin"
+        self.current_username = None
+        self.current_user_role = None
+        self.user_permissions = {}
 
         # Configuration
         self.config_file = "gcode_manager_config.json"
@@ -272,6 +357,11 @@ class GCodeDatabaseGUI:
         style.theme_use('clam')
         style.configure('Dark.TFrame', background=self.bg_color)
 
+        # Show login dialog - must succeed before continuing
+        if not self.show_login_dialog():
+            self.root.destroy()
+            return
+
         # Get available values from database for filters
         self.available_types = self.get_available_values("spacer_type")
         self.available_materials = self.get_available_values("material")
@@ -287,6 +377,809 @@ class GCodeDatabaseGUI:
 
         # Run startup integrity check
         self.run_startup_integrity_check()
+
+    # ========================================================================
+    # USER AUTHENTICATION & PERMISSIONS
+    # ========================================================================
+
+    def show_login_dialog(self) -> bool:
+        """Show login dialog. Returns True if login successful."""
+        login_window = tk.Toplevel(self.root)
+        login_window.title("Login - G-Code Database Manager")
+        login_window.geometry("400x350")
+        login_window.configure(bg=self.bg_color)
+        login_window.transient(self.root)
+        login_window.grab_set()
+
+        # Center the window
+        login_window.update_idletasks()
+        x = (login_window.winfo_screenwidth() - 400) // 2
+        y = (login_window.winfo_screenheight() - 350) // 2
+        login_window.geometry(f"+{x}+{y}")
+
+        # Prevent closing without login
+        login_window.protocol("WM_DELETE_WINDOW", lambda: self._cancel_login(login_window))
+
+        self.login_success = False
+
+        # Title
+        tk.Label(login_window, text="G-Code Database Manager",
+                font=("Arial", 16, "bold"), bg=self.bg_color, fg=self.fg_color).pack(pady=(20, 5))
+        tk.Label(login_window, text="Please login to continue",
+                font=("Arial", 10), bg=self.bg_color, fg="#888888").pack(pady=(0, 20))
+
+        # Username
+        tk.Label(login_window, text="Username:", bg=self.bg_color, fg=self.fg_color,
+                font=("Arial", 10)).pack(anchor="w", padx=50)
+        username_entry = tk.Entry(login_window, bg=self.input_bg, fg=self.fg_color,
+                                 font=("Arial", 11), width=30)
+        username_entry.pack(pady=(5, 15), padx=50)
+        username_entry.focus_set()
+
+        # Password
+        tk.Label(login_window, text="Password:", bg=self.bg_color, fg=self.fg_color,
+                font=("Arial", 10)).pack(anchor="w", padx=50)
+        password_entry = tk.Entry(login_window, bg=self.input_bg, fg=self.fg_color,
+                                 font=("Arial", 11), width=30, show="*")
+        password_entry.pack(pady=(5, 10), padx=50)
+
+        # Error message label
+        error_label = tk.Label(login_window, text="", bg=self.bg_color, fg="#ff6b6b",
+                              font=("Arial", 9))
+        error_label.pack(pady=5)
+
+        def attempt_login(event=None):
+            username = username_entry.get().strip()
+            password = password_entry.get()
+
+            if not username or not password:
+                error_label.config(text="Please enter username and password")
+                return
+
+            result = self._authenticate_user(username, password)
+
+            if result['success']:
+                self.login_success = True
+                self.current_user_id = result['user_id']
+                self.current_username = result['username']
+                self.current_user_role = result['role']
+                self.user_permissions = ROLE_PERMISSIONS.get(result['role'], {})
+
+                # Update last login time
+                self._update_last_login(result['user_id'])
+
+                # Check if password change required
+                if result.get('must_change_password'):
+                    login_window.destroy()
+                    self._force_password_change()
+                else:
+                    login_window.destroy()
+            else:
+                error_label.config(text=result['message'])
+                password_entry.delete(0, tk.END)
+
+        # Bind Enter key
+        username_entry.bind('<Return>', lambda e: password_entry.focus_set())
+        password_entry.bind('<Return>', attempt_login)
+
+        # Buttons
+        btn_frame = tk.Frame(login_window, bg=self.bg_color)
+        btn_frame.pack(pady=20)
+
+        tk.Button(btn_frame, text="Login", command=attempt_login,
+                 bg=self.accent_color, fg=self.fg_color, font=("Arial", 11, "bold"),
+                 width=12, height=2).pack(side=tk.LEFT, padx=10)
+
+        tk.Button(btn_frame, text="Exit", command=lambda: self._cancel_login(login_window),
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 11),
+                 width=12, height=2).pack(side=tk.LEFT, padx=10)
+
+        # Default credentials hint (remove in production)
+        tk.Label(login_window, text="Default: admin / admin123",
+                font=("Arial", 8, "italic"), bg=self.bg_color, fg="#666666").pack(pady=(10, 0))
+
+        self.root.wait_window(login_window)
+        return self.login_success
+
+    def _cancel_login(self, window):
+        """Cancel login and exit"""
+        self.login_success = False
+        window.destroy()
+
+    def _authenticate_user(self, username: str, password: str) -> Dict:
+        """Authenticate user credentials"""
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                SELECT user_id, username, password_hash, password_salt, role,
+                       is_active, must_change_password, failed_login_attempts, locked_until
+                FROM users WHERE username = ?
+            """, (username,))
+
+            user = cursor.fetchone()
+
+            if not user:
+                conn.close()
+                return {'success': False, 'message': 'Invalid username or password'}
+
+            user_id, db_username, pw_hash, pw_salt, role, is_active, must_change, failed_attempts, locked_until = user
+
+            # Check if account is locked
+            if locked_until:
+                lock_time = datetime.fromisoformat(locked_until)
+                if datetime.now() < lock_time:
+                    mins_left = int((lock_time - datetime.now()).total_seconds() / 60) + 1
+                    conn.close()
+                    return {'success': False, 'message': f'Account locked. Try again in {mins_left} minutes'}
+                else:
+                    # Unlock the account
+                    cursor.execute("UPDATE users SET locked_until = NULL, failed_login_attempts = 0 WHERE user_id = ?", (user_id,))
+                    conn.commit()
+
+            # Check if account is active
+            if not is_active:
+                conn.close()
+                return {'success': False, 'message': 'Account is disabled. Contact administrator.'}
+
+            # Verify password
+            if not pw_hash or not pw_salt:
+                # No password set yet (shouldn't happen with new setup)
+                conn.close()
+                return {'success': False, 'message': 'Account not properly configured'}
+
+            if verify_password(password, pw_hash, pw_salt):
+                # Reset failed attempts on success
+                cursor.execute("UPDATE users SET failed_login_attempts = 0 WHERE user_id = ?", (user_id,))
+                conn.commit()
+                conn.close()
+
+                return {
+                    'success': True,
+                    'user_id': user_id,
+                    'username': db_username,
+                    'role': role,
+                    'must_change_password': bool(must_change)
+                }
+            else:
+                # Increment failed attempts
+                new_attempts = (failed_attempts or 0) + 1
+                if new_attempts >= 5:
+                    # Lock account for 15 minutes
+                    lock_until = (datetime.now() + timedelta(minutes=15)).isoformat()
+                    cursor.execute("UPDATE users SET failed_login_attempts = ?, locked_until = ? WHERE user_id = ?",
+                                 (new_attempts, lock_until, user_id))
+                    conn.commit()
+                    conn.close()
+                    return {'success': False, 'message': 'Too many failed attempts. Account locked for 15 minutes.'}
+                else:
+                    cursor.execute("UPDATE users SET failed_login_attempts = ? WHERE user_id = ?", (new_attempts, user_id))
+                    conn.commit()
+                    conn.close()
+                    return {'success': False, 'message': f'Invalid username or password ({5 - new_attempts} attempts remaining)'}
+
+        except Exception as e:
+            logger.error(f"Authentication error: {e}", exc_info=True)
+            return {'success': False, 'message': 'Login error. Please try again.'}
+
+    def _update_last_login(self, user_id: int):
+        """Update user's last login timestamp"""
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
+            cursor = conn.cursor()
+            cursor.execute("UPDATE users SET last_login = ? WHERE user_id = ?",
+                         (datetime.now().isoformat(), user_id))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.error(f"Error updating last login: {e}")
+
+    def _force_password_change(self):
+        """Force user to change password on first login"""
+        change_window = tk.Toplevel(self.root)
+        change_window.title("Change Password Required")
+        change_window.geometry("400x300")
+        change_window.configure(bg=self.bg_color)
+        change_window.transient(self.root)
+        change_window.grab_set()
+
+        # Center
+        change_window.update_idletasks()
+        x = (change_window.winfo_screenwidth() - 400) // 2
+        y = (change_window.winfo_screenheight() - 300) // 2
+        change_window.geometry(f"+{x}+{y}")
+
+        tk.Label(change_window, text="Password Change Required",
+                font=("Arial", 14, "bold"), bg=self.bg_color, fg=self.fg_color).pack(pady=(20, 5))
+        tk.Label(change_window, text="Please set a new password to continue",
+                font=("Arial", 10), bg=self.bg_color, fg="#888888").pack(pady=(0, 20))
+
+        tk.Label(change_window, text="New Password:", bg=self.bg_color, fg=self.fg_color).pack(anchor="w", padx=50)
+        new_pw_entry = tk.Entry(change_window, bg=self.input_bg, fg=self.fg_color, width=30, show="*")
+        new_pw_entry.pack(pady=(5, 10), padx=50)
+        new_pw_entry.focus_set()
+
+        tk.Label(change_window, text="Confirm Password:", bg=self.bg_color, fg=self.fg_color).pack(anchor="w", padx=50)
+        confirm_pw_entry = tk.Entry(change_window, bg=self.input_bg, fg=self.fg_color, width=30, show="*")
+        confirm_pw_entry.pack(pady=(5, 10), padx=50)
+
+        error_label = tk.Label(change_window, text="", bg=self.bg_color, fg="#ff6b6b")
+        error_label.pack(pady=5)
+
+        def save_new_password():
+            new_pw = new_pw_entry.get()
+            confirm_pw = confirm_pw_entry.get()
+
+            if len(new_pw) < 6:
+                error_label.config(text="Password must be at least 6 characters")
+                return
+            if new_pw != confirm_pw:
+                error_label.config(text="Passwords do not match")
+                return
+
+            # Update password
+            pw_hash, pw_salt = hash_password(new_pw)
+            try:
+                conn = sqlite3.connect(self.db_path, timeout=30.0)
+                cursor = conn.cursor()
+                cursor.execute("""
+                    UPDATE users SET password_hash = ?, password_salt = ?, must_change_password = 0
+                    WHERE user_id = ?
+                """, (pw_hash, pw_salt, self.current_user_id))
+                conn.commit()
+                conn.close()
+                messagebox.showinfo("Success", "Password changed successfully!")
+                change_window.destroy()
+            except Exception as e:
+                error_label.config(text="Error saving password")
+                logger.error(f"Password change error: {e}")
+
+        tk.Button(change_window, text="Save Password", command=save_new_password,
+                 bg=self.accent_color, fg=self.fg_color, font=("Arial", 11, "bold"),
+                 width=15, height=2).pack(pady=20)
+
+        change_window.wait_window()
+
+    def has_permission(self, permission: str) -> bool:
+        """Check if current user has a specific permission"""
+        return self.user_permissions.get(permission, False)
+
+    def require_permission(self, permission: str, action_name: str = "this action") -> bool:
+        """Check permission and show error if denied. Returns True if allowed."""
+        if self.has_permission(permission):
+            return True
+        messagebox.showerror("Permission Denied",
+                           f"You don't have permission to perform {action_name}.\n\n"
+                           f"Required permission: {permission}\n"
+                           f"Your role: {self.current_user_role}")
+        return False
+
+    def logout_user(self):
+        """Logout current user and show login dialog"""
+        if messagebox.askyesno("Logout", "Are you sure you want to logout?"):
+            # Clear current session
+            self.current_user = None
+            self.current_user_id = None
+            self.current_username = None
+            self.current_user_role = None
+            self.user_permissions = {}
+
+            # Destroy main window and restart
+            self.root.destroy()
+
+            # Create new root and re-initialize
+            new_root = tk.Tk()
+            app = GCodeDatabaseGUI(new_root)
+            new_root.mainloop()
+
+    def show_change_password(self):
+        """Show dialog to change current user's password"""
+        change_window = tk.Toplevel(self.root)
+        change_window.title("Change Password")
+        change_window.geometry("400x350")
+        change_window.configure(bg=self.bg_color)
+        change_window.transient(self.root)
+        change_window.grab_set()
+
+        # Center
+        change_window.update_idletasks()
+        x = (change_window.winfo_screenwidth() - 400) // 2
+        y = (change_window.winfo_screenheight() - 350) // 2
+        change_window.geometry(f"+{x}+{y}")
+
+        tk.Label(change_window, text="Change Password",
+                font=("Arial", 14, "bold"), bg=self.bg_color, fg=self.fg_color).pack(pady=(20, 20))
+
+        tk.Label(change_window, text="Current Password:", bg=self.bg_color, fg=self.fg_color).pack(anchor="w", padx=50)
+        current_pw = tk.Entry(change_window, bg=self.input_bg, fg=self.fg_color, width=30, show="*")
+        current_pw.pack(pady=(5, 10), padx=50)
+        current_pw.focus_set()
+
+        tk.Label(change_window, text="New Password:", bg=self.bg_color, fg=self.fg_color).pack(anchor="w", padx=50)
+        new_pw = tk.Entry(change_window, bg=self.input_bg, fg=self.fg_color, width=30, show="*")
+        new_pw.pack(pady=(5, 10), padx=50)
+
+        tk.Label(change_window, text="Confirm New Password:", bg=self.bg_color, fg=self.fg_color).pack(anchor="w", padx=50)
+        confirm_pw = tk.Entry(change_window, bg=self.input_bg, fg=self.fg_color, width=30, show="*")
+        confirm_pw.pack(pady=(5, 10), padx=50)
+
+        error_label = tk.Label(change_window, text="", bg=self.bg_color, fg="#ff6b6b")
+        error_label.pack(pady=5)
+
+        def save_password():
+            curr = current_pw.get()
+            new = new_pw.get()
+            conf = confirm_pw.get()
+
+            # Verify current password
+            try:
+                conn = sqlite3.connect(self.db_path, timeout=30.0)
+                cursor = conn.cursor()
+                cursor.execute("SELECT password_hash, password_salt FROM users WHERE user_id = ?",
+                             (self.current_user_id,))
+                row = cursor.fetchone()
+                conn.close()
+
+                if not row or not verify_password(curr, row[0], row[1]):
+                    error_label.config(text="Current password is incorrect")
+                    return
+            except Exception as e:
+                error_label.config(text="Error verifying password")
+                return
+
+            if len(new) < 6:
+                error_label.config(text="New password must be at least 6 characters")
+                return
+            if new != conf:
+                error_label.config(text="New passwords do not match")
+                return
+
+            # Update password
+            pw_hash, pw_salt = hash_password(new)
+            try:
+                conn = sqlite3.connect(self.db_path, timeout=30.0)
+                cursor = conn.cursor()
+                cursor.execute("UPDATE users SET password_hash = ?, password_salt = ? WHERE user_id = ?",
+                             (pw_hash, pw_salt, self.current_user_id))
+                conn.commit()
+                conn.close()
+                messagebox.showinfo("Success", "Password changed successfully!")
+                change_window.destroy()
+            except Exception as e:
+                error_label.config(text="Error saving password")
+
+        btn_frame = tk.Frame(change_window, bg=self.bg_color)
+        btn_frame.pack(pady=20)
+
+        tk.Button(btn_frame, text="Save", command=save_password,
+                 bg=self.accent_color, fg=self.fg_color, font=("Arial", 10, "bold"),
+                 width=12).pack(side=tk.LEFT, padx=10)
+
+        tk.Button(btn_frame, text="Cancel", command=change_window.destroy,
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 10),
+                 width=12).pack(side=tk.LEFT, padx=10)
+
+    def show_user_management(self):
+        """Show user management interface (admin only)"""
+        if not self.require_permission('manage_users', 'manage users'):
+            return
+
+        self.user_mgmt_window = tk.Toplevel(self.root)
+        self.user_mgmt_window.title("User Management")
+        self.user_mgmt_window.geometry("900x600")
+        self.user_mgmt_window.configure(bg=self.bg_color)
+        self.user_mgmt_window.transient(self.root)
+
+        # Title
+        tk.Label(self.user_mgmt_window, text="User Management",
+                font=("Arial", 16, "bold"), bg=self.bg_color, fg=self.fg_color).pack(pady=(15, 10))
+
+        # Button bar
+        btn_bar = tk.Frame(self.user_mgmt_window, bg=self.bg_color)
+        btn_bar.pack(fill=tk.X, padx=20, pady=10)
+
+        tk.Button(btn_bar, text="+ Add User", command=self._add_user_dialog,
+                 bg="#4CAF50", fg=self.fg_color, font=("Arial", 10, "bold"),
+                 width=12).pack(side=tk.LEFT, padx=5)
+
+        tk.Button(btn_bar, text="Edit User", command=self._edit_user_dialog,
+                 bg=self.accent_color, fg=self.fg_color, font=("Arial", 10, "bold"),
+                 width=12).pack(side=tk.LEFT, padx=5)
+
+        tk.Button(btn_bar, text="Reset Password", command=self._reset_user_password,
+                 bg="#FF9800", fg=self.fg_color, font=("Arial", 10, "bold"),
+                 width=14).pack(side=tk.LEFT, padx=5)
+
+        tk.Button(btn_bar, text="Disable/Enable", command=self._toggle_user_active,
+                 bg="#9C27B0", fg=self.fg_color, font=("Arial", 10, "bold"),
+                 width=14).pack(side=tk.LEFT, padx=5)
+
+        tk.Button(btn_bar, text="Delete User", command=self._delete_user,
+                 bg="#D32F2F", fg=self.fg_color, font=("Arial", 10, "bold"),
+                 width=12).pack(side=tk.LEFT, padx=5)
+
+        tk.Button(btn_bar, text="Refresh", command=self._refresh_user_list,
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 10),
+                 width=10).pack(side=tk.RIGHT, padx=5)
+
+        # User list
+        list_frame = tk.Frame(self.user_mgmt_window, bg=self.bg_color)
+        list_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+
+        columns = ('username', 'full_name', 'role', 'email', 'status', 'last_login')
+        self.user_tree = ttk.Treeview(list_frame, columns=columns, show='headings', height=15)
+
+        self.user_tree.heading('username', text='Username')
+        self.user_tree.heading('full_name', text='Full Name')
+        self.user_tree.heading('role', text='Role')
+        self.user_tree.heading('email', text='Email')
+        self.user_tree.heading('status', text='Status')
+        self.user_tree.heading('last_login', text='Last Login')
+
+        self.user_tree.column('username', width=120)
+        self.user_tree.column('full_name', width=150)
+        self.user_tree.column('role', width=100)
+        self.user_tree.column('email', width=180)
+        self.user_tree.column('status', width=80)
+        self.user_tree.column('last_login', width=150)
+
+        scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=self.user_tree.yview)
+        self.user_tree.configure(yscrollcommand=scrollbar.set)
+
+        self.user_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Role legend
+        legend_frame = tk.Frame(self.user_mgmt_window, bg=self.bg_color)
+        legend_frame.pack(fill=tk.X, padx=20, pady=10)
+
+        tk.Label(legend_frame, text="Roles:", bg=self.bg_color, fg=self.fg_color,
+                font=("Arial", 10, "bold")).pack(side=tk.LEFT, padx=5)
+
+        for role, desc in ROLE_DESCRIPTIONS.items():
+            tk.Label(legend_frame, text=f"{role}: {desc}",
+                    bg=self.bg_color, fg="#888888", font=("Arial", 8)).pack(side=tk.LEFT, padx=10)
+
+        # Load users
+        self._refresh_user_list()
+
+    def _refresh_user_list(self):
+        """Refresh the user list in management window"""
+        if not hasattr(self, 'user_tree'):
+            return
+
+        # Clear existing
+        for item in self.user_tree.get_children():
+            self.user_tree.delete(item)
+
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT user_id, username, full_name, role, email, is_active, last_login
+                FROM users ORDER BY username
+            """)
+            users = cursor.fetchall()
+            conn.close()
+
+            for user in users:
+                user_id, username, full_name, role, email, is_active, last_login = user
+                status = "Active" if is_active else "Disabled"
+                last_login_display = last_login[:16] if last_login else "Never"
+
+                self.user_tree.insert('', tk.END, values=(
+                    username, full_name or '', role, email or '', status, last_login_display
+                ), tags=(str(user_id),))
+
+        except Exception as e:
+            logger.error(f"Error loading users: {e}")
+
+    def _add_user_dialog(self):
+        """Show dialog to add a new user"""
+        dialog = tk.Toplevel(self.user_mgmt_window)
+        dialog.title("Add New User")
+        dialog.geometry("400x450")
+        dialog.configure(bg=self.bg_color)
+        dialog.transient(self.user_mgmt_window)
+        dialog.grab_set()
+
+        tk.Label(dialog, text="Add New User",
+                font=("Arial", 14, "bold"), bg=self.bg_color, fg=self.fg_color).pack(pady=(15, 15))
+
+        # Form fields
+        fields_frame = tk.Frame(dialog, bg=self.bg_color)
+        fields_frame.pack(fill=tk.X, padx=30)
+
+        tk.Label(fields_frame, text="Username*:", bg=self.bg_color, fg=self.fg_color).pack(anchor="w")
+        username_entry = tk.Entry(fields_frame, bg=self.input_bg, fg=self.fg_color, width=35)
+        username_entry.pack(pady=(2, 10))
+
+        tk.Label(fields_frame, text="Full Name:", bg=self.bg_color, fg=self.fg_color).pack(anchor="w")
+        fullname_entry = tk.Entry(fields_frame, bg=self.input_bg, fg=self.fg_color, width=35)
+        fullname_entry.pack(pady=(2, 10))
+
+        tk.Label(fields_frame, text="Email:", bg=self.bg_color, fg=self.fg_color).pack(anchor="w")
+        email_entry = tk.Entry(fields_frame, bg=self.input_bg, fg=self.fg_color, width=35)
+        email_entry.pack(pady=(2, 10))
+
+        tk.Label(fields_frame, text="Role*:", bg=self.bg_color, fg=self.fg_color).pack(anchor="w")
+        role_var = tk.StringVar(value="viewer")
+        role_combo = ttk.Combobox(fields_frame, textvariable=role_var,
+                                 values=list(ROLE_PERMISSIONS.keys()), state="readonly", width=32)
+        role_combo.pack(pady=(2, 10))
+
+        tk.Label(fields_frame, text="Initial Password*:", bg=self.bg_color, fg=self.fg_color).pack(anchor="w")
+        password_entry = tk.Entry(fields_frame, bg=self.input_bg, fg=self.fg_color, width=35, show="*")
+        password_entry.pack(pady=(2, 10))
+
+        # Require password change checkbox
+        require_change_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(fields_frame, text="Require password change on first login",
+                      variable=require_change_var, bg=self.bg_color, fg=self.fg_color,
+                      selectcolor=self.input_bg).pack(anchor="w", pady=5)
+
+        error_label = tk.Label(dialog, text="", bg=self.bg_color, fg="#ff6b6b")
+        error_label.pack(pady=5)
+
+        def save_user():
+            username = username_entry.get().strip()
+            fullname = fullname_entry.get().strip()
+            email = email_entry.get().strip()
+            role = role_var.get()
+            password = password_entry.get()
+
+            if not username:
+                error_label.config(text="Username is required")
+                return
+            if len(password) < 6:
+                error_label.config(text="Password must be at least 6 characters")
+                return
+
+            pw_hash, pw_salt = hash_password(password)
+
+            try:
+                conn = sqlite3.connect(self.db_path, timeout=30.0)
+                cursor = conn.cursor()
+                cursor.execute("""
+                    INSERT INTO users (username, password_hash, password_salt, full_name, email, role,
+                                      date_created, is_active, must_change_password)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)
+                """, (username, pw_hash, pw_salt, fullname or None, email or None, role,
+                     datetime.now().isoformat(), 1 if require_change_var.get() else 0))
+                conn.commit()
+                conn.close()
+
+                self.log_activity('USER_CREATED', None, f"Created user: {username} with role: {role}")
+                messagebox.showinfo("Success", f"User '{username}' created successfully!")
+                dialog.destroy()
+                self._refresh_user_list()
+
+            except sqlite3.IntegrityError:
+                error_label.config(text="Username already exists")
+            except Exception as e:
+                error_label.config(text=f"Error creating user: {str(e)[:30]}")
+                logger.error(f"Error creating user: {e}")
+
+        btn_frame = tk.Frame(dialog, bg=self.bg_color)
+        btn_frame.pack(pady=20)
+
+        tk.Button(btn_frame, text="Create User", command=save_user,
+                 bg=self.accent_color, fg=self.fg_color, font=("Arial", 10, "bold"),
+                 width=12).pack(side=tk.LEFT, padx=10)
+
+        tk.Button(btn_frame, text="Cancel", command=dialog.destroy,
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 10),
+                 width=12).pack(side=tk.LEFT, padx=10)
+
+    def _edit_user_dialog(self):
+        """Edit selected user"""
+        selected = self.user_tree.selection()
+        if not selected:
+            messagebox.showwarning("Select User", "Please select a user to edit")
+            return
+
+        item = self.user_tree.item(selected[0])
+        username = item['values'][0]
+
+        # Get user details
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
+            cursor = conn.cursor()
+            cursor.execute("SELECT user_id, username, full_name, email, role FROM users WHERE username = ?",
+                         (username,))
+            user = cursor.fetchone()
+            conn.close()
+        except Exception as e:
+            messagebox.showerror("Error", f"Error loading user: {e}")
+            return
+
+        if not user:
+            return
+
+        user_id, db_username, full_name, email, role = user
+
+        dialog = tk.Toplevel(self.user_mgmt_window)
+        dialog.title(f"Edit User: {username}")
+        dialog.geometry("400x350")
+        dialog.configure(bg=self.bg_color)
+        dialog.transient(self.user_mgmt_window)
+        dialog.grab_set()
+
+        tk.Label(dialog, text=f"Edit User: {username}",
+                font=("Arial", 14, "bold"), bg=self.bg_color, fg=self.fg_color).pack(pady=(15, 15))
+
+        fields_frame = tk.Frame(dialog, bg=self.bg_color)
+        fields_frame.pack(fill=tk.X, padx=30)
+
+        tk.Label(fields_frame, text="Full Name:", bg=self.bg_color, fg=self.fg_color).pack(anchor="w")
+        fullname_entry = tk.Entry(fields_frame, bg=self.input_bg, fg=self.fg_color, width=35)
+        fullname_entry.insert(0, full_name or '')
+        fullname_entry.pack(pady=(2, 10))
+
+        tk.Label(fields_frame, text="Email:", bg=self.bg_color, fg=self.fg_color).pack(anchor="w")
+        email_entry = tk.Entry(fields_frame, bg=self.input_bg, fg=self.fg_color, width=35)
+        email_entry.insert(0, email or '')
+        email_entry.pack(pady=(2, 10))
+
+        tk.Label(fields_frame, text="Role:", bg=self.bg_color, fg=self.fg_color).pack(anchor="w")
+        role_var = tk.StringVar(value=role)
+        role_combo = ttk.Combobox(fields_frame, textvariable=role_var,
+                                 values=list(ROLE_PERMISSIONS.keys()), state="readonly", width=32)
+        role_combo.pack(pady=(2, 10))
+
+        # Prevent changing own role from admin
+        if username == self.current_username and role == 'admin':
+            role_combo.config(state="disabled")
+            tk.Label(fields_frame, text="(Cannot change your own admin role)",
+                    bg=self.bg_color, fg="#ff6b6b", font=("Arial", 8)).pack(anchor="w")
+
+        error_label = tk.Label(dialog, text="", bg=self.bg_color, fg="#ff6b6b")
+        error_label.pack(pady=5)
+
+        def save_changes():
+            new_fullname = fullname_entry.get().strip()
+            new_email = email_entry.get().strip()
+            new_role = role_var.get()
+
+            try:
+                conn = sqlite3.connect(self.db_path, timeout=30.0)
+                cursor = conn.cursor()
+                cursor.execute("""
+                    UPDATE users SET full_name = ?, email = ?, role = ?
+                    WHERE user_id = ?
+                """, (new_fullname or None, new_email or None, new_role, user_id))
+                conn.commit()
+                conn.close()
+
+                self.log_activity('USER_UPDATED', None, f"Updated user: {username}")
+                messagebox.showinfo("Success", "User updated successfully!")
+                dialog.destroy()
+                self._refresh_user_list()
+
+            except Exception as e:
+                error_label.config(text=f"Error: {str(e)[:30]}")
+
+        btn_frame = tk.Frame(dialog, bg=self.bg_color)
+        btn_frame.pack(pady=20)
+
+        tk.Button(btn_frame, text="Save Changes", command=save_changes,
+                 bg=self.accent_color, fg=self.fg_color, font=("Arial", 10, "bold"),
+                 width=12).pack(side=tk.LEFT, padx=10)
+
+        tk.Button(btn_frame, text="Cancel", command=dialog.destroy,
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 10),
+                 width=12).pack(side=tk.LEFT, padx=10)
+
+    def _reset_user_password(self):
+        """Reset selected user's password"""
+        selected = self.user_tree.selection()
+        if not selected:
+            messagebox.showwarning("Select User", "Please select a user to reset password")
+            return
+
+        item = self.user_tree.item(selected[0])
+        username = item['values'][0]
+
+        # Generate temporary password
+        temp_password = secrets.token_urlsafe(8)
+
+        if messagebox.askyesno("Reset Password",
+                              f"Reset password for user '{username}'?\n\n"
+                              f"New temporary password: {temp_password}\n\n"
+                              "Make sure to share this with the user!"):
+            try:
+                pw_hash, pw_salt = hash_password(temp_password)
+                conn = sqlite3.connect(self.db_path, timeout=30.0)
+                cursor = conn.cursor()
+                cursor.execute("""
+                    UPDATE users SET password_hash = ?, password_salt = ?,
+                                    must_change_password = 1, failed_login_attempts = 0, locked_until = NULL
+                    WHERE username = ?
+                """, (pw_hash, pw_salt, username))
+                conn.commit()
+                conn.close()
+
+                self.log_activity('PASSWORD_RESET', None, f"Reset password for user: {username}")
+
+                messagebox.showinfo("Password Reset",
+                                  f"Password reset successfully!\n\n"
+                                  f"Username: {username}\n"
+                                  f"Temporary Password: {temp_password}\n\n"
+                                  "User will be required to change password on next login.")
+
+            except Exception as e:
+                messagebox.showerror("Error", f"Error resetting password: {e}")
+
+    def _toggle_user_active(self):
+        """Enable or disable selected user"""
+        selected = self.user_tree.selection()
+        if not selected:
+            messagebox.showwarning("Select User", "Please select a user")
+            return
+
+        item = self.user_tree.item(selected[0])
+        username = item['values'][0]
+        current_status = item['values'][4]
+
+        if username == self.current_username:
+            messagebox.showwarning("Cannot Disable", "You cannot disable your own account!")
+            return
+
+        new_status = 0 if current_status == "Active" else 1
+        action = "disable" if new_status == 0 else "enable"
+
+        if messagebox.askyesno("Confirm",
+                              f"Are you sure you want to {action} user '{username}'?"):
+            try:
+                conn = sqlite3.connect(self.db_path, timeout=30.0)
+                cursor = conn.cursor()
+                cursor.execute("UPDATE users SET is_active = ? WHERE username = ?",
+                             (new_status, username))
+                conn.commit()
+                conn.close()
+
+                self.log_activity('USER_STATUS_CHANGED', None,
+                                f"{'Enabled' if new_status else 'Disabled'} user: {username}")
+                self._refresh_user_list()
+
+            except Exception as e:
+                messagebox.showerror("Error", f"Error updating user: {e}")
+
+    def _delete_user(self):
+        """Delete selected user"""
+        selected = self.user_tree.selection()
+        if not selected:
+            messagebox.showwarning("Select User", "Please select a user to delete")
+            return
+
+        item = self.user_tree.item(selected[0])
+        username = item['values'][0]
+
+        if username == self.current_username:
+            messagebox.showwarning("Cannot Delete", "You cannot delete your own account!")
+            return
+
+        if username == 'admin':
+            messagebox.showwarning("Cannot Delete", "The admin account cannot be deleted!")
+            return
+
+        if messagebox.askyesno("Confirm Delete",
+                              f"Are you sure you want to permanently delete user '{username}'?\n\n"
+                              "This action cannot be undone!"):
+            try:
+                conn = sqlite3.connect(self.db_path, timeout=30.0)
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM users WHERE username = ?", (username,))
+                conn.commit()
+                conn.close()
+
+                self.log_activity('USER_DELETED', None, f"Deleted user: {username}")
+                messagebox.showinfo("Deleted", f"User '{username}' has been deleted.")
+                self._refresh_user_list()
+
+            except Exception as e:
+                messagebox.showerror("Error", f"Error deleting user: {e}")
 
     def run_startup_integrity_check(self):
         """
@@ -517,23 +1410,57 @@ class GCodeDatabaseGUI:
                 user_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 username TEXT UNIQUE NOT NULL,
                 password_hash TEXT,
+                password_salt TEXT,
                 full_name TEXT,
                 role TEXT DEFAULT 'viewer',
                 email TEXT,
                 date_created TEXT,
                 last_login TEXT,
-                is_active INTEGER DEFAULT 1
+                is_active INTEGER DEFAULT 1,
+                must_change_password INTEGER DEFAULT 0,
+                failed_login_attempts INTEGER DEFAULT 0,
+                locked_until TEXT
             )
         ''')
 
-        # Create default admin user if no users exist
+        # Add new columns to existing users table
+        try:
+            cursor.execute("ALTER TABLE users ADD COLUMN password_salt TEXT")
+        except:
+            pass
+        try:
+            cursor.execute("ALTER TABLE users ADD COLUMN must_change_password INTEGER DEFAULT 0")
+        except:
+            pass
+        try:
+            cursor.execute("ALTER TABLE users ADD COLUMN failed_login_attempts INTEGER DEFAULT 0")
+        except:
+            pass
+        try:
+            cursor.execute("ALTER TABLE users ADD COLUMN locked_until TEXT")
+        except:
+            pass
+
+        # Create default admin user if no users exist (password: admin123 - must be changed on first login)
         cursor.execute("SELECT COUNT(*) FROM users")
         if cursor.fetchone()[0] == 0:
-            from datetime import datetime
+            default_password = "admin123"
+            pw_hash, pw_salt = hash_password(default_password)
             cursor.execute("""
-                INSERT INTO users (username, password_hash, full_name, role, date_created, is_active)
-                VALUES ('admin', NULL, 'Administrator', 'admin', ?, 1)
-            """, (datetime.now().isoformat(),))
+                INSERT INTO users (username, password_hash, password_salt, full_name, role, date_created, is_active, must_change_password)
+                VALUES ('admin', ?, ?, 'Administrator', 'admin', ?, 1, 1)
+            """, (pw_hash, pw_salt, datetime.now().isoformat()))
+        else:
+            # Fix existing admin user if password not set (migration from old version)
+            cursor.execute("SELECT password_hash, password_salt FROM users WHERE username = 'admin'")
+            admin_row = cursor.fetchone()
+            if admin_row and (admin_row[0] is None or admin_row[1] is None):
+                default_password = "admin123"
+                pw_hash, pw_salt = hash_password(default_password)
+                cursor.execute("""
+                    UPDATE users SET password_hash = ?, password_salt = ?, must_change_password = 1
+                    WHERE username = 'admin'
+                """, (pw_hash, pw_salt))
 
         # Create program_versions table
         cursor.execute('''
@@ -723,28 +1650,49 @@ class GCodeDatabaseGUI:
 
         # Define repository paths
         self.repository_path = os.path.join(base_path, 'repository')
+        self.revised_repository_path = os.path.join(base_path, 'revised_repository')
         self.versions_path = os.path.join(base_path, 'versions')
         self.backups_path = os.path.join(base_path, 'backups')
         self.deleted_path = os.path.join(base_path, 'deleted')
 
         # Create directories if they don't exist
         os.makedirs(self.repository_path, exist_ok=True)
+        os.makedirs(self.revised_repository_path, exist_ok=True)
         os.makedirs(self.versions_path, exist_ok=True)
         os.makedirs(self.backups_path, exist_ok=True)
         os.makedirs(self.deleted_path, exist_ok=True)
 
         logger.info(f"Repository initialized at: {self.repository_path}")
+        logger.info(f"Revised Repository initialized at: {self.revised_repository_path}")
         logger.debug(f"Versions path: {self.versions_path}")
         logger.debug(f"Backups path: {self.backups_path}")
         logger.debug(f"Deleted path: {self.deleted_path}")
 
     def is_managed_file(self, file_path):
-        """Check if a file is in the managed repository"""
+        """Check if a file is in the managed repository (either main or revised)"""
         if not file_path:
             return False
         abs_path = os.path.abspath(file_path)
         repo_path = os.path.abspath(self.repository_path)
-        return abs_path.startswith(repo_path)
+        revised_repo_path = os.path.abspath(self.revised_repository_path)
+        return abs_path.startswith(repo_path) or abs_path.startswith(revised_repo_path)
+
+    def is_in_revised_repository(self, file_path):
+        """Check if a file is in the revised repository"""
+        if not file_path:
+            return False
+        abs_path = os.path.abspath(file_path)
+        revised_repo_path = os.path.abspath(self.revised_repository_path)
+        return abs_path.startswith(revised_repo_path)
+
+    def is_in_main_repository(self, file_path):
+        """Check if a file is in the main repository (not revised)"""
+        if not file_path:
+            return False
+        abs_path = os.path.abspath(file_path)
+        repo_path = os.path.abspath(self.repository_path)
+        revised_repo_path = os.path.abspath(self.revised_repository_path)
+        return abs_path.startswith(repo_path) and not abs_path.startswith(revised_repo_path)
 
     def import_to_repository(self, source_file, program_number=None):
         """
@@ -3956,6 +4904,24 @@ class GCodeDatabaseGUI:
 
         self.create_top_section(top_frame)
 
+        # User status bar (right side of top frame)
+        user_frame = tk.Frame(top_frame, bg=self.bg_color)
+        user_frame.pack(side=tk.RIGHT, padx=10)
+
+        # Role color coding
+        role_colors = {'admin': '#4CAF50', 'editor': '#2196F3', 'operator': '#FF9800', 'viewer': '#9E9E9E'}
+        role_color = role_colors.get(self.current_user_role, '#9E9E9E')
+
+        tk.Label(user_frame, text=f"Logged in as: {self.current_username}",
+                bg=self.bg_color, fg=self.fg_color, font=("Arial", 9)).pack(side=tk.LEFT, padx=5)
+
+        tk.Label(user_frame, text=f"[{self.current_user_role.upper()}]",
+                bg=self.bg_color, fg=role_color, font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=2)
+
+        tk.Button(user_frame, text="Logout", command=self.logout_user,
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 8),
+                 width=8).pack(side=tk.LEFT, padx=10)
+
         # Ribbon tabs section
         ribbon_frame = tk.Frame(main_container, bg=self.bg_color, relief=tk.RAISED, borderwidth=1)
         ribbon_frame.pack(fill=tk.X, pady=(0, 10))
@@ -3971,7 +4937,7 @@ class GCodeDatabaseGUI:
 
         self.view_mode_var = tk.StringVar(value="all")
         view_dropdown = ttk.Combobox(view_selector_frame, textvariable=self.view_mode_var,
-                                     values=["all", "repository", "external"],
+                                     values=["all", "repository", "revised", "external"],
                                      state="readonly", width=20, font=("Arial", 10))
         view_dropdown.pack(side=tk.LEFT, padx=5)
         view_dropdown.bind('<<ComboboxSelected>>', self.on_view_mode_change)
@@ -3983,6 +4949,7 @@ class GCodeDatabaseGUI:
         # Create separate frames for each view mode
         self.all_programs_tab = tk.Frame(action_buttons_frame, bg=self.bg_color)
         self.repository_tab = tk.Frame(action_buttons_frame, bg=self.bg_color)
+        self.revised_tab = tk.Frame(action_buttons_frame, bg=self.bg_color)
         self.external_tab = tk.Frame(action_buttons_frame, bg=self.bg_color)
 
         # Store reference to action buttons frame
@@ -3991,6 +4958,7 @@ class GCodeDatabaseGUI:
         # Setup tab-specific action buttons
         self.setup_all_programs_tab()
         self.setup_repository_tab()
+        self.setup_revised_tab()
         self.setup_external_tab()
 
         # Show "all" tab by default
@@ -4141,6 +5109,69 @@ class GCodeDatabaseGUI:
                  bg="#9C27B0", fg=self.fg_color, font=("Arial", 8, "bold"),
                  width=16).pack(side=tk.LEFT, padx=2, expand=True, fill=tk.X)
 
+    def setup_revised_tab(self):
+        """Setup the Revised Repository tab (hand-refined programs)"""
+        # Info and action buttons
+        info_frame = tk.Frame(self.revised_tab, bg=self.bg_color)
+        info_frame.pack(fill=tk.X, pady=5, padx=10)
+
+        # Info label
+        tk.Label(info_frame, text="Revised Repository: Hand-refined programs in revised_repository/ folder",
+                bg=self.bg_color, fg="#FFD700", font=("Arial", 10, "italic")).pack(side=tk.LEFT)
+
+        # Stats button
+        tk.Button(info_frame, text="📊 Stats", command=self.show_revised_stats,
+                 bg=self.accent_color, fg=self.fg_color, font=("Arial", 9, "bold"),
+                 width=10, height=1).pack(side=tk.RIGHT, padx=5)
+
+        # Refresh button
+        tk.Button(info_frame, text="🔄 Refresh", command=self.refresh_revised_scan,
+                 bg="#4CAF50", fg=self.fg_color, font=("Arial", 9, "bold"),
+                 width=10, height=1).pack(side=tk.RIGHT, padx=5)
+
+        # Revised repository management buttons - Row 1
+        revised_buttons1 = tk.Frame(self.revised_tab, bg=self.bg_color)
+        revised_buttons1.pack(fill=tk.X, pady=5, padx=10)
+
+        tk.Button(revised_buttons1, text="📥 Import from Main",
+                 command=self.import_to_revised_repository,
+                 bg="#FF9800", fg=self.fg_color, font=("Arial", 8, "bold"),
+                 width=16).pack(side=tk.LEFT, padx=2, expand=True, fill=tk.X)
+
+        tk.Button(revised_buttons1, text="📤 Move to Main",
+                 command=self.move_to_main_repository,
+                 bg="#2196F3", fg=self.fg_color, font=("Arial", 8, "bold"),
+                 width=14).pack(side=tk.LEFT, padx=2, expand=True, fill=tk.X)
+
+        tk.Button(revised_buttons1, text="🗑️ Delete",
+                 command=self.delete_from_revised_repository,
+                 bg="#D32F2F", fg=self.fg_color, font=("Arial", 8, "bold"),
+                 width=12).pack(side=tk.LEFT, padx=2, expand=True, fill=tk.X)
+
+        tk.Button(revised_buttons1, text="📤 Export",
+                 command=self.export_from_revised,
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 8, "bold"),
+                 width=12).pack(side=tk.LEFT, padx=2, expand=True, fill=tk.X)
+
+        # Row 2 - Comparison tools
+        revised_buttons2 = tk.Frame(self.revised_tab, bg=self.bg_color)
+        revised_buttons2.pack(fill=tk.X, pady=2, padx=10)
+
+        tk.Button(revised_buttons2, text="⚖️ Compare with Main",
+                 command=self.compare_revised_with_main,
+                 bg="#9C27B0", fg=self.fg_color, font=("Arial", 8, "bold"),
+                 width=18).pack(side=tk.LEFT, padx=2, expand=True, fill=tk.X)
+
+        tk.Button(revised_buttons2, text="📁 Open Folder",
+                 command=lambda: os.startfile(self.revised_repository_path) if os.path.exists(self.revised_repository_path) else None,
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 8, "bold"),
+                 width=14).pack(side=tk.LEFT, padx=2, expand=True, fill=tk.X)
+
+        tk.Button(revised_buttons2, text="🔍 Find Differences",
+                 command=self.find_revised_differences,
+                 bg="#673AB7", fg=self.fg_color, font=("Arial", 8, "bold"),
+                 width=16).pack(side=tk.LEFT, padx=2, expand=True, fill=tk.X)
+
     def setup_external_tab(self):
         """Setup the External/Scanned tab (external files only)"""
         # Info and action buttons
@@ -4178,6 +5209,7 @@ class GCodeDatabaseGUI:
         # Hide all tab frames
         self.all_programs_tab.pack_forget()
         self.repository_tab.pack_forget()
+        self.revised_tab.pack_forget()
         self.external_tab.pack_forget()
 
         # Show the selected tab frame
@@ -4187,6 +5219,9 @@ class GCodeDatabaseGUI:
         elif view_mode == 'repository':
             self.repository_tab.pack(fill=tk.X)
             self.refresh_results(view_mode='repository')
+        elif view_mode == 'revised':
+            self.revised_tab.pack(fill=tk.X)
+            self.refresh_results(view_mode='revised')
         elif view_mode == 'external':
             self.external_tab.pack(fill=tk.X)
             self.refresh_results(view_mode='external')
@@ -4237,10 +5272,6 @@ class GCodeDatabaseGUI:
                  bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
                  width=14, height=2).pack(side=tk.LEFT, padx=3)
 
-        tk.Button(files_group, text="🆕 Scan New Only", command=self.scan_for_new_files,
-                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
-                 width=14, height=2).pack(side=tk.LEFT, padx=3)
-
         tk.Button(files_group, text="🔄 Rescan Database", command=self.rescan_database,
                  bg="#FF6F00", fg=self.fg_color, font=("Arial", 9, "bold"),
                  width=14, height=2).pack(side=tk.LEFT, padx=3)
@@ -4272,15 +5303,7 @@ class GCodeDatabaseGUI:
                  bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
                  width=14, height=2).pack(side=tk.LEFT, padx=3)
 
-        tk.Button(dup_group, text="⚖️ Compare Files", command=self.compare_files,
-                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
-                 width=14, height=2).pack(side=tk.LEFT, padx=3)
-
         tk.Button(dup_group, text="📝 Rename Duplicates", command=self.rename_duplicate_files,
-                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
-                 width=14, height=2).pack(side=tk.LEFT, padx=3)
-
-        tk.Button(dup_group, text="🔧 Fix Program #s", command=self.fix_program_numbers,
                  bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
                  width=14, height=2).pack(side=tk.LEFT, padx=3)
 
@@ -4311,15 +5334,15 @@ class GCodeDatabaseGUI:
                  bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
                  width=14, height=2).pack(side=tk.LEFT, padx=3)
 
-        tk.Button(reports_group, text="📊 Statistics", command=self.show_statistics,
-                 bg="#1976D2", fg=self.fg_color, font=("Arial", 9, "bold"),
-                 width=14, height=2).pack(side=tk.LEFT, padx=3)
-
         tk.Button(reports_group, text="🔧 Tool Analysis", command=self.view_tool_statistics,
                  bg="#9C27B0", fg=self.fg_color, font=("Arial", 9, "bold"),
                  width=14, height=2).pack(side=tk.LEFT, padx=3)
 
-        tk.Button(reports_group, text="❓ Help & Workflow", command=self.show_legend,
+        tk.Button(reports_group, text="🔩 Tool Positions", command=self.scan_tool_change_positions,
+                 bg="#FF5722", fg=self.fg_color, font=("Arial", 9, "bold"),
+                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+
+        tk.Button(reports_group, text="❓ Legend/Help", command=self.show_legend,
                  bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
                  width=14, height=2).pack(side=tk.LEFT, padx=3)
 
@@ -4330,10 +5353,6 @@ class GCodeDatabaseGUI:
         db_group = tk.Frame(tab_database, bg=self.bg_color)
         db_group.pack(fill=tk.X, padx=5, pady=5)
 
-        tk.Button(db_group, text="💾 Backup DB", command=self.create_manual_backup,
-                 bg="#1976D2", fg=self.fg_color, font=("Arial", 9, "bold"),
-                 width=14, height=2).pack(side=tk.LEFT, padx=3)
-
         tk.Button(db_group, text="📦 Full Backup", command=self.create_full_backup,
                  bg="#2E7D32", fg=self.fg_color, font=("Arial", 9, "bold"),
                  width=14, height=2).pack(side=tk.LEFT, padx=3)
@@ -4343,14 +5362,6 @@ class GCodeDatabaseGUI:
                  width=14, height=2).pack(side=tk.LEFT, padx=3)
 
         tk.Button(db_group, text="📋 View Backups", command=self.view_backups,
-                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
-                 width=14, height=2).pack(side=tk.LEFT, padx=3)
-
-        tk.Button(db_group, text="💾 Save Profile", command=self.save_database_profile,
-                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
-                 width=14, height=2).pack(side=tk.LEFT, padx=3)
-
-        tk.Button(db_group, text="📂 Load Profile", command=self.load_database_profile,
                  bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
                  width=14, height=2).pack(side=tk.LEFT, padx=3)
 
@@ -4381,10 +5392,6 @@ class GCodeDatabaseGUI:
                  bg="#3F51B5", fg=self.fg_color, font=("Arial", 9, "bold"),
                  width=14, height=2).pack(side=tk.LEFT, padx=3)
 
-        tk.Button(workflow_group, text="📘 Workflow Guide", command=self.show_workflow_guide,
-                 bg="#2196F3", fg=self.fg_color, font=("Arial", 9, "bold"),
-                 width=14, height=2).pack(side=tk.LEFT, padx=3)
-
         # Tab 6: Maintenance
         tab_maint = tk.Frame(ribbon, bg=self.bg_color)
         ribbon.add(tab_maint, text='⚙️ Maintenance')
@@ -4406,6 +5413,14 @@ class GCodeDatabaseGUI:
 
         tk.Button(maint_group, text="🔢 Resolve Suffixes", command=self.show_resolve_suffixes,
                  bg="#9C27B0", fg=self.fg_color, font=("Arial", 9, "bold"),
+                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+
+        tk.Button(maint_group, text="👥 User Management", command=self.show_user_management,
+                 bg="#1976D2", fg=self.fg_color, font=("Arial", 9, "bold"),
+                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+
+        tk.Button(maint_group, text="🔐 Change Password", command=self.show_change_password,
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
                  width=14, height=2).pack(side=tk.LEFT, padx=3)
 
     def create_filter_section(self, parent):
@@ -7158,6 +8173,166 @@ class GCodeDatabaseGUI:
 
         conn.close()
 
+    def scan_tool_change_positions(self):
+        """Scan G-code files to find all G53 X Z tool change position lines"""
+        # Ask user which files to scan
+        scan_choice = messagebox.askyesnocancel(
+            "Scan Tool Positions",
+            "Scan for G53 X Z tool change position lines?\n\n"
+            "YES = Scan repository files only\n"
+            "NO = Scan a specific folder\n"
+            "CANCEL = Cancel"
+        )
+
+        if scan_choice is None:
+            return
+
+        files_to_scan = []
+
+        if scan_choice:  # YES - scan repository
+            if os.path.exists(self.repository_path):
+                for file in os.listdir(self.repository_path):
+                    file_path = os.path.join(self.repository_path, file)
+                    if os.path.isfile(file_path):
+                        files_to_scan.append(file_path)
+            # Also scan revised repository
+            if os.path.exists(self.revised_repository_path):
+                for file in os.listdir(self.revised_repository_path):
+                    file_path = os.path.join(self.revised_repository_path, file)
+                    if os.path.isfile(file_path):
+                        files_to_scan.append(file_path)
+        else:  # NO - scan specific folder
+            folder = filedialog.askdirectory(title="Select folder to scan for tool positions")
+            if not folder:
+                return
+            for root, _, files in os.walk(folder):
+                for file in files:
+                    if file.lower().endswith(('.nc', '.txt', '.tap', '.gcode', '')) and not file.startswith('.'):
+                        files_to_scan.append(os.path.join(root, file))
+
+        if not files_to_scan:
+            messagebox.showinfo("No Files", "No files found to scan.")
+            return
+
+        # Progress window
+        progress_window = tk.Toplevel(self.root)
+        progress_window.title("Scanning Tool Positions...")
+        progress_window.geometry("400x150")
+        progress_window.configure(bg=self.bg_color)
+        progress_window.transient(self.root)
+
+        tk.Label(progress_window, text="Scanning for G53 X Z lines...",
+                bg=self.bg_color, fg=self.fg_color, font=("Arial", 11)).pack(pady=20)
+
+        progress_label = tk.Label(progress_window, text="0 / 0",
+                                 bg=self.bg_color, fg=self.fg_color, font=("Arial", 10))
+        progress_label.pack(pady=10)
+
+        progress_window.update()
+
+        # Count unique G53 X Z lines - once per file only
+        line_counts = {}  # {normalized_line: number of files}
+
+        total_files = len(files_to_scan)
+        scanned = 0
+
+        for file_path in files_to_scan:
+            scanned += 1
+            if scanned % 50 == 0:
+                progress_label.config(text=f"{scanned} / {total_files}")
+                progress_window.update()
+
+            try:
+                with open(file_path, 'r', errors='ignore') as f:
+                    lines = f.readlines()
+
+                # Track lines found in THIS file (count once per file)
+                lines_in_this_file = set()
+
+                for line in lines:
+                    line_stripped = line.strip().upper()
+
+                    # Skip comments and empty lines
+                    if not line_stripped or line_stripped.startswith('(') or line_stripped.startswith(';'):
+                        continue
+
+                    # Check if line contains G53 with X and Z (tool change position)
+                    if 'G53' in line_stripped and 'X' in line_stripped and 'Z' in line_stripped:
+                        # Normalize whitespace for counting
+                        normalized = ' '.join(line_stripped.split())
+                        lines_in_this_file.add(normalized)
+
+                # Count each unique line once per file
+                for normalized in lines_in_this_file:
+                    line_counts[normalized] = line_counts.get(normalized, 0) + 1
+
+            except Exception as e:
+                logger.error(f"Error scanning {file_path}: {e}")
+                continue
+
+        progress_window.destroy()
+
+        # Create results window
+        results_window = tk.Toplevel(self.root)
+        results_window.title("Tool Change Position Lines")
+        results_window.geometry("800x600")
+        results_window.configure(bg=self.bg_color)
+
+        # Title
+        tk.Label(results_window, text="G53 X Z Tool Change Position Lines",
+                font=("Arial", 16, "bold"), bg=self.bg_color, fg=self.fg_color).pack(pady=10)
+
+        tk.Label(results_window, text=f"Scanned {total_files} files | Found {len(line_counts)} unique lines",
+                font=("Arial", 10), bg=self.bg_color, fg="#888888").pack()
+
+        # Results text area
+        text_frame = tk.Frame(results_window, bg=self.bg_color)
+        text_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        results_text = scrolledtext.ScrolledText(text_frame, bg=self.input_bg, fg=self.fg_color,
+                                                 font=("Consolas", 10), wrap=tk.NONE)
+        results_text.pack(fill=tk.BOTH, expand=True)
+
+        # Sort by count descending
+        sorted_lines = sorted(line_counts.items(), key=lambda x: x[1], reverse=True)
+
+        results_text.insert(tk.END, f"{'FILES':<10} LINE\n")
+        results_text.insert(tk.END, "=" * 70 + "\n")
+
+        for line, count in sorted_lines:
+            results_text.insert(tk.END, f"{count:<10} {line}\n")
+
+        results_text.insert(tk.END, "\n" + "=" * 70 + "\n")
+        results_text.insert(tk.END, f"Total unique position lines: {len(line_counts)}\n")
+
+        # Button frame
+        btn_frame = tk.Frame(results_window, bg=self.bg_color)
+        btn_frame.pack(pady=10)
+
+        def export_lines():
+            export_path = filedialog.asksaveasfilename(
+                title="Export Tool Position Lines",
+                defaultextension=".txt",
+                filetypes=[("Text Files", "*.txt"), ("CSV Files", "*.csv")]
+            )
+            if export_path:
+                try:
+                    with open(export_path, 'w') as f:
+                        f.write("COUNT\tLINE\n")
+                        for line, count in sorted_lines:
+                            f.write(f"{count}\t{line}\n")
+                    messagebox.showinfo("Exported", f"Exported to:\n{export_path}")
+                except Exception as e:
+                    messagebox.showerror("Error", f"Export failed:\n{e}")
+
+        tk.Button(btn_frame, text="Export", command=export_lines,
+                 bg="#4CAF50", fg=self.fg_color, font=("Arial", 10, "bold"),
+                 width=12).pack(side=tk.LEFT, padx=10)
+
+        tk.Button(btn_frame, text="Close", command=results_window.destroy,
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold"),
+                 width=12).pack(side=tk.LEFT, padx=10)
+
     def fix_program_numbers(self):
         """Update internal O-numbers to match filenames - FILTERED VIEW ONLY"""
         # Get currently displayed items (respects filters)
@@ -7350,6 +8525,10 @@ class GCodeDatabaseGUI:
 
     def clear_database(self):
         """Clear all records from the database"""
+        # Permission check
+        if not self.require_permission('clear_database', 'clear the database'):
+            return
+
         # Confirm with user
         result = messagebox.askyesno(
             "Clear Database",
@@ -8079,7 +9258,7 @@ class GCodeDatabaseGUI:
         """Refresh the results table based on current filters
 
         Args:
-            view_mode: 'all' (default), 'repository', or 'external'
+            view_mode: 'all' (default), 'repository', 'revised', or 'external'
             external_only: Deprecated, use view_mode='external' instead
         """
         # Handle deprecated parameter
@@ -8096,10 +9275,15 @@ class GCodeDatabaseGUI:
 
         # Add view mode filter
         if view_mode == 'repository':
-            # Only show managed files (in repository)
-            query += " AND is_managed = 1"
+            # Only show managed files in MAIN repository (not revised)
+            query += " AND is_managed = 1 AND file_path NOT LIKE ?"
+            params.append("%revised_repository%")
+        elif view_mode == 'revised':
+            # Only show files in revised repository
+            query += " AND file_path LIKE ?"
+            params.append("%revised_repository%")
         elif view_mode == 'external':
-            # Only show external files (NOT in repository)
+            # Only show external files (NOT in any repository)
             query += " AND (is_managed = 0 OR is_managed IS NULL)"
         # 'all' mode shows everything (no additional filter)
 
@@ -8668,15 +9852,22 @@ class GCodeDatabaseGUI:
             
     def add_entry(self):
         """Add a new entry manually"""
+        # Permission check
+        if not self.require_permission('add_files', 'add entries'):
+            return
         EditEntryWindow(self, None, self.refresh_results)
-        
+
     def edit_entry(self):
         """Edit selected entry"""
+        # Permission check
+        if not self.require_permission('edit_files', 'edit entries'):
+            return
+
         selected = self.tree.selection()
         if not selected:
             messagebox.showwarning("No Selection", "Please select a program to edit")
             return
-        
+
         program_number = self.tree.item(selected[0])['values'][0]
         EditEntryWindow(self, program_number, self.refresh_results)
         
@@ -8764,6 +9955,10 @@ class GCodeDatabaseGUI:
 
     def delete_entry(self):
         """Delete selected entry"""
+        # Permission check
+        if not self.require_permission('delete_files', 'delete entries'):
+            return
+
         selected = self.tree.selection()
         if not selected:
             messagebox.showwarning("No Selection", "Please select a program to delete")
@@ -10337,6 +11532,10 @@ class GCodeDatabaseGUI:
 
     def delete_filtered_view(self):
         """Delete currently filtered/displayed files from database (NOT from filesystem)"""
+        # Permission check
+        if not self.require_permission('delete_files', 'delete filtered entries'):
+            return
+
         # Get currently displayed items from treeview
         displayed_items = self.tree.get_children()
         if not displayed_items:
@@ -12979,6 +14178,522 @@ For more documentation, see project README files in the application directory.
                  bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold"),
                  width=12, height=2).pack(side=tk.LEFT, padx=5)
 
+    # ========================================================================
+    # REVISED REPOSITORY METHODS
+    # ========================================================================
+
+    def refresh_revised_scan(self):
+        """Scan and refresh the revised repository files"""
+        if not os.path.exists(self.revised_repository_path):
+            messagebox.showwarning("Not Found", "Revised repository folder does not exist.")
+            return
+
+        # Scan revised repository files
+        revised_files = []
+        for file in os.listdir(self.revised_repository_path):
+            file_path = os.path.join(self.revised_repository_path, file)
+            if os.path.isfile(file_path) and not file.startswith('.'):
+                revised_files.append(file_path)
+
+        if not revised_files:
+            messagebox.showinfo("Empty", "No files found in revised repository.")
+            self.refresh_results(view_mode='revised')
+            return
+
+        # Process each file
+        added = 0
+        updated = 0
+        for file_path in revised_files:
+            try:
+                result = self.parser.parse_file(file_path)
+                if result:
+                    # Check if already in database
+                    conn = sqlite3.connect(self.db_path, timeout=30.0)
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT id FROM programs WHERE file_path = ?", (file_path,))
+                    existing = cursor.fetchone()
+
+                    if existing:
+                        # Update existing
+                        self.update_program_from_result(result, file_path)
+                        updated += 1
+                    else:
+                        # Add new
+                        self.add_program_from_result(result, file_path, is_managed=True)
+                        added += 1
+                    conn.close()
+            except Exception as e:
+                logger.error(f"Error processing revised file {file_path}: {e}")
+
+        messagebox.showinfo("Scan Complete",
+                          f"Revised Repository Scan Complete\n\n"
+                          f"Added: {added}\n"
+                          f"Updated: {updated}\n"
+                          f"Total files: {len(revised_files)}")
+
+        self.refresh_results(view_mode='revised')
+
+    def show_revised_stats(self):
+        """Show revised repository statistics"""
+        # Count files in revised repository
+        revised_count = 0
+        revised_size = 0
+
+        if os.path.exists(self.revised_repository_path):
+            for file in os.listdir(self.revised_repository_path):
+                file_path = os.path.join(self.revised_repository_path, file)
+                if os.path.isfile(file_path):
+                    revised_count += 1
+                    revised_size += os.path.getsize(file_path)
+
+        # Count in database that are in revised repository
+        conn = sqlite3.connect(self.db_path, timeout=30.0)
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM programs WHERE file_path LIKE ?",
+                      (f"%revised_repository%",))
+        db_revised_count = cursor.fetchone()[0]
+        conn.close()
+
+        # Create stats dialog
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Revised Repository Statistics")
+        dialog.geometry("450x300")
+        dialog.configure(bg=self.bg_color)
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        tk.Label(dialog, text="📊 Revised Repository Statistics",
+                font=("Arial", 14, "bold"), bg=self.bg_color, fg="#FFD700").pack(pady=10)
+
+        tk.Label(dialog, text="(Hand-refined programs in revised_repository/ folder)",
+                font=("Arial", 9, "italic"), bg=self.bg_color, fg="#888888").pack(pady=2)
+
+        stats_frame = tk.Frame(dialog, bg=self.bg_color)
+        stats_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+
+        stats_data = [
+            ("Files in Folder:", f"{revised_count}"),
+            ("Files in Database:", f"{db_revised_count}"),
+            ("", ""),
+            ("Total Size:", f"{revised_size / (1024 * 1024):.2f} MB"),
+        ]
+
+        for label, value in stats_data:
+            if label:
+                row = tk.Frame(stats_frame, bg=self.bg_color)
+                row.pack(fill=tk.X, pady=5)
+                tk.Label(row, text=label, font=("Arial", 11), bg=self.bg_color, fg=self.fg_color,
+                        anchor='w').pack(side=tk.LEFT)
+                tk.Label(row, text=value, font=("Arial", 11, "bold"), bg=self.bg_color, fg="#FFD700",
+                        anchor='e').pack(side=tk.RIGHT)
+
+        btn_frame = tk.Frame(dialog, bg=self.bg_color)
+        btn_frame.pack(pady=10)
+
+        tk.Button(btn_frame, text="🔄 Refresh", command=lambda: [dialog.destroy(), self.show_revised_stats()],
+                 bg=self.accent_color, fg=self.fg_color, font=("Arial", 10, "bold"),
+                 width=12, height=2).pack(side=tk.LEFT, padx=5)
+
+        tk.Button(btn_frame, text="Close", command=dialog.destroy,
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold"),
+                 width=12, height=2).pack(side=tk.LEFT, padx=5)
+
+    def import_to_revised_repository(self):
+        """Import selected program from main repository to revised repository"""
+        if not self.require_permission('move_files', 'import to revised repository'):
+            return
+
+        selection = self.tree.selection()
+        if not selection:
+            messagebox.showwarning("No Selection", "Please select a program to import to revised repository")
+            return
+
+        item = self.tree.item(selection[0])
+        values = item['values']
+        program_number = values[0]
+
+        # Get file path from database
+        conn = sqlite3.connect(self.db_path, timeout=30.0)
+        cursor = conn.cursor()
+        cursor.execute("SELECT file_path FROM programs WHERE program_number = ?", (program_number,))
+        result = cursor.fetchone()
+        conn.close()
+
+        if not result or not result[0]:
+            messagebox.showerror("Error", "File path not found in database")
+            return
+
+        source_path = result[0]
+
+        if not os.path.exists(source_path):
+            messagebox.showerror("Error", f"Source file not found:\n{source_path}")
+            return
+
+        # Determine destination path
+        filename = os.path.basename(source_path)
+        dest_path = os.path.join(self.revised_repository_path, filename)
+
+        # Check if already exists
+        if os.path.exists(dest_path):
+            if not messagebox.askyesno("File Exists",
+                                       f"A file with this name already exists in revised repository.\n\n"
+                                       f"Overwrite?"):
+                return
+
+        try:
+            # Copy file to revised repository
+            shutil.copy2(source_path, dest_path)
+
+            # Add to database as revised
+            result = self.parser.parse_file(dest_path)
+            if result:
+                self.add_program_from_result(result, dest_path, is_managed=True)
+
+            self.log_activity('IMPORT_TO_REVISED', program_number, f"Imported to revised repository: {filename}")
+
+            messagebox.showinfo("Success", f"Program {program_number} imported to revised repository")
+            self.refresh_results(view_mode='revised')
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to import:\n{e}")
+
+    def move_to_main_repository(self):
+        """Move selected program from revised repository to main repository"""
+        if not self.require_permission('move_files', 'move to main repository'):
+            return
+
+        selection = self.tree.selection()
+        if not selection:
+            messagebox.showwarning("No Selection", "Please select a program to move to main repository")
+            return
+
+        item = self.tree.item(selection[0])
+        values = item['values']
+        program_number = values[0]
+
+        # Get file path from database
+        conn = sqlite3.connect(self.db_path, timeout=30.0)
+        cursor = conn.cursor()
+        cursor.execute("SELECT file_path FROM programs WHERE program_number = ?", (program_number,))
+        result = cursor.fetchone()
+        conn.close()
+
+        if not result or not result[0]:
+            messagebox.showerror("Error", "File path not found in database")
+            return
+
+        source_path = result[0]
+
+        if not self.is_in_revised_repository(source_path):
+            messagebox.showwarning("Not Revised", "This file is not in the revised repository")
+            return
+
+        if not os.path.exists(source_path):
+            messagebox.showerror("Error", f"Source file not found:\n{source_path}")
+            return
+
+        # Determine destination path
+        filename = os.path.basename(source_path)
+        dest_path = os.path.join(self.repository_path, filename)
+
+        # Check if already exists in main repo
+        if os.path.exists(dest_path):
+            if not messagebox.askyesno("File Exists",
+                                       f"A file with this name already exists in main repository.\n\n"
+                                       f"This will replace the existing file. Continue?"):
+                return
+
+        try:
+            # Move file to main repository
+            shutil.move(source_path, dest_path)
+
+            # Update database path
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
+            cursor = conn.cursor()
+            cursor.execute("UPDATE programs SET file_path = ? WHERE program_number = ?",
+                         (dest_path, program_number))
+            conn.commit()
+            conn.close()
+
+            self.log_activity('MOVE_TO_MAIN', program_number, f"Moved from revised to main: {filename}")
+
+            messagebox.showinfo("Success", f"Program {program_number} moved to main repository")
+            self.refresh_results(view_mode='repository')
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to move:\n{e}")
+
+    def delete_from_revised_repository(self):
+        """Delete selected program from revised repository"""
+        if not self.require_permission('delete_files', 'delete from revised repository'):
+            return
+
+        selection = self.tree.selection()
+        if not selection:
+            messagebox.showwarning("No Selection", "Please select a program to delete")
+            return
+
+        item = self.tree.item(selection[0])
+        values = item['values']
+        program_number = values[0]
+
+        # Get file path
+        conn = sqlite3.connect(self.db_path, timeout=30.0)
+        cursor = conn.cursor()
+        cursor.execute("SELECT file_path FROM programs WHERE program_number = ?", (program_number,))
+        result = cursor.fetchone()
+
+        if not result or not result[0]:
+            messagebox.showerror("Error", "File path not found")
+            conn.close()
+            return
+
+        file_path = result[0]
+
+        if not self.is_in_revised_repository(file_path):
+            messagebox.showwarning("Not Revised", "This file is not in the revised repository")
+            conn.close()
+            return
+
+        if not messagebox.askyesno("Confirm Delete",
+                                  f"Delete {program_number} from revised repository?\n\n"
+                                  f"This will permanently delete the file."):
+            conn.close()
+            return
+
+        try:
+            # Delete file
+            if os.path.exists(file_path):
+                os.remove(file_path)
+
+            # Remove from database
+            cursor.execute("DELETE FROM programs WHERE program_number = ? AND file_path = ?",
+                         (program_number, file_path))
+            conn.commit()
+            conn.close()
+
+            self.log_activity('DELETE_REVISED', program_number, f"Deleted from revised repository")
+
+            messagebox.showinfo("Deleted", f"Program {program_number} deleted from revised repository")
+            self.refresh_results(view_mode='revised')
+
+        except Exception as e:
+            conn.close()
+            messagebox.showerror("Error", f"Failed to delete:\n{e}")
+
+    def export_from_revised(self):
+        """Export selected program from revised repository"""
+        selection = self.tree.selection()
+        if not selection:
+            messagebox.showwarning("No Selection", "Please select a program to export")
+            return
+
+        item = self.tree.item(selection[0])
+        values = item['values']
+        program_number = values[0]
+
+        # Get file path
+        conn = sqlite3.connect(self.db_path, timeout=30.0)
+        cursor = conn.cursor()
+        cursor.execute("SELECT file_path FROM programs WHERE program_number = ?", (program_number,))
+        result = cursor.fetchone()
+        conn.close()
+
+        if not result or not result[0]:
+            messagebox.showerror("Error", "File path not found")
+            return
+
+        source_path = result[0]
+
+        if not os.path.exists(source_path):
+            messagebox.showerror("Error", f"File not found:\n{source_path}")
+            return
+
+        # Ask for destination
+        dest_path = filedialog.asksaveasfilename(
+            title="Export Program",
+            initialfile=os.path.basename(source_path),
+            defaultextension=".nc",
+            filetypes=[("NC Files", "*.nc"), ("All Files", "*.*")]
+        )
+
+        if dest_path:
+            try:
+                shutil.copy2(source_path, dest_path)
+                messagebox.showinfo("Exported", f"Program exported to:\n{dest_path}")
+            except Exception as e:
+                messagebox.showerror("Error", f"Export failed:\n{e}")
+
+    def compare_revised_with_main(self):
+        """Compare selected revised program with main repository version"""
+        selection = self.tree.selection()
+        if not selection:
+            messagebox.showwarning("No Selection", "Please select a revised program to compare")
+            return
+
+        item = self.tree.item(selection[0])
+        values = item['values']
+        program_number = values[0]
+
+        # Get revised file path
+        conn = sqlite3.connect(self.db_path, timeout=30.0)
+        cursor = conn.cursor()
+        cursor.execute("SELECT file_path FROM programs WHERE program_number = ?", (program_number,))
+        result = cursor.fetchone()
+        conn.close()
+
+        if not result or not result[0]:
+            messagebox.showerror("Error", "File path not found")
+            return
+
+        revised_path = result[0]
+
+        # Find corresponding main repository file
+        filename = os.path.basename(revised_path)
+        main_path = os.path.join(self.repository_path, filename)
+
+        if not os.path.exists(main_path):
+            messagebox.showinfo("No Match", f"No corresponding file found in main repository:\n{filename}")
+            return
+
+        if not os.path.exists(revised_path):
+            messagebox.showerror("Error", f"Revised file not found:\n{revised_path}")
+            return
+
+        # Read both files
+        try:
+            with open(main_path, 'r', errors='ignore') as f:
+                main_content = f.readlines()
+            with open(revised_path, 'r', errors='ignore') as f:
+                revised_content = f.readlines()
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to read files:\n{e}")
+            return
+
+        # Create comparison window
+        compare_window = tk.Toplevel(self.root)
+        compare_window.title(f"Compare: {program_number}")
+        compare_window.geometry("1200x700")
+        compare_window.configure(bg=self.bg_color)
+
+        # Title
+        tk.Label(compare_window, text=f"Comparing {program_number}: Main vs Revised",
+                font=("Arial", 14, "bold"), bg=self.bg_color, fg=self.fg_color).pack(pady=10)
+
+        # Two panes
+        panes = tk.Frame(compare_window, bg=self.bg_color)
+        panes.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+
+        # Main repository pane
+        main_frame = tk.Frame(panes, bg=self.bg_color)
+        main_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5)
+
+        tk.Label(main_frame, text="Main Repository", font=("Arial", 11, "bold"),
+                bg=self.bg_color, fg="#4CAF50").pack()
+        tk.Label(main_frame, text=f"Lines: {len(main_content)}", font=("Arial", 9),
+                bg=self.bg_color, fg="#888888").pack()
+
+        main_text = scrolledtext.ScrolledText(main_frame, bg=self.input_bg, fg=self.fg_color,
+                                              font=("Consolas", 9), width=60, height=30)
+        main_text.pack(fill=tk.BOTH, expand=True, pady=5)
+        main_text.insert(tk.END, ''.join(main_content))
+        main_text.config(state=tk.DISABLED)
+
+        # Revised repository pane
+        revised_frame = tk.Frame(panes, bg=self.bg_color)
+        revised_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=5)
+
+        tk.Label(revised_frame, text="Revised Repository", font=("Arial", 11, "bold"),
+                bg=self.bg_color, fg="#FFD700").pack()
+        tk.Label(revised_frame, text=f"Lines: {len(revised_content)}", font=("Arial", 9),
+                bg=self.bg_color, fg="#888888").pack()
+
+        revised_text = scrolledtext.ScrolledText(revised_frame, bg=self.input_bg, fg=self.fg_color,
+                                                 font=("Consolas", 9), width=60, height=30)
+        revised_text.pack(fill=tk.BOTH, expand=True, pady=5)
+        revised_text.insert(tk.END, ''.join(revised_content))
+        revised_text.config(state=tk.DISABLED)
+
+        # Summary of differences
+        diff_count = sum(1 for a, b in zip(main_content, revised_content) if a != b)
+        diff_count += abs(len(main_content) - len(revised_content))
+
+        tk.Label(compare_window, text=f"Differences: ~{diff_count} lines differ",
+                font=("Arial", 10), bg=self.bg_color, fg="#FF9800").pack(pady=5)
+
+        tk.Button(compare_window, text="Close", command=compare_window.destroy,
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold"),
+                 width=12).pack(pady=10)
+
+    def find_revised_differences(self):
+        """Find all programs that exist in both repositories with differences"""
+        if not os.path.exists(self.revised_repository_path):
+            messagebox.showwarning("Not Found", "Revised repository folder does not exist.")
+            return
+
+        # Get list of files in both repositories
+        main_files = set(os.listdir(self.repository_path)) if os.path.exists(self.repository_path) else set()
+        revised_files = set(os.listdir(self.revised_repository_path))
+
+        # Find common files
+        common_files = main_files.intersection(revised_files)
+
+        if not common_files:
+            messagebox.showinfo("No Matches", "No common files found between main and revised repositories")
+            return
+
+        # Compare each common file
+        differences = []
+        identical = []
+
+        for filename in common_files:
+            main_path = os.path.join(self.repository_path, filename)
+            revised_path = os.path.join(self.revised_repository_path, filename)
+
+            try:
+                with open(main_path, 'rb') as f:
+                    main_hash = hashlib.md5(f.read()).hexdigest()
+                with open(revised_path, 'rb') as f:
+                    revised_hash = hashlib.md5(f.read()).hexdigest()
+
+                if main_hash != revised_hash:
+                    differences.append(filename)
+                else:
+                    identical.append(filename)
+            except Exception as e:
+                logger.error(f"Error comparing {filename}: {e}")
+
+        # Show results
+        result_window = tk.Toplevel(self.root)
+        result_window.title("Repository Comparison Results")
+        result_window.geometry("600x500")
+        result_window.configure(bg=self.bg_color)
+
+        tk.Label(result_window, text="Repository Comparison Results",
+                font=("Arial", 14, "bold"), bg=self.bg_color, fg=self.fg_color).pack(pady=10)
+
+        # Summary
+        tk.Label(result_window, text=f"Common files: {len(common_files)} | Different: {len(differences)} | Identical: {len(identical)}",
+                font=("Arial", 10), bg=self.bg_color, fg="#888888").pack(pady=5)
+
+        # Different files list
+        tk.Label(result_window, text="Files with Differences:", font=("Arial", 11, "bold"),
+                bg=self.bg_color, fg="#FF9800").pack(pady=(10, 5), anchor="w", padx=20)
+
+        diff_listbox = tk.Listbox(result_window, bg=self.input_bg, fg=self.fg_color,
+                                  font=("Consolas", 10), height=15, width=60)
+        diff_listbox.pack(fill=tk.BOTH, expand=True, padx=20, pady=5)
+
+        for filename in sorted(differences):
+            diff_listbox.insert(tk.END, filename)
+
+        if not differences:
+            diff_listbox.insert(tk.END, "(No differences found - all common files are identical)")
+
+        tk.Button(result_window, text="Close", command=result_window.destroy,
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold"),
+                 width=12).pack(pady=10)
+
     def show_all_programs_stats(self):
         """Show ALL programs statistics (repository + external combined)"""
         conn = sqlite3.connect(self.db_path)
@@ -13143,6 +14858,10 @@ For more documentation, see project README files in the application directory.
 
     def delete_from_repository(self):
         """Delete selected program from repository (and optionally from database)"""
+        # Permission check
+        if not self.require_permission('delete_files', 'delete from repository'):
+            return
+
         selection = self.tree.selection()
         if not selection:
             messagebox.showwarning("No Selection", "Please select a program to delete")
@@ -13238,6 +14957,10 @@ For more documentation, see project README files in the application directory.
 
     def add_selected_to_repository(self):
         """Add selected external program to repository"""
+        # Permission check
+        if not self.require_permission('add_files', 'add to repository'):
+            return
+
         selection = self.tree.selection()
         if not selection:
             messagebox.showwarning("No Selection", "Please select a program to add to repository")
