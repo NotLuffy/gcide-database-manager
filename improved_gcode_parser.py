@@ -71,6 +71,19 @@ class GCodeParseResult:
     tools_used: List[str]                 # List of tool numbers used (e.g., ["T101", "T121", "T202"])
     tool_sequence: List[str]              # Ordered list of tools in sequence
 
+    # G53 Tool Home Position Validation (L1-L3 lathes only)
+    # Z position depends on thickness (minimum safe values):
+    #   <= 2.50" thick: Z-13 or higher (Z-10, Z-8, etc. are safe)
+    #   2.75" - 3.75" thick: Z-11 or higher
+    #   4.00" - 5.00" thick: Z-9 or higher
+    #   Z-16 is ALWAYS CRITICAL (dangerous - too far out)
+    # SAFETY: Higher Z (less negative) = tool further from part = SAFER
+    #   So Z-10 is safe for Z-13 parts, Z-8 is safe for all parts
+    #   Only warn when Z is LOWER than expected (tool too close)
+    tool_home_positions: List[Dict]       # List of {line_num, line, z_value, expected_z, status}
+    tool_home_status: str                 # 'PASS', 'WARNING', 'CRITICAL', 'UNKNOWN'
+    tool_home_issues: List[str]           # List of tool home position issues
+
     # DISABLED - Tool/Safety validation temporarily disabled (needs tuning)
     # Uncomment these fields to re-enable tool/safety validation later
     # tool_validation_status: str           # 'PASS', 'WARNING', 'ERROR'
@@ -205,7 +218,10 @@ class ImprovedGCodeParser:
                 dimensional_issues=[],
                 detection_notes=[],
                 tools_used=[],
-                tool_sequence=[]
+                tool_sequence=[],
+                tool_home_positions=[],
+                tool_home_status='UNKNOWN',
+                tool_home_issues=[]
                 # DISABLED - Tool/Safety validation fields removed
                 # tool_validation_status='PASS',
                 # tool_validation_issues=[],
@@ -299,26 +315,34 @@ class ImprovedGCodeParser:
             # 8b. Calculate hub height from drill depth if needed
             # For ANY part type where drill depth suggests a hub exists
             # EXCEPT 2PC parts (their dimensions refer to mating parts, not actual bores)
+            # IMPORTANT: Only reclassify to hub_centric if there's EVIDENCE of a hub (OB cut in OP2)
+            # Don't reclassify based on drill depth alone - standard parts may have extra clearance
             if result.drill_depth and result.thickness:
                 # Calculate potential hub from drill depth
                 potential_hub = result.drill_depth - result.thickness - 0.15
 
                 # If potential hub is reasonable (0.3" to 3.5"), this might be hub-centric
+                # BUT only reclassify if we have actual evidence of OB (hub diameter) from G-code
                 if 0.3 <= potential_hub <= 3.5:
                     # If not already hub_centric, check if we should reclassify
                     # IMPORTANT: Don't reclassify 2PC parts - they have hubs but title dimensions are for mating parts
+                    # IMPORTANT: Don't reclassify based on drill depth alone - need OB evidence
                     if result.spacer_type != 'hub_centric' and '2PC' not in result.spacer_type:
-                        # Reclassify as hub_centric if drill suggests significant hub
-                        result.spacer_type = 'hub_centric'
-                        result.detection_method = 'DRILL_DEPTH'
-                        result.detection_confidence = 'MEDIUM'
-                        result.hub_height = round(potential_hub, 2)
+                        # Only reclassify if we found OB from G-code (evidence of actual hub)
+                        if result.ob_from_gcode:
+                            result.spacer_type = 'hub_centric'
+                            result.detection_method = 'DRILL_DEPTH'
+                            result.detection_confidence = 'MEDIUM'
+                            result.hub_height = round(potential_hub, 2)
                     # If already hub_centric but hub_height is default 0.50, update it
-                    elif not result.hub_height or result.hub_height == 0.50:
+                    elif result.spacer_type == 'hub_centric' and (not result.hub_height or result.hub_height == 0.50):
                         result.hub_height = round(potential_hub, 2)
 
             # 9. Extract tool usage (for reference only)
             self._extract_tools(result, lines)
+
+            # 10. Validate G53 tool home positions (L1-L3 lathes)
+            self._validate_tool_home_positions(result, lines)
 
             # DISABLED - Tool/Safety validation temporarily disabled (needs tuning)
             # Uncomment to re-enable tool and safety validation
@@ -846,45 +870,102 @@ class ImprovedGCodeParser:
         # Check for fractional inch values first (before decimal patterns)
         # Special case: 3/8" → display as "10MM" (3/8" = 0.375" ≈ 9.525mm ≈ 10mm)
         # Other fractions like 7/8" → keep as fraction display
-        fraction_match = re.search(r'(\d+)/(\d+)(?:\s*"|\s+|$)', title)
-        if fraction_match:
-            numerator = int(fraction_match.group(1))
-            denominator = int(fraction_match.group(2))
-            thickness_inches = numerator / denominator
 
-            # Validate reasonable thickness range
-            if 0.25 <= thickness_inches <= 4.0:
+        # First check for mixed fractions like "1-1/8" (1 and 1/8 = 1.125")
+        mixed_fraction_match = re.search(r'(\d+)-(\d+)/(\d+)(?:\s*"|\s+|$)', title)
+        if mixed_fraction_match:
+            whole = int(mixed_fraction_match.group(1))
+            numerator = int(mixed_fraction_match.group(2))
+            denominator = int(mixed_fraction_match.group(3))
+            thickness_inches = whole + (numerator / denominator)
+
+            if 0.25 <= thickness_inches <= 6.0:
                 result.thickness = thickness_inches
+                result.thickness_display = f"{whole}-{numerator}/{denominator}"
 
-                # Special case: 3/8" displays as "10MM"
-                if numerator == 3 and denominator == 8:
-                    result.thickness_display = "10MM"
-                else:
-                    # Keep other fractions as fractional display (e.g., "7/8")
-                    result.thickness_display = f"{numerator}/{denominator}"
+        # Then check for simple fractions like "7/8"
+        if not result.thickness:
+            fraction_match = re.search(r'(\d+)/(\d+)(?:\s*"|\s+|$)', title)
+            if fraction_match:
+                numerator = int(fraction_match.group(1))
+                denominator = int(fraction_match.group(2))
+                thickness_inches = numerator / denominator
+
+                # Validate reasonable thickness range (up to 6" for thick parts)
+                if 0.25 <= thickness_inches <= 6.0:
+                    result.thickness = thickness_inches
+
+                    # Special case: 3/8" displays as "10MM"
+                    if numerator == 3 and denominator == 8:
+                        result.thickness_display = "10MM"
+                    else:
+                        # Keep other fractions as fractional display (e.g., "7/8")
+                        result.thickness_display = f"{numerator}/{denominator}"
 
         # Only run decimal patterns if fraction didn't find thickness
         # This prevents "7/8 THK" from being overwritten by THK pattern matching just "8"
         if not result.thickness:
             thick_patterns = [
+                # IMPORTANT: "XMM DEEP" patterns - extract thickness AFTER "DEEP", not the MM value
+                (r'DEEP\s+(\d*\.?\d+)\s*$', 'IN', False),    # "6MM DEEP 1.0" - thickness at end after DEEP
+                (r'DEEP\s+(\d*\.?\d+)\s+', 'IN', False),     # "6MM DEEP 1.25 XX" - thickness after DEEP
+                (r'(\d*\.?\d+)--HC', 'IN', True),            # "2.0--HC", "1.5--HC" - number directly followed by --HC
+                (r'(\d*\.?\d+)\s*MM\s+--HC', 'MM', True),    # "15MM --HC" - MM then --HC
+                (r'(\d*\.?\d+)\s*IN\s+THK\s+--HC', 'IN', True), # "1.00IN THK --HCH" - IN THK --HC pattern
+                (r'(\d*\.?\d+)\s*IN\s+--HC', 'IN', True),    # "1.0IN --HC" - IN then --HC
+                (r'(\d*\.?\d+)\s*IN\s+HC', 'IN', True),      # "1.0 IN HC" - IN then HC
+                (r'(\d*\.?\d+)\s*MM\s+HC', 'MM', True),      # "1.50MM HC" - MM before HC
+                (r'(\d*\.?\d+)\s+---HC', 'IN', True),        # "2.0 ---HCXX" - three dashes
+                (r'(\d+)\s*MM\s+---HC', 'MM', True),         # "10MM ---HCXX" - MM thickness with triple dash HC
+                (r'\s+(\d+)\s*MM\s*-HC', 'MM', True),        # "10MM -HC" - MM thickness with dash before HC
+                (r'(\d*\.?\d+)\s+--HC', 'IN', True),         # "4.0 --HCXX", "1.0 --HC" - thickness before -- and HC
+                (r'(\d*\.?\d+)\s+-HC', 'IN', True),          # "3.25 -HC" - space dash HC
+                (r'(\d*\.?\d+)-HC', 'IN', True),             # "3.0-HC" - thickness with dash before HC
+                (r'(\d+)\s*mmhc', 'MM', True),               # "17mmhc" - mmhc together
+                (r'(\d*\.?\d+)HC\b', 'IN', True),            # "1.25HC" - thickness directly before HC (no space)
                 (r'\s+(\d+)\s*HC(?:\s|$)', 'MM', True),      # "15HC" or " 15 HC" - MM thickness with hub (no "MM" in text)
                 (r'\s+\.(\d+)\s*MM\s+HC', 'DECIMAL_MM', True),  # ".75MM HC" - decimal MM without leading zero (actually inches)
                 (r'(\d+\.?\d*)\s*MM\s+HC', 'MM', True),      # "15MM HC" - MM thickness with hub (explicit MM)
+                (r'\s+([5-9]\.?\d*)\s+HC', 'MM', True),      # " 6.4 HC" - small number (5-9) before HC is likely mm thickness
                 (r'(\d*\.?\d+)\s+HC', 'IN', True),           # "1.75 HC" - decimal inches before HC (no MM/IN/THK keyword)
                 (r'\s+\.(\d+)\s*MM\s+THK', 'DECIMAL_MM', False),  # ".75MM THK" - decimal MM without leading zero (actually inches)
                 (r'(\d+\.?\d*)\s*MM\s+THK', 'MM', False),    # "10MM THK" - MM thickness standard
                 (r'\s+\.(\d+)\s*MM\s*$', 'DECIMAL_MM', False),   # ".75MM" at end - decimal without leading zero (actually inches)
                 (r'\s+(\d+\.?\d*)\s*MM\s*$', 'MM', False),   # "10MM" at end
+                (r'ID\s+(\d*\.?\d+)\s+THK', 'IN', False),    # "ID 5.00 THK" - thickness after ID before THK (must be before ID MM patterns)
                 (r'ID\s+\.(\d+)\s*MM\s+', 'DECIMAL_MM', False),  # "ID .75MM" - decimal without leading zero (actually inches)
                 (r'ID\s+(\d+\.?\d*)\s*MM\s+', 'MM', False),  # "ID 10MM SPACER"
                 (r'ID\s+(\d*\.?\d+)\s+2PC', 'IN', False),    # "ID 1.25 2PC" - thickness before 2PC
                 (r'ID\s+(\d*\.?\d+)(?:\s+|$)', 'IN', False), # "ID 1.5" - inches
+                (r'(\d*\.?\d+)\s*--2PC', 'IN', False),        # "1.25--2PC" or "1.00  --2PC" - thickness with -- separator before 2PC
+                (r'(\d*\.?\d+)\s+-2PC', 'IN', False),        # ".75 -2PC" - thickness with single dash before 2PC
                 (r'(\d*\.?\d+)\s+2PC', 'IN', False),         # "1.75 2PC" - thickness before 2PC
+                (r'2PC\s+(\d*\.?\d+)\s+LUG', 'IN', False),   # "2PC 1.25 LUG" - thickness between 2PC and LUG
+                (r'\.(\d+)\s+IS\s+2PC', 'DECIMAL', False),   # ".75 IS 2PC" - decimal thickness before IS 2PC
+                (r'\.(\d+)\s+LUG', 'DECIMAL', False),        # ".75 LUG" - decimal thickness before LUG
+                (r'\.(\d+)IN\s+2PC', 'DECIMAL', False),      # ".6IN 2PC" - decimal with IN before 2PC
+                (r'(\d*\.?\d+)HK\s+XX', 'IN', False),        # "1.0HK XX" - thickness with HK suffix before XX
+                (r'(\d+)\.HC', 'IN', False),                 # "1.HC" - number with dot before HC (missing decimal)
+                (r'\s(\d+\.?\d*)\s*MM\s+HC', 'MM', False),   # " 6.4 HC" after MM context - small mm value before HC
                 (r'(\d*\.?\d+)\s+IN\s+THK', 'IN', False),    # "1.25IN THK" - inches with IN and THK
+                (r'(\d*\.?\d+)\s+THK\s+XX', 'IN', False),    # "5.00 THK XX" - thickness before THK XX
+                (r'(\d*\.?\d+)THK', 'IN', False),            # "1.00THK" - no space before THK
                 (r'(\d*\.?\d+)\s+THK?(?:\s|$)', 'IN', False), # "0.75 THK" or "0.75 TH" - inches (TH abbreviation)
                 (r'\.(\d+)\s+TH(?:\s|$)', 'DECIMAL', False), # ".75 TH" - decimal without leading digit
                 (r'(\d+\.?\d*)\s+THK(?:\s|$)', 'IN', False), # "4.5 THK" - thickness before THK keyword
-                (r'B/C\s+(\d*\.?\d+)', 'IN', False),         # "B/C 1.50"
+                (r'MM\s+(\d*\.?\d+)\s+XX', 'IN', False),     # "85MM 3.00 XX" - thickness between MM and XX
+                (r'OD\s+(\d*\.?\d+)-?\s*XX', 'IN', False),   # "OD 2.25- XX" or "OD 2.5 XX" - thickness after OD before XX
+                (r'(\d*\.?\d+)-\s*XX', 'IN', False),         # "2.25- XX" or "1.5- XX" - thickness with dash before XX
+                (r'(\d*\.?\d+)\s+XX', 'IN', False),          # "2.5 XX" - thickness with space before XX
+                (r'(\d*\.?\d+)XX', 'IN', False),             # "1.00XX" - thickness directly before XX (no space)
+                (r'\.(\d+)HCXX', 'DECIMAL', True),           # ".75HCXX" - decimal before HCXX
+                (r'(\d*\.?\d+)\s+STEP', 'IN', False),        # "2.25 STEP" - thickness before STEP keyword
+                (r'(\d*\.?\d+)-\s*RTS', 'IN', False),        # "1.25- RTS" - thickness with dash before RTS
+                (r'(\d+)\.\s+XX', 'IN', False),              # "2.  XX" or "1. XX" - number with trailing dot before XX
+                (r'CB\s+(\d+)MM\s', 'MM', False),            # "220CB 22MM SPACER" - MM thickness after CB
+                (r'CB\s+\.(\d+)\s', 'DECIMAL', False),       # "220CB .5 SPACER" - decimal thickness after CB
+                (r'CB\s+(\d*\.?\d+)\s+SPACER', 'IN', False), # "220CB 1.0 SPACER" - thickness after CB
+                (r'B/C\s+(\d*\.?\d+)(?!\s*MM\s*DEEP)', 'IN', False),  # "B/C 1.50" but NOT "B/C 6MM DEEP"
                 (r'MM\s+(\d*\.?\d+)\s+(?:THK|HC)', 'IN', False),  # "MM 1.50 THK"
                 (r'/[\d.]+MM\s+(\d*\.?\d+)', 'IN', False),   # After slash pattern
                 (r'(\d*\.?\d+)\s+(?:STEEL|STAINLESS|STL)', 'IN', False),  # "1.25 STEEL/STL" - thickness before material keywords (protects from S-X/HCS-X suffixes)
@@ -921,8 +1002,8 @@ class ImprovedGCodeParser:
                             result.thickness_display = str(thickness_val)
                             result.thickness = thickness_val
 
-                        # Validate thickness is in reasonable range
-                        if 0.25 <= result.thickness <= 4.0:
+                        # Validate thickness is in reasonable range (up to 6" for thick parts)
+                        if 0.25 <= result.thickness <= 6.0:
                             break  # Found valid thickness
                         else:
                             # Reset if out of range
@@ -1041,10 +1122,26 @@ class ImprovedGCodeParser:
                                 result.center_bore = first_val
                                 result.hub_diameter = second_val  # OB = Hub OD
                         else:
+                            # Check if "ID" marker is in title (but not HC) - could be HC part without keyword
+                            # For MM/MM ID patterns like "70.3MM/66.9MM ID", need to determine CB vs OB
+                            if 'ID' in title_upper and 'HC' not in title_upper:
+                                # For hub-centric parts (unlabeled), CB is always smaller, OB is always larger
+                                # Title may have OB/CB or CB/OB format - sort by size
+                                # CB = inner bore (smaller), OB = outer bore of hub (larger)
+                                if first_val > second_val:
+                                    # First is larger = OB, second is smaller = CB
+                                    # Example: "70.3MM/66.9MM ID" -> OB=70.3, CB=66.9
+                                    result.center_bore = second_val   # CB (smaller)
+                                    result.hub_diameter = first_val   # OB (larger)
+                                else:
+                                    # First is smaller = CB, second is larger = OB
+                                    # Example: "66.9MM/70.3MM ID" -> CB=66.9, OB=70.3
+                                    result.center_bore = first_val    # CB (smaller)
+                                    result.hub_diameter = second_val  # OB (larger)
                             # For HC parts, check if first > second (indicates Shelf/OB format)
                             # Standard HC: CB/OB where CB < OB (e.g., 66.9/106mm)
                             # Shelf/OB HC: first > second (e.g., 108/82.5mm) where first=shelf, second=OB
-                            if first_val > second_val * 1.1:  # First is >10% larger = Shelf/OB format
+                            elif first_val > second_val * 1.1:  # First is >10% larger = Shelf/OB format
                                 # Hub-centric with support shelf: Shelf/OB format
                                 # First value is shelf (not CB), second is OB
                                 # CB will be determined from G-code
@@ -2179,17 +2276,9 @@ class ImprovedGCodeParser:
         if result.spacer_type == 'hub_centric':
             return
 
-        # Skip if no CB/OB to check
-        if not result.center_bore or not result.hub_diameter:
-            return
-
-        # Check if CB < OB (potential for hub)
-        cb_mm = result.center_bore
-        ob_mm = result.hub_diameter
-
-        if cb_mm >= ob_mm:
-            # CB >= OB means no hub (standard spacer or step)
-            return
+        # Don't skip based on CB/OB comparison - some HC parts have CB == OB in title
+        # (thin-lipped hub-centric where machinist wrote same value twice, or CB matches OB)
+        # Example: "71MM/71MM ID" - still need to check G-code for hub machining
 
         # Look for OP2 facing operations
         in_op2 = False
@@ -2199,8 +2288,9 @@ class ImprovedGCodeParser:
         for i, line in enumerate(lines):
             line_upper = line.upper()
 
-            # Detect OP2 section
-            if 'OP2' in line_upper or '(OP2)' in line_upper:
+            # Detect OP2 section - multiple markers used in different files
+            # Common markers: "OP2", "(OP2)", "FLIP PART", "(FLIP PART)", "OP 2", "SIDE 2"
+            if any(marker in line_upper for marker in ['OP2', 'OP 2', 'FLIP PART', 'SIDE 2', 'FLIP']):
                 in_op2 = True
 
             if in_op2:
@@ -2256,6 +2346,112 @@ class ImprovedGCodeParser:
                     # Set hub height from OP2 facing
                     if not result.hub_height or result.hub_height == 0.50:
                         result.hub_height = round(max_hub_height, 2)
+
+    def _validate_tool_home_positions(self, result: GCodeParseResult, lines: List[str]):
+        """
+        Validate G53 X Z tool home position lines for L1, L2, L3 lathes.
+
+        Rules based on part thickness (MINIMUM safe Z values):
+        - Thickness <= 2.50": Z-13 or higher (Z-10, Z-8 are safe)
+        - Thickness 2.75" - 3.75": Z-11 or higher
+        - Thickness 4.00" - 5.00": Z-9 or higher
+        - Z-16 is ALWAYS CRITICAL (dangerous, too far out)
+
+        SAFETY LOGIC: Higher Z (less negative) = tool further from part = SAFER
+        - Z-10 is safe for Z-13 parts (moves tool further away)
+        - Z-8 is safe for all parts
+        - Only warn when Z is LOWER than expected (tool too close to part)
+
+        Only applies to lathes L1, L2, L3, L2/L3.
+        """
+        # Only validate for L1-L3 lathes
+        if result.lathe not in ('L1', 'L2', 'L3', 'L2/L3'):
+            result.tool_home_status = 'N/A'
+            return
+
+        # Need thickness to determine expected Z
+        thickness = result.thickness
+
+        # Determine expected Z based on thickness
+        expected_z = None
+        if thickness is not None:
+            if thickness <= 2.50:
+                expected_z = -13
+            elif 2.75 <= thickness <= 3.75:
+                expected_z = -11
+            elif 4.00 <= thickness <= 5.00:
+                expected_z = -9
+            # Other thicknesses: expected_z stays None (unknown expected value)
+
+        # Pattern to match G53 lines with X and Z coordinates
+        # Examples: G53 X0 Z-13, G53 X0. Z-11., G53X0Z-9
+        g53_pattern = re.compile(r'G53\s*X[\d.\-]*\s*Z([\-\d.]+)', re.IGNORECASE)
+
+        found_positions = []
+        has_critical = False
+        has_warning = False
+        issues = []
+
+        for line_num, line in enumerate(lines, 1):
+            line_stripped = line.strip()
+
+            # Skip comments
+            if line_stripped.startswith('(') or line_stripped.startswith(';'):
+                continue
+
+            match = g53_pattern.search(line_stripped)
+            if match:
+                try:
+                    z_value = float(match.group(1))
+                except ValueError:
+                    continue
+
+                # Determine status for this line
+                status = 'PASS'
+
+                # Z-16 is ALWAYS critical (dangerous)
+                if z_value <= -16:
+                    status = 'CRITICAL'
+                    has_critical = True
+                    issues.append(f"CRITICAL: Line {line_num} has Z{z_value} (Z-16 or beyond is dangerous)")
+                elif expected_z is not None:
+                    # Check against expected Z for this thickness
+                    # IMPORTANT: A HIGHER Z value (less negative) is SAFER because it moves
+                    # the tool FURTHER from the part. So:
+                    #   - Z-10 is safe for Z-13 parts (tool goes further away)
+                    #   - Z-8 is safe for Z-10, Z-11, Z-13 parts
+                    #   - But Z-13 is NOT safe for Z-10 parts (tool would be too close)
+                    # Only warn if z_value < expected_z (tool is closer than it should be)
+                    if z_value < expected_z:
+                        status = 'WARNING'
+                        has_warning = True
+                        issues.append(f"WARNING: Line {line_num} has Z{int(z_value)}, expected Z{int(expected_z)} or higher for {thickness}\" thick part")
+                else:
+                    # Unknown thickness range - flag for review
+                    if thickness is not None:
+                        status = 'UNKNOWN'
+                        issues.append(f"REVIEW: Line {line_num} has Z{int(z_value)}, thickness {thickness}\" has no defined Z rule")
+
+                found_positions.append({
+                    'line_num': line_num,
+                    'line': line_stripped,
+                    'z_value': z_value,
+                    'expected_z': expected_z,
+                    'status': status
+                })
+
+        # Set overall status
+        if has_critical:
+            result.tool_home_status = 'CRITICAL'
+        elif has_warning:
+            result.tool_home_status = 'WARNING'
+        elif found_positions:
+            result.tool_home_status = 'PASS'
+        else:
+            result.tool_home_status = 'N/A'  # No G53 lines found
+
+        result.tool_home_positions = found_positions
+        result.tool_home_issues = issues
 
     def _validate_consistency(self, result: GCodeParseResult):
         """

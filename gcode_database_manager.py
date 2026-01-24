@@ -5,15 +5,104 @@ import os
 import re
 from datetime import datetime, timedelta
 from dataclasses import dataclass
-from typing import List, Optional, Tuple, Set
+from typing import List, Optional, Tuple, Set, Dict
 import json
 import sys
 import shutil
 import logging
 from logging.handlers import RotatingFileHandler
+import hashlib
+import secrets
+import threading
+import queue
 
 # Import the improved parser
 from improved_gcode_parser import ImprovedGCodeParser, GCodeParseResult
+
+
+# ============================================================================
+# USER PERMISSIONS SYSTEM
+# ============================================================================
+
+# Permission definitions for each role
+ROLE_PERMISSIONS = {
+    'admin': {
+        'view_files': True,
+        'add_files': True,
+        'edit_files': True,
+        'delete_files': True,
+        'move_files': True,
+        'export_data': True,
+        'clear_database': True,
+        'manage_users': True,
+        'backup_restore': True,
+        'batch_operations': True,
+        'manage_duplicates': True,
+        'copy_files': True,
+    },
+    'editor': {
+        'view_files': True,
+        'add_files': True,
+        'edit_files': True,
+        'delete_files': False,
+        'move_files': True,
+        'export_data': True,
+        'clear_database': False,
+        'manage_users': False,
+        'backup_restore': True,
+        'batch_operations': True,
+        'manage_duplicates': True,
+        'copy_files': True,
+    },
+    'operator': {
+        'view_files': True,
+        'add_files': True,
+        'edit_files': False,
+        'delete_files': False,
+        'move_files': False,
+        'export_data': True,
+        'clear_database': False,
+        'manage_users': False,
+        'backup_restore': False,
+        'batch_operations': False,
+        'manage_duplicates': False,
+        'copy_files': True,
+    },
+    'viewer': {
+        'view_files': True,
+        'add_files': False,
+        'edit_files': False,
+        'delete_files': False,
+        'move_files': False,
+        'export_data': True,
+        'clear_database': False,
+        'manage_users': False,
+        'backup_restore': False,
+        'batch_operations': False,
+        'manage_duplicates': False,
+    }
+}
+
+ROLE_DESCRIPTIONS = {
+    'admin': 'Full access - Can manage users and all operations',
+    'editor': 'Can add, edit, move files - Cannot delete or manage users',
+    'operator': 'Can view and add files - Cannot edit or delete',
+    'viewer': 'Read-only access - Can only view and export'
+}
+
+
+def hash_password(password: str, salt: str = None) -> Tuple[str, str]:
+    """Hash a password with salt using SHA256"""
+    if salt is None:
+        salt = secrets.token_hex(16)
+    password_hash = hashlib.sha256((password + salt).encode()).hexdigest()
+    return password_hash, salt
+
+
+def verify_password(password: str, stored_hash: str, salt: str) -> bool:
+    """Verify a password against stored hash"""
+    password_hash, _ = hash_password(password, salt)
+    return password_hash == stored_hash
 
 # ============================================================================
 # LOGGING CONFIGURATION
@@ -231,62 +320,931 @@ class ProgramRecord:
     cb_from_gcode: Optional[float] = None
     ob_from_gcode: Optional[float] = None
     lathe: Optional[str] = None  # 'L1', 'L2', 'L3', 'L2/L3'
+    # Tool home position validation
+    tool_home_status: Optional[str] = None  # 'PASS', 'WARNING', 'CRITICAL', 'N/A', 'UNKNOWN'
+    tool_home_issues: Optional[List[str]] = None  # List of G53 Z position issues
 
 class GCodeDatabaseGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("G-Code Database Manager - Wheel Spacer Programs")
         self.root.geometry("1600x900")
-        
-        # Dark mode colors
-        self.bg_color = "#2b2b2b"
-        self.fg_color = "#ffffff"
-        self.input_bg = "#3c3c3c"
-        self.button_bg = "#4a4a4a"
-        self.accent_color = "#4a90e2"
-        
-        self.root.configure(bg=self.bg_color)
-        
-        # Database setup
-        self.db_path = "gcode_database.db"
-        self.init_database()
 
-        # User session (will be set after login, for now use default admin)
-        self.current_user = None
-        self.current_user_id = None
-        self.current_username = "admin"  # Default to admin for now
-        self.current_user_role = "admin"
+        logger.info("=" * 60)
+        logger.info("APPLICATION STARTUP")
+        logger.info("=" * 60)
 
-        # Configuration
-        self.config_file = "gcode_manager_config.json"
-        self.load_config()
+        try:
+            # Dark mode colors
+            logger.debug("Initializing colors and theme...")
+            self.bg_color = "#2b2b2b"
+            self.fg_color = "#ffffff"
+            self.input_bg = "#3c3c3c"
+            self.button_bg = "#4a4a4a"
+            self.accent_color = "#4a90e2"
 
-        # Initialize repository system
-        self.init_repository()
+            self.root.configure(bg=self.bg_color)
 
-        # Initialize improved parser
-        self.parser = ImprovedGCodeParser()
+            # Database setup
+            logger.info("Initializing database...")
+            self.db_path = "gcode_database.db"
+            self.init_database()
+            logger.info("Database initialized successfully")
 
-        # Configure ttk dark theme
-        style = ttk.Style()
-        style.theme_use('clam')
-        style.configure('Dark.TFrame', background=self.bg_color)
+            # User session - will be set after login
+            self.current_user = None
+            self.current_user_id = None
+            self.current_username = None
+            self.current_user_role = None
+            self.user_permissions = {}
 
-        # Get available values from database for filters
-        self.available_types = self.get_available_values("spacer_type")
-        self.available_materials = self.get_available_values("material")
-        self.available_statuses = self.get_available_values("validation_status")
+            # Configuration
+            logger.debug("Loading configuration...")
+            self.config_file = "gcode_manager_config.json"
+            self.load_config()
 
-        # Build GUI
-        self.setup_gui()
+            # Initialize repository system
+            logger.info("Initializing repository system...")
+            self.init_repository()
+            logger.info("Repository system initialized")
 
-        # Enable drag and drop
-        self.setup_drag_drop()
+            # Initialize improved parser
+            logger.debug("Initializing G-code parser...")
+            self.parser = ImprovedGCodeParser()
 
-        self.refresh_results()
+            # Configure ttk dark theme
+            style = ttk.Style()
+            style.theme_use('clam')
+            style.configure('Dark.TFrame', background=self.bg_color)
 
-        # Run startup integrity check
-        self.run_startup_integrity_check()
+            # Show login dialog - must succeed before continuing
+            logger.info("Showing login dialog...")
+            if not self.show_login_dialog():
+                logger.info("Login cancelled or failed")
+                self.root.destroy()
+                return
+            logger.info(f"Login successful for user: {self.current_username}")
+
+            # Get available values from database for filters
+            logger.debug("Loading filter values...")
+            self.available_types = self.get_available_values("spacer_type")
+            self.available_materials = self.get_available_values("material")
+            self.available_statuses = self.get_available_values("validation_status")
+
+            # Build GUI
+            logger.info("Building GUI...")
+            self.setup_gui()
+            logger.info("GUI built successfully")
+
+            # Enable drag and drop
+            logger.debug("Setting up drag and drop...")
+            self.setup_drag_drop()
+
+            logger.info("Refreshing results...")
+            self.refresh_results()
+            logger.info("Results refreshed")
+
+            # Set up clean shutdown handler
+            self.root.protocol("WM_DELETE_WINDOW", self._on_closing)
+
+            # Run startup integrity check in background (after UI is shown)
+            logger.info("Scheduling startup integrity check...")
+            self.root.after(500, self._run_startup_integrity_check_background)
+            logger.info("Startup complete - integrity check running in background")
+
+        except Exception as e:
+            logger.critical(f"STARTUP FAILED: {e}", exc_info=True)
+            import traceback
+            traceback.print_exc()
+            raise
+
+    def _on_closing(self):
+        """Handle window close - ensure clean shutdown"""
+        logger.info("Application closing...")
+        try:
+            self.root.destroy()
+        except:
+            pass
+        import sys
+        sys.exit(0)
+
+    def _run_startup_integrity_check_background(self):
+        """Run integrity check in background thread to not block UI"""
+        import threading
+
+        def run_check():
+            try:
+                logger.info("Running startup integrity check (background)...")
+                self.run_startup_integrity_check()
+                logger.info("Startup integrity check completed")
+            except Exception as e:
+                logger.error(f"Background integrity check failed: {e}", exc_info=True)
+
+        thread = threading.Thread(target=run_check, daemon=True)
+        thread.start()
+
+    # ========================================================================
+    # USER AUTHENTICATION & PERMISSIONS
+    # ========================================================================
+
+    def show_login_dialog(self) -> bool:
+        """Show login dialog. Returns True if login successful."""
+        login_window = tk.Toplevel(self.root)
+        login_window.title("Login - G-Code Database Manager")
+        login_window.geometry("400x350")
+        login_window.configure(bg=self.bg_color)
+        login_window.transient(self.root)
+        login_window.grab_set()
+
+        # Center the window
+        login_window.update_idletasks()
+        x = (login_window.winfo_screenwidth() - 400) // 2
+        y = (login_window.winfo_screenheight() - 350) // 2
+        login_window.geometry(f"+{x}+{y}")
+
+        # Prevent closing without login
+        login_window.protocol("WM_DELETE_WINDOW", lambda: self._cancel_login(login_window))
+
+        self.login_success = False
+
+        # Title
+        tk.Label(login_window, text="G-Code Database Manager",
+                font=("Arial", 16, "bold"), bg=self.bg_color, fg=self.fg_color).pack(pady=(20, 5))
+        tk.Label(login_window, text="Please login to continue",
+                font=("Arial", 10), bg=self.bg_color, fg="#888888").pack(pady=(0, 20))
+
+        # Username
+        tk.Label(login_window, text="Username:", bg=self.bg_color, fg=self.fg_color,
+                font=("Arial", 10)).pack(anchor="w", padx=50)
+        username_entry = tk.Entry(login_window, bg=self.input_bg, fg=self.fg_color,
+                                 font=("Arial", 11), width=30)
+        username_entry.pack(pady=(5, 15), padx=50)
+        username_entry.focus_set()
+
+        # Password
+        tk.Label(login_window, text="Password:", bg=self.bg_color, fg=self.fg_color,
+                font=("Arial", 10)).pack(anchor="w", padx=50)
+        password_entry = tk.Entry(login_window, bg=self.input_bg, fg=self.fg_color,
+                                 font=("Arial", 11), width=30, show="*")
+        password_entry.pack(pady=(5, 10), padx=50)
+
+        # Error message label
+        error_label = tk.Label(login_window, text="", bg=self.bg_color, fg="#ff6b6b",
+                              font=("Arial", 9))
+        error_label.pack(pady=5)
+
+        def attempt_login(event=None):
+            username = username_entry.get().strip()
+            password = password_entry.get()
+
+            if not username or not password:
+                error_label.config(text="Please enter username and password")
+                return
+
+            result = self._authenticate_user(username, password)
+
+            if result['success']:
+                self.login_success = True
+                self.current_user_id = result['user_id']
+                self.current_username = result['username']
+                self.current_user_role = result['role']
+                self.user_permissions = ROLE_PERMISSIONS.get(result['role'], {})
+
+                # Update last login time
+                self._update_last_login(result['user_id'])
+
+                # Check if password change required
+                if result.get('must_change_password'):
+                    login_window.destroy()
+                    self._force_password_change()
+                else:
+                    login_window.destroy()
+            else:
+                error_label.config(text=result['message'])
+                password_entry.delete(0, tk.END)
+
+        # Bind Enter key
+        username_entry.bind('<Return>', lambda e: password_entry.focus_set())
+        password_entry.bind('<Return>', attempt_login)
+
+        # Buttons
+        btn_frame = tk.Frame(login_window, bg=self.bg_color)
+        btn_frame.pack(pady=20)
+
+        tk.Button(btn_frame, text="Login", command=attempt_login,
+                 bg=self.accent_color, fg=self.fg_color, font=("Arial", 11, "bold"),
+                 width=12, height=2).pack(side=tk.LEFT, padx=10)
+
+        tk.Button(btn_frame, text="Exit", command=lambda: self._cancel_login(login_window),
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 11),
+                 width=12, height=2).pack(side=tk.LEFT, padx=10)
+
+        # Default credentials hint (remove in production)
+        tk.Label(login_window, text="Default: admin / admin123",
+                font=("Arial", 8, "italic"), bg=self.bg_color, fg="#666666").pack(pady=(10, 0))
+
+        self.root.wait_window(login_window)
+        return self.login_success
+
+    def _cancel_login(self, window):
+        """Cancel login and exit"""
+        self.login_success = False
+        window.destroy()
+
+    def _authenticate_user(self, username: str, password: str) -> Dict:
+        """Authenticate user credentials"""
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                SELECT user_id, username, password_hash, password_salt, role,
+                       is_active, must_change_password, failed_login_attempts, locked_until
+                FROM users WHERE username = ?
+            """, (username,))
+
+            user = cursor.fetchone()
+
+            if not user:
+                conn.close()
+                return {'success': False, 'message': 'Invalid username or password'}
+
+            user_id, db_username, pw_hash, pw_salt, role, is_active, must_change, failed_attempts, locked_until = user
+
+            # Check if account is locked
+            if locked_until:
+                lock_time = datetime.fromisoformat(locked_until)
+                if datetime.now() < lock_time:
+                    mins_left = int((lock_time - datetime.now()).total_seconds() / 60) + 1
+                    conn.close()
+                    return {'success': False, 'message': f'Account locked. Try again in {mins_left} minutes'}
+                else:
+                    # Unlock the account
+                    cursor.execute("UPDATE users SET locked_until = NULL, failed_login_attempts = 0 WHERE user_id = ?", (user_id,))
+                    conn.commit()
+
+            # Check if account is active
+            if not is_active:
+                conn.close()
+                return {'success': False, 'message': 'Account is disabled. Contact administrator.'}
+
+            # Verify password
+            if not pw_hash or not pw_salt:
+                # No password set yet (shouldn't happen with new setup)
+                conn.close()
+                return {'success': False, 'message': 'Account not properly configured'}
+
+            if verify_password(password, pw_hash, pw_salt):
+                # Reset failed attempts on success
+                cursor.execute("UPDATE users SET failed_login_attempts = 0 WHERE user_id = ?", (user_id,))
+                conn.commit()
+                conn.close()
+
+                return {
+                    'success': True,
+                    'user_id': user_id,
+                    'username': db_username,
+                    'role': role,
+                    'must_change_password': bool(must_change)
+                }
+            else:
+                # Increment failed attempts
+                new_attempts = (failed_attempts or 0) + 1
+                if new_attempts >= 5:
+                    # Lock account for 15 minutes
+                    lock_until = (datetime.now() + timedelta(minutes=15)).isoformat()
+                    cursor.execute("UPDATE users SET failed_login_attempts = ?, locked_until = ? WHERE user_id = ?",
+                                 (new_attempts, lock_until, user_id))
+                    conn.commit()
+                    conn.close()
+                    return {'success': False, 'message': 'Too many failed attempts. Account locked for 15 minutes.'}
+                else:
+                    cursor.execute("UPDATE users SET failed_login_attempts = ? WHERE user_id = ?", (new_attempts, user_id))
+                    conn.commit()
+                    conn.close()
+                    return {'success': False, 'message': f'Invalid username or password ({5 - new_attempts} attempts remaining)'}
+
+        except Exception as e:
+            logger.error(f"Authentication error: {e}", exc_info=True)
+            return {'success': False, 'message': 'Login error. Please try again.'}
+
+    def _update_last_login(self, user_id: int):
+        """Update user's last login timestamp"""
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
+            cursor = conn.cursor()
+            cursor.execute("UPDATE users SET last_login = ? WHERE user_id = ?",
+                         (datetime.now().isoformat(), user_id))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.error(f"Error updating last login: {e}")
+
+    def _force_password_change(self):
+        """Force user to change password on first login"""
+        change_window = tk.Toplevel(self.root)
+        change_window.title("Change Password Required")
+        change_window.geometry("400x300")
+        change_window.configure(bg=self.bg_color)
+        change_window.transient(self.root)
+        change_window.grab_set()
+
+        # Center
+        change_window.update_idletasks()
+        x = (change_window.winfo_screenwidth() - 400) // 2
+        y = (change_window.winfo_screenheight() - 300) // 2
+        change_window.geometry(f"+{x}+{y}")
+
+        tk.Label(change_window, text="Password Change Required",
+                font=("Arial", 14, "bold"), bg=self.bg_color, fg=self.fg_color).pack(pady=(20, 5))
+        tk.Label(change_window, text="Please set a new password to continue",
+                font=("Arial", 10), bg=self.bg_color, fg="#888888").pack(pady=(0, 20))
+
+        tk.Label(change_window, text="New Password:", bg=self.bg_color, fg=self.fg_color).pack(anchor="w", padx=50)
+        new_pw_entry = tk.Entry(change_window, bg=self.input_bg, fg=self.fg_color, width=30, show="*")
+        new_pw_entry.pack(pady=(5, 10), padx=50)
+        new_pw_entry.focus_set()
+
+        tk.Label(change_window, text="Confirm Password:", bg=self.bg_color, fg=self.fg_color).pack(anchor="w", padx=50)
+        confirm_pw_entry = tk.Entry(change_window, bg=self.input_bg, fg=self.fg_color, width=30, show="*")
+        confirm_pw_entry.pack(pady=(5, 10), padx=50)
+
+        error_label = tk.Label(change_window, text="", bg=self.bg_color, fg="#ff6b6b")
+        error_label.pack(pady=5)
+
+        def save_new_password():
+            new_pw = new_pw_entry.get()
+            confirm_pw = confirm_pw_entry.get()
+
+            if len(new_pw) < 6:
+                error_label.config(text="Password must be at least 6 characters")
+                return
+            if new_pw != confirm_pw:
+                error_label.config(text="Passwords do not match")
+                return
+
+            # Update password
+            pw_hash, pw_salt = hash_password(new_pw)
+            try:
+                conn = sqlite3.connect(self.db_path, timeout=30.0)
+                cursor = conn.cursor()
+                cursor.execute("""
+                    UPDATE users SET password_hash = ?, password_salt = ?, must_change_password = 0
+                    WHERE user_id = ?
+                """, (pw_hash, pw_salt, self.current_user_id))
+                conn.commit()
+                conn.close()
+                messagebox.showinfo("Success", "Password changed successfully!")
+                change_window.destroy()
+            except Exception as e:
+                error_label.config(text="Error saving password")
+                logger.error(f"Password change error: {e}")
+
+        tk.Button(change_window, text="Save Password", command=save_new_password,
+                 bg=self.accent_color, fg=self.fg_color, font=("Arial", 11, "bold"),
+                 width=15, height=2).pack(pady=20)
+
+        change_window.wait_window()
+
+    def has_permission(self, permission: str) -> bool:
+        """Check if current user has a specific permission"""
+        return self.user_permissions.get(permission, False)
+
+    def require_permission(self, permission: str, action_name: str = "this action") -> bool:
+        """Check permission and show error if denied. Returns True if allowed."""
+        if self.has_permission(permission):
+            return True
+        messagebox.showerror("Permission Denied",
+                           f"You don't have permission to perform {action_name}.\n\n"
+                           f"Required permission: {permission}\n"
+                           f"Your role: {self.current_user_role}")
+        return False
+
+    def logout_user(self):
+        """Logout current user and show login dialog"""
+        if messagebox.askyesno("Logout", "Are you sure you want to logout?"):
+            # Clear current session
+            self.current_user = None
+            self.current_user_id = None
+            self.current_username = None
+            self.current_user_role = None
+            self.user_permissions = {}
+
+            # Destroy main window and restart
+            self.root.destroy()
+
+            # Create new root and re-initialize
+            new_root = tk.Tk()
+            app = GCodeDatabaseGUI(new_root)
+            new_root.mainloop()
+
+    def show_change_password(self):
+        """Show dialog to change current user's password"""
+        change_window = tk.Toplevel(self.root)
+        change_window.title("Change Password")
+        change_window.geometry("400x350")
+        change_window.configure(bg=self.bg_color)
+        change_window.transient(self.root)
+        change_window.grab_set()
+
+        # Center
+        change_window.update_idletasks()
+        x = (change_window.winfo_screenwidth() - 400) // 2
+        y = (change_window.winfo_screenheight() - 350) // 2
+        change_window.geometry(f"+{x}+{y}")
+
+        tk.Label(change_window, text="Change Password",
+                font=("Arial", 14, "bold"), bg=self.bg_color, fg=self.fg_color).pack(pady=(20, 20))
+
+        tk.Label(change_window, text="Current Password:", bg=self.bg_color, fg=self.fg_color).pack(anchor="w", padx=50)
+        current_pw = tk.Entry(change_window, bg=self.input_bg, fg=self.fg_color, width=30, show="*")
+        current_pw.pack(pady=(5, 10), padx=50)
+        current_pw.focus_set()
+
+        tk.Label(change_window, text="New Password:", bg=self.bg_color, fg=self.fg_color).pack(anchor="w", padx=50)
+        new_pw = tk.Entry(change_window, bg=self.input_bg, fg=self.fg_color, width=30, show="*")
+        new_pw.pack(pady=(5, 10), padx=50)
+
+        tk.Label(change_window, text="Confirm New Password:", bg=self.bg_color, fg=self.fg_color).pack(anchor="w", padx=50)
+        confirm_pw = tk.Entry(change_window, bg=self.input_bg, fg=self.fg_color, width=30, show="*")
+        confirm_pw.pack(pady=(5, 10), padx=50)
+
+        error_label = tk.Label(change_window, text="", bg=self.bg_color, fg="#ff6b6b")
+        error_label.pack(pady=5)
+
+        def save_password():
+            curr = current_pw.get()
+            new = new_pw.get()
+            conf = confirm_pw.get()
+
+            # Verify current password
+            try:
+                conn = sqlite3.connect(self.db_path, timeout=30.0)
+                cursor = conn.cursor()
+                cursor.execute("SELECT password_hash, password_salt FROM users WHERE user_id = ?",
+                             (self.current_user_id,))
+                row = cursor.fetchone()
+                conn.close()
+
+                if not row or not verify_password(curr, row[0], row[1]):
+                    error_label.config(text="Current password is incorrect")
+                    return
+            except Exception as e:
+                error_label.config(text="Error verifying password")
+                return
+
+            if len(new) < 6:
+                error_label.config(text="New password must be at least 6 characters")
+                return
+            if new != conf:
+                error_label.config(text="New passwords do not match")
+                return
+
+            # Update password
+            pw_hash, pw_salt = hash_password(new)
+            try:
+                conn = sqlite3.connect(self.db_path, timeout=30.0)
+                cursor = conn.cursor()
+                cursor.execute("UPDATE users SET password_hash = ?, password_salt = ? WHERE user_id = ?",
+                             (pw_hash, pw_salt, self.current_user_id))
+                conn.commit()
+                conn.close()
+                messagebox.showinfo("Success", "Password changed successfully!")
+                change_window.destroy()
+            except Exception as e:
+                error_label.config(text="Error saving password")
+
+        btn_frame = tk.Frame(change_window, bg=self.bg_color)
+        btn_frame.pack(pady=20)
+
+        tk.Button(btn_frame, text="Save", command=save_password,
+                 bg=self.accent_color, fg=self.fg_color, font=("Arial", 10, "bold"),
+                 width=12).pack(side=tk.LEFT, padx=10)
+
+        tk.Button(btn_frame, text="Cancel", command=change_window.destroy,
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 10),
+                 width=12).pack(side=tk.LEFT, padx=10)
+
+    def show_user_management(self):
+        """Show user management interface (admin only)"""
+        if not self.require_permission('manage_users', 'manage users'):
+            return
+
+        self.user_mgmt_window = tk.Toplevel(self.root)
+        self.user_mgmt_window.title("User Management")
+        self.user_mgmt_window.geometry("900x600")
+        self.user_mgmt_window.configure(bg=self.bg_color)
+        self.user_mgmt_window.transient(self.root)
+
+        # Title
+        tk.Label(self.user_mgmt_window, text="User Management",
+                font=("Arial", 16, "bold"), bg=self.bg_color, fg=self.fg_color).pack(pady=(15, 10))
+
+        # Button bar
+        btn_bar = tk.Frame(self.user_mgmt_window, bg=self.bg_color)
+        btn_bar.pack(fill=tk.X, padx=20, pady=10)
+
+        tk.Button(btn_bar, text="+ Add User", command=self._add_user_dialog,
+                 bg="#4CAF50", fg=self.fg_color, font=("Arial", 10, "bold"),
+                 width=12).pack(side=tk.LEFT, padx=5)
+
+        tk.Button(btn_bar, text="Edit User", command=self._edit_user_dialog,
+                 bg=self.accent_color, fg=self.fg_color, font=("Arial", 10, "bold"),
+                 width=12).pack(side=tk.LEFT, padx=5)
+
+        tk.Button(btn_bar, text="Reset Password", command=self._reset_user_password,
+                 bg="#FF9800", fg=self.fg_color, font=("Arial", 10, "bold"),
+                 width=14).pack(side=tk.LEFT, padx=5)
+
+        tk.Button(btn_bar, text="Disable/Enable", command=self._toggle_user_active,
+                 bg="#9C27B0", fg=self.fg_color, font=("Arial", 10, "bold"),
+                 width=14).pack(side=tk.LEFT, padx=5)
+
+        tk.Button(btn_bar, text="Delete User", command=self._delete_user,
+                 bg="#D32F2F", fg=self.fg_color, font=("Arial", 10, "bold"),
+                 width=12).pack(side=tk.LEFT, padx=5)
+
+        tk.Button(btn_bar, text="Refresh", command=self._refresh_user_list,
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 10),
+                 width=10).pack(side=tk.RIGHT, padx=5)
+
+        # User list
+        list_frame = tk.Frame(self.user_mgmt_window, bg=self.bg_color)
+        list_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+
+        columns = ('username', 'full_name', 'role', 'email', 'status', 'last_login')
+        self.user_tree = ttk.Treeview(list_frame, columns=columns, show='headings', height=15)
+
+        self.user_tree.heading('username', text='Username')
+        self.user_tree.heading('full_name', text='Full Name')
+        self.user_tree.heading('role', text='Role')
+        self.user_tree.heading('email', text='Email')
+        self.user_tree.heading('status', text='Status')
+        self.user_tree.heading('last_login', text='Last Login')
+
+        self.user_tree.column('username', width=120)
+        self.user_tree.column('full_name', width=150)
+        self.user_tree.column('role', width=100)
+        self.user_tree.column('email', width=180)
+        self.user_tree.column('status', width=80)
+        self.user_tree.column('last_login', width=150)
+
+        scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=self.user_tree.yview)
+        self.user_tree.configure(yscrollcommand=scrollbar.set)
+
+        self.user_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Role legend
+        legend_frame = tk.Frame(self.user_mgmt_window, bg=self.bg_color)
+        legend_frame.pack(fill=tk.X, padx=20, pady=10)
+
+        tk.Label(legend_frame, text="Roles:", bg=self.bg_color, fg=self.fg_color,
+                font=("Arial", 10, "bold")).pack(side=tk.LEFT, padx=5)
+
+        for role, desc in ROLE_DESCRIPTIONS.items():
+            tk.Label(legend_frame, text=f"{role}: {desc}",
+                    bg=self.bg_color, fg="#888888", font=("Arial", 8)).pack(side=tk.LEFT, padx=10)
+
+        # Load users
+        self._refresh_user_list()
+
+    def _refresh_user_list(self):
+        """Refresh the user list in management window"""
+        if not hasattr(self, 'user_tree'):
+            return
+
+        # Clear existing
+        for item in self.user_tree.get_children():
+            self.user_tree.delete(item)
+
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT user_id, username, full_name, role, email, is_active, last_login
+                FROM users ORDER BY username
+            """)
+            users = cursor.fetchall()
+            conn.close()
+
+            for user in users:
+                user_id, username, full_name, role, email, is_active, last_login = user
+                status = "Active" if is_active else "Disabled"
+                last_login_display = last_login[:16] if last_login else "Never"
+
+                self.user_tree.insert('', tk.END, values=(
+                    username, full_name or '', role, email or '', status, last_login_display
+                ), tags=(str(user_id),))
+
+        except Exception as e:
+            logger.error(f"Error loading users: {e}")
+
+    def _add_user_dialog(self):
+        """Show dialog to add a new user"""
+        dialog = tk.Toplevel(self.user_mgmt_window)
+        dialog.title("Add New User")
+        dialog.geometry("400x450")
+        dialog.configure(bg=self.bg_color)
+        dialog.transient(self.user_mgmt_window)
+        dialog.grab_set()
+
+        tk.Label(dialog, text="Add New User",
+                font=("Arial", 14, "bold"), bg=self.bg_color, fg=self.fg_color).pack(pady=(15, 15))
+
+        # Form fields
+        fields_frame = tk.Frame(dialog, bg=self.bg_color)
+        fields_frame.pack(fill=tk.X, padx=30)
+
+        tk.Label(fields_frame, text="Username*:", bg=self.bg_color, fg=self.fg_color).pack(anchor="w")
+        username_entry = tk.Entry(fields_frame, bg=self.input_bg, fg=self.fg_color, width=35)
+        username_entry.pack(pady=(2, 10))
+
+        tk.Label(fields_frame, text="Full Name:", bg=self.bg_color, fg=self.fg_color).pack(anchor="w")
+        fullname_entry = tk.Entry(fields_frame, bg=self.input_bg, fg=self.fg_color, width=35)
+        fullname_entry.pack(pady=(2, 10))
+
+        tk.Label(fields_frame, text="Email:", bg=self.bg_color, fg=self.fg_color).pack(anchor="w")
+        email_entry = tk.Entry(fields_frame, bg=self.input_bg, fg=self.fg_color, width=35)
+        email_entry.pack(pady=(2, 10))
+
+        tk.Label(fields_frame, text="Role*:", bg=self.bg_color, fg=self.fg_color).pack(anchor="w")
+        role_var = tk.StringVar(value="viewer")
+        role_combo = ttk.Combobox(fields_frame, textvariable=role_var,
+                                 values=list(ROLE_PERMISSIONS.keys()), state="readonly", width=32)
+        role_combo.pack(pady=(2, 10))
+
+        tk.Label(fields_frame, text="Initial Password*:", bg=self.bg_color, fg=self.fg_color).pack(anchor="w")
+        password_entry = tk.Entry(fields_frame, bg=self.input_bg, fg=self.fg_color, width=35, show="*")
+        password_entry.pack(pady=(2, 10))
+
+        # Require password change checkbox
+        require_change_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(fields_frame, text="Require password change on first login",
+                      variable=require_change_var, bg=self.bg_color, fg=self.fg_color,
+                      selectcolor=self.input_bg).pack(anchor="w", pady=5)
+
+        error_label = tk.Label(dialog, text="", bg=self.bg_color, fg="#ff6b6b")
+        error_label.pack(pady=5)
+
+        def save_user():
+            username = username_entry.get().strip()
+            fullname = fullname_entry.get().strip()
+            email = email_entry.get().strip()
+            role = role_var.get()
+            password = password_entry.get()
+
+            if not username:
+                error_label.config(text="Username is required")
+                return
+            if len(password) < 6:
+                error_label.config(text="Password must be at least 6 characters")
+                return
+
+            pw_hash, pw_salt = hash_password(password)
+
+            try:
+                conn = sqlite3.connect(self.db_path, timeout=30.0)
+                cursor = conn.cursor()
+                cursor.execute("""
+                    INSERT INTO users (username, password_hash, password_salt, full_name, email, role,
+                                      date_created, is_active, must_change_password)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)
+                """, (username, pw_hash, pw_salt, fullname or None, email or None, role,
+                     datetime.now().isoformat(), 1 if require_change_var.get() else 0))
+                conn.commit()
+                conn.close()
+
+                self.log_activity('USER_CREATED', None, f"Created user: {username} with role: {role}")
+                messagebox.showinfo("Success", f"User '{username}' created successfully!")
+                dialog.destroy()
+                self._refresh_user_list()
+
+            except sqlite3.IntegrityError:
+                error_label.config(text="Username already exists")
+            except Exception as e:
+                error_label.config(text=f"Error creating user: {str(e)[:30]}")
+                logger.error(f"Error creating user: {e}")
+
+        btn_frame = tk.Frame(dialog, bg=self.bg_color)
+        btn_frame.pack(pady=20)
+
+        tk.Button(btn_frame, text="Create User", command=save_user,
+                 bg=self.accent_color, fg=self.fg_color, font=("Arial", 10, "bold"),
+                 width=12).pack(side=tk.LEFT, padx=10)
+
+        tk.Button(btn_frame, text="Cancel", command=dialog.destroy,
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 10),
+                 width=12).pack(side=tk.LEFT, padx=10)
+
+    def _edit_user_dialog(self):
+        """Edit selected user"""
+        selected = self.user_tree.selection()
+        if not selected:
+            messagebox.showwarning("Select User", "Please select a user to edit")
+            return
+
+        item = self.user_tree.item(selected[0])
+        username = item['values'][0]
+
+        # Get user details
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
+            cursor = conn.cursor()
+            cursor.execute("SELECT user_id, username, full_name, email, role FROM users WHERE username = ?",
+                         (username,))
+            user = cursor.fetchone()
+            conn.close()
+        except Exception as e:
+            messagebox.showerror("Error", f"Error loading user: {e}")
+            return
+
+        if not user:
+            return
+
+        user_id, db_username, full_name, email, role = user
+
+        dialog = tk.Toplevel(self.user_mgmt_window)
+        dialog.title(f"Edit User: {username}")
+        dialog.geometry("400x350")
+        dialog.configure(bg=self.bg_color)
+        dialog.transient(self.user_mgmt_window)
+        dialog.grab_set()
+
+        tk.Label(dialog, text=f"Edit User: {username}",
+                font=("Arial", 14, "bold"), bg=self.bg_color, fg=self.fg_color).pack(pady=(15, 15))
+
+        fields_frame = tk.Frame(dialog, bg=self.bg_color)
+        fields_frame.pack(fill=tk.X, padx=30)
+
+        tk.Label(fields_frame, text="Full Name:", bg=self.bg_color, fg=self.fg_color).pack(anchor="w")
+        fullname_entry = tk.Entry(fields_frame, bg=self.input_bg, fg=self.fg_color, width=35)
+        fullname_entry.insert(0, full_name or '')
+        fullname_entry.pack(pady=(2, 10))
+
+        tk.Label(fields_frame, text="Email:", bg=self.bg_color, fg=self.fg_color).pack(anchor="w")
+        email_entry = tk.Entry(fields_frame, bg=self.input_bg, fg=self.fg_color, width=35)
+        email_entry.insert(0, email or '')
+        email_entry.pack(pady=(2, 10))
+
+        tk.Label(fields_frame, text="Role:", bg=self.bg_color, fg=self.fg_color).pack(anchor="w")
+        role_var = tk.StringVar(value=role)
+        role_combo = ttk.Combobox(fields_frame, textvariable=role_var,
+                                 values=list(ROLE_PERMISSIONS.keys()), state="readonly", width=32)
+        role_combo.pack(pady=(2, 10))
+
+        # Prevent changing own role from admin
+        if username == self.current_username and role == 'admin':
+            role_combo.config(state="disabled")
+            tk.Label(fields_frame, text="(Cannot change your own admin role)",
+                    bg=self.bg_color, fg="#ff6b6b", font=("Arial", 8)).pack(anchor="w")
+
+        error_label = tk.Label(dialog, text="", bg=self.bg_color, fg="#ff6b6b")
+        error_label.pack(pady=5)
+
+        def save_changes():
+            new_fullname = fullname_entry.get().strip()
+            new_email = email_entry.get().strip()
+            new_role = role_var.get()
+
+            try:
+                conn = sqlite3.connect(self.db_path, timeout=30.0)
+                cursor = conn.cursor()
+                cursor.execute("""
+                    UPDATE users SET full_name = ?, email = ?, role = ?
+                    WHERE user_id = ?
+                """, (new_fullname or None, new_email or None, new_role, user_id))
+                conn.commit()
+                conn.close()
+
+                self.log_activity('USER_UPDATED', None, f"Updated user: {username}")
+                messagebox.showinfo("Success", "User updated successfully!")
+                dialog.destroy()
+                self._refresh_user_list()
+
+            except Exception as e:
+                error_label.config(text=f"Error: {str(e)[:30]}")
+
+        btn_frame = tk.Frame(dialog, bg=self.bg_color)
+        btn_frame.pack(pady=20)
+
+        tk.Button(btn_frame, text="Save Changes", command=save_changes,
+                 bg=self.accent_color, fg=self.fg_color, font=("Arial", 10, "bold"),
+                 width=12).pack(side=tk.LEFT, padx=10)
+
+        tk.Button(btn_frame, text="Cancel", command=dialog.destroy,
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 10),
+                 width=12).pack(side=tk.LEFT, padx=10)
+
+    def _reset_user_password(self):
+        """Reset selected user's password"""
+        selected = self.user_tree.selection()
+        if not selected:
+            messagebox.showwarning("Select User", "Please select a user to reset password")
+            return
+
+        item = self.user_tree.item(selected[0])
+        username = item['values'][0]
+
+        # Generate temporary password
+        temp_password = secrets.token_urlsafe(8)
+
+        if messagebox.askyesno("Reset Password",
+                              f"Reset password for user '{username}'?\n\n"
+                              f"New temporary password: {temp_password}\n\n"
+                              "Make sure to share this with the user!"):
+            try:
+                pw_hash, pw_salt = hash_password(temp_password)
+                conn = sqlite3.connect(self.db_path, timeout=30.0)
+                cursor = conn.cursor()
+                cursor.execute("""
+                    UPDATE users SET password_hash = ?, password_salt = ?,
+                                    must_change_password = 1, failed_login_attempts = 0, locked_until = NULL
+                    WHERE username = ?
+                """, (pw_hash, pw_salt, username))
+                conn.commit()
+                conn.close()
+
+                self.log_activity('PASSWORD_RESET', None, f"Reset password for user: {username}")
+
+                messagebox.showinfo("Password Reset",
+                                  f"Password reset successfully!\n\n"
+                                  f"Username: {username}\n"
+                                  f"Temporary Password: {temp_password}\n\n"
+                                  "User will be required to change password on next login.")
+
+            except Exception as e:
+                messagebox.showerror("Error", f"Error resetting password: {e}")
+
+    def _toggle_user_active(self):
+        """Enable or disable selected user"""
+        selected = self.user_tree.selection()
+        if not selected:
+            messagebox.showwarning("Select User", "Please select a user")
+            return
+
+        item = self.user_tree.item(selected[0])
+        username = item['values'][0]
+        current_status = item['values'][4]
+
+        if username == self.current_username:
+            messagebox.showwarning("Cannot Disable", "You cannot disable your own account!")
+            return
+
+        new_status = 0 if current_status == "Active" else 1
+        action = "disable" if new_status == 0 else "enable"
+
+        if messagebox.askyesno("Confirm",
+                              f"Are you sure you want to {action} user '{username}'?"):
+            try:
+                conn = sqlite3.connect(self.db_path, timeout=30.0)
+                cursor = conn.cursor()
+                cursor.execute("UPDATE users SET is_active = ? WHERE username = ?",
+                             (new_status, username))
+                conn.commit()
+                conn.close()
+
+                self.log_activity('USER_STATUS_CHANGED', None,
+                                f"{'Enabled' if new_status else 'Disabled'} user: {username}")
+                self._refresh_user_list()
+
+            except Exception as e:
+                messagebox.showerror("Error", f"Error updating user: {e}")
+
+    def _delete_user(self):
+        """Delete selected user"""
+        selected = self.user_tree.selection()
+        if not selected:
+            messagebox.showwarning("Select User", "Please select a user to delete")
+            return
+
+        item = self.user_tree.item(selected[0])
+        username = item['values'][0]
+
+        if username == self.current_username:
+            messagebox.showwarning("Cannot Delete", "You cannot delete your own account!")
+            return
+
+        if username == 'admin':
+            messagebox.showwarning("Cannot Delete", "The admin account cannot be deleted!")
+            return
+
+        if messagebox.askyesno("Confirm Delete",
+                              f"Are you sure you want to permanently delete user '{username}'?\n\n"
+                              "This action cannot be undone!"):
+            try:
+                conn = sqlite3.connect(self.db_path, timeout=30.0)
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM users WHERE username = ?", (username,))
+                conn.commit()
+                conn.close()
+
+                self.log_activity('USER_DELETED', None, f"Deleted user: {username}")
+                messagebox.showinfo("Deleted", f"User '{username}' has been deleted.")
+                self._refresh_user_list()
+
+            except Exception as e:
+                messagebox.showerror("Error", f"Error deleting user: {e}")
 
     def run_startup_integrity_check(self):
         """
@@ -317,9 +1275,9 @@ class GCodeDatabaseGUI:
 
                 logger.info(message.replace('\n', ' | '))
 
-                # Refresh the UI to show new files
+                # Refresh the UI to show new files (must be done on main thread)
                 if fixed['files_added'] > 0 or fixed['records_removed'] > 0:
-                    self.cascade_refresh('startup_integrity')
+                    self.root.after(0, lambda: self.cascade_refresh('startup_integrity'))
 
             # Populate content hashes for files that don't have them (runs in background)
             self.root.after(1000, self._populate_hashes_background)
@@ -329,6 +1287,7 @@ class GCodeDatabaseGUI:
 
     def _populate_hashes_background(self):
         """Background task to populate content hashes."""
+        conn = None
         try:
             # Check how many files need hashes
             conn = sqlite3.connect(self.db_path, timeout=30.0)
@@ -336,6 +1295,7 @@ class GCodeDatabaseGUI:
             cursor.execute("SELECT COUNT(*) FROM programs WHERE content_hash IS NULL AND file_path IS NOT NULL")
             count = cursor.fetchone()[0]
             conn.close()
+            conn = None
 
             if count > 0:
                 logger.info(f"Populating content hashes for {count} files...")
@@ -343,11 +1303,59 @@ class GCodeDatabaseGUI:
                 logger.info(f"Hash population complete - Hashed: {result['updated']}, Skipped: {result['skipped']}, Errors: {result['errors']}")
         except Exception as e:
             logger.error(f"Background hash population error: {e}", exc_info=True)
+        finally:
+            if conn:
+                conn.close()
 
     def init_database(self):
-        """Initialize SQLite database with schema"""
+        """Initialize SQLite database with schema
+
+        ================================================================================
+        PROGRAMS TABLE COLUMN REFERENCE (51 columns total)
+        ================================================================================
+        When adding new columns, you MUST update ALL of the following locations:
+
+        1. CREATE TABLE statement (below) - add column definition
+        2. ALTER TABLE section (below) - add migration for existing databases
+        3. ProgramRecord dataclass (around line 300) - add field
+
+        INSERT statements using VALUES (positional - MUST have all 51 values):
+        4. Line ~7132: scan_folder() -> scan_thread() INSERT
+        5. Line ~7435: process_new_files_workflow() INSERT OR REPLACE
+        6. Line ~21192: ManualEntryDialog.save_entry() INSERT
+
+        INSERT statements using named columns (safer - only specified columns):
+        7. Line ~4095: process_new_file() INSERT (30 columns)
+        8. Line ~6411: batch operation INSERT OR REPLACE (27 columns)
+        9. Line ~6474: single file add INSERT OR REPLACE (27 columns)
+        10. Line ~7865: scan_for_new_files() INSERT (30 columns)
+
+        Column order (for VALUES inserts):
+        1. program_number          2. title                   3. spacer_type
+        4. outer_diameter          5. thickness               6. thickness_display
+        7. center_bore             8. hub_height              9. hub_diameter
+        10. counter_bore_diameter  11. counter_bore_depth     12. paired_program
+        13. material               14. notes                  15. date_created
+        16. last_modified          17. file_path              18. detection_confidence
+        19. detection_method       20. validation_status      21. validation_issues
+        22. validation_warnings    23. cb_from_gcode          24. ob_from_gcode
+        25. bore_warnings          26. dimensional_issues     27. lathe
+        28. duplicate_type         29. parent_file            30. duplicate_group
+        31. current_version        32. modified_by            33. is_managed
+        34. round_size             35. round_size_confidence  36. round_size_source
+        37. in_correct_range       38. legacy_names           39. last_renamed_date
+        40. rename_reason          41. tools_used             42. tool_sequence
+        43. tool_validation_status 44. tool_validation_issues 45. safety_blocks_status
+        46. safety_blocks_issues   47. content_hash           48. tool_home_status
+        49. tool_home_issues       50. hub_height_display     51. counter_bore_depth_display
+        ================================================================================
+        """
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
+
+        # Enable WAL mode for better concurrent access (prevents database lock issues)
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA busy_timeout=30000")
 
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS programs (
@@ -510,6 +1518,22 @@ class GCodeDatabaseGUI:
             cursor.execute("ALTER TABLE programs ADD COLUMN content_hash TEXT")  # SHA256 hash for duplicate detection
         except:
             pass
+        try:
+            cursor.execute("ALTER TABLE programs ADD COLUMN tool_home_status TEXT")  # 'PASS', 'WARNING', 'CRITICAL', 'N/A', 'UNKNOWN'
+        except:
+            pass
+        try:
+            cursor.execute("ALTER TABLE programs ADD COLUMN tool_home_issues TEXT")  # JSON list of G53 Z position issues
+        except:
+            pass
+        try:
+            cursor.execute("ALTER TABLE programs ADD COLUMN hub_height_display TEXT")  # Display format for hub height (e.g., "1.5")
+        except:
+            pass
+        try:
+            cursor.execute("ALTER TABLE programs ADD COLUMN counter_bore_depth_display TEXT")  # Display format for counter bore depth
+        except:
+            pass
 
         # Create users table
         cursor.execute('''
@@ -517,23 +1541,57 @@ class GCodeDatabaseGUI:
                 user_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 username TEXT UNIQUE NOT NULL,
                 password_hash TEXT,
+                password_salt TEXT,
                 full_name TEXT,
                 role TEXT DEFAULT 'viewer',
                 email TEXT,
                 date_created TEXT,
                 last_login TEXT,
-                is_active INTEGER DEFAULT 1
+                is_active INTEGER DEFAULT 1,
+                must_change_password INTEGER DEFAULT 0,
+                failed_login_attempts INTEGER DEFAULT 0,
+                locked_until TEXT
             )
         ''')
 
-        # Create default admin user if no users exist
+        # Add new columns to existing users table
+        try:
+            cursor.execute("ALTER TABLE users ADD COLUMN password_salt TEXT")
+        except:
+            pass
+        try:
+            cursor.execute("ALTER TABLE users ADD COLUMN must_change_password INTEGER DEFAULT 0")
+        except:
+            pass
+        try:
+            cursor.execute("ALTER TABLE users ADD COLUMN failed_login_attempts INTEGER DEFAULT 0")
+        except:
+            pass
+        try:
+            cursor.execute("ALTER TABLE users ADD COLUMN locked_until TEXT")
+        except:
+            pass
+
+        # Create default admin user if no users exist (password: admin123 - must be changed on first login)
         cursor.execute("SELECT COUNT(*) FROM users")
         if cursor.fetchone()[0] == 0:
-            from datetime import datetime
+            default_password = "admin123"
+            pw_hash, pw_salt = hash_password(default_password)
             cursor.execute("""
-                INSERT INTO users (username, password_hash, full_name, role, date_created, is_active)
-                VALUES ('admin', NULL, 'Administrator', 'admin', ?, 1)
-            """, (datetime.now().isoformat(),))
+                INSERT INTO users (username, password_hash, password_salt, full_name, role, date_created, is_active, must_change_password)
+                VALUES ('admin', ?, ?, 'Administrator', 'admin', ?, 1, 1)
+            """, (pw_hash, pw_salt, datetime.now().isoformat()))
+        else:
+            # Fix existing admin user if password not set (migration from old version)
+            cursor.execute("SELECT password_hash, password_salt FROM users WHERE username = 'admin'")
+            admin_row = cursor.fetchone()
+            if admin_row and (admin_row[0] is None or admin_row[1] is None):
+                default_password = "admin123"
+                pw_hash, pw_salt = hash_password(default_password)
+                cursor.execute("""
+                    UPDATE users SET password_hash = ?, password_salt = ?, must_change_password = 1
+                    WHERE username = 'admin'
+                """, (pw_hash, pw_salt))
 
         # Create program_versions table
         cursor.execute('''
@@ -723,28 +1781,49 @@ class GCodeDatabaseGUI:
 
         # Define repository paths
         self.repository_path = os.path.join(base_path, 'repository')
+        self.revised_repository_path = os.path.join(base_path, 'revised_repository')
         self.versions_path = os.path.join(base_path, 'versions')
         self.backups_path = os.path.join(base_path, 'backups')
         self.deleted_path = os.path.join(base_path, 'deleted')
 
         # Create directories if they don't exist
         os.makedirs(self.repository_path, exist_ok=True)
+        os.makedirs(self.revised_repository_path, exist_ok=True)
         os.makedirs(self.versions_path, exist_ok=True)
         os.makedirs(self.backups_path, exist_ok=True)
         os.makedirs(self.deleted_path, exist_ok=True)
 
         logger.info(f"Repository initialized at: {self.repository_path}")
+        logger.info(f"Revised Repository initialized at: {self.revised_repository_path}")
         logger.debug(f"Versions path: {self.versions_path}")
         logger.debug(f"Backups path: {self.backups_path}")
         logger.debug(f"Deleted path: {self.deleted_path}")
 
     def is_managed_file(self, file_path):
-        """Check if a file is in the managed repository"""
+        """Check if a file is in the managed repository (either main or revised)"""
         if not file_path:
             return False
         abs_path = os.path.abspath(file_path)
         repo_path = os.path.abspath(self.repository_path)
-        return abs_path.startswith(repo_path)
+        revised_repo_path = os.path.abspath(self.revised_repository_path)
+        return abs_path.startswith(repo_path) or abs_path.startswith(revised_repo_path)
+
+    def is_in_revised_repository(self, file_path):
+        """Check if a file is in the revised repository"""
+        if not file_path:
+            return False
+        abs_path = os.path.abspath(file_path)
+        revised_repo_path = os.path.abspath(self.revised_repository_path)
+        return abs_path.startswith(revised_repo_path)
+
+    def is_in_main_repository(self, file_path):
+        """Check if a file is in the main repository (not revised)"""
+        if not file_path:
+            return False
+        abs_path = os.path.abspath(file_path)
+        repo_path = os.path.abspath(self.repository_path)
+        revised_repo_path = os.path.abspath(self.revised_repository_path)
+        return abs_path.startswith(repo_path) and not abs_path.startswith(revised_repo_path)
 
     def import_to_repository(self, source_file, program_number=None):
         """
@@ -1202,6 +2281,10 @@ class GCodeDatabaseGUI:
 
     def get_range_for_round_size(self, round_size):
         """Get program number range for a round size"""
+        # Handle None or invalid round_size
+        if round_size is None:
+            return None
+
         ranges = self.get_round_size_ranges()
 
         # Exact match
@@ -1611,6 +2694,56 @@ class GCodeDatabaseGUI:
             messagebox.showerror("Registry Error", f"Failed to find available number:\n{str(e)}")
             return None
 
+    def find_available_numbers(self, round_size, count=5):
+        """
+        Find multiple available program numbers for a given round size.
+
+        Args:
+            round_size: The round size (e.g., 6.25, 10.5)
+            count: How many available numbers to return
+
+        Returns:
+            list: List of available program numbers as integers
+        """
+        try:
+            # Get the range for this round size
+            range_info = self.get_range_for_round_size(round_size)
+            if not range_info:
+                return []
+
+            range_start, range_end = range_info
+
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            # Find available numbers in range
+            cursor.execute("""
+                SELECT program_number
+                FROM program_number_registry
+                WHERE CAST(REPLACE(program_number, 'o', '') AS INTEGER) BETWEEN ? AND ?
+                AND status = 'AVAILABLE'
+                ORDER BY CAST(REPLACE(program_number, 'o', '') AS INTEGER)
+                LIMIT ?
+            """, (range_start, range_end, count))
+
+            results = cursor.fetchall()
+            conn.close()
+
+            # Convert to integers
+            available = []
+            for row in results:
+                try:
+                    num = int(str(row[0]).replace('o', '').replace('O', ''))
+                    available.append(num)
+                except:
+                    pass
+
+            return available
+
+        except Exception as e:
+            logger.error(f"Error finding available numbers: {e}")
+            return []
+
     def get_registry_statistics(self):
         """
         Get statistics about the program number registry.
@@ -1755,6 +2888,7 @@ class GCodeDatabaseGUI:
             bool: Success status
         """
         from datetime import datetime
+        conn = None
         try:
             conn = sqlite3.connect(self.db_path, timeout=30.0)
             cursor = conn.cursor()
@@ -1821,7 +2955,6 @@ class GCodeDatabaseGUI:
                 """, (file_path, now, new_number))
 
             conn.commit()
-            conn.close()
             return True
 
         except sqlite3.Error as e:
@@ -1830,6 +2963,9 @@ class GCodeDatabaseGUI:
         except Exception as e:
             logger.error(f"Error syncing registry for {operation}: {e}", exc_info=True)
             return False
+        finally:
+            if conn:
+                conn.close()
 
     def populate_content_hashes(self, progress_callback=None):
         """
@@ -2311,6 +3447,10 @@ class GCodeDatabaseGUI:
             for row in cursor.fetchall():
                 prog_num, title, file_path, od, round_size = row
 
+                # Skip if program_number is None
+                if prog_num is None:
+                    continue
+
                 match = suffix_pattern.match(prog_num)
                 if match:
                     base_number = match.group(1)
@@ -2698,15 +3838,20 @@ class GCodeDatabaseGUI:
             trigger: What caused the refresh ('import', 'delete', 'rename', 'sync', 'integrity')
             affected_numbers: Specific program numbers affected (for targeted refresh)
         """
+        logger.debug(f"Cascade refresh starting - trigger: {trigger}, affected: {affected_numbers}")
         try:
             # 1. Refresh the UI tree view
+            logger.debug("Cascade refresh: refreshing results...")
             self.refresh_results()
+            logger.debug("Cascade refresh: results refreshed")
 
             # 2. Refresh filter values (in case new values appeared)
+            logger.debug("Cascade refresh: refreshing filter values...")
             self.refresh_filter_values()
+            logger.debug("Cascade refresh: filter values refreshed")
 
-            # 3. Log the refresh for debugging
-            logger.debug(f"Cascade refresh triggered by: {trigger}, affected: {affected_numbers}")
+            # 3. Log completion
+            logger.debug(f"Cascade refresh completed for trigger: {trigger}")
 
         except Exception as e:
             logger.error(f"Error during cascade refresh: {e}", exc_info=True)
@@ -2807,6 +3952,9 @@ class GCodeDatabaseGUI:
             # Step 4: Parse the G-code file
             try:
                 parse_result = self.parser.parse_file(source_path)
+                if parse_result is None:
+                    result['errors'].append(f"Parse failed: Could not parse file (returned None)")
+                    return result
             except Exception as e:
                 result['errors'].append(f"Parse error: {e}")
                 return result
@@ -2837,26 +3985,107 @@ class GCodeDatabaseGUI:
                 new_filename = f"{program_number}.nc"
                 final_path = os.path.join(self.repository_path, new_filename)
 
-                # If file already exists at destination and it's different, archive it
+                # If file already exists at destination, check if content is different
                 if os.path.exists(final_path) and final_path.lower() != source_path.lower():
-                    # Archive the existing file
-                    if hasattr(self, 'repo_manager') and self.repo_manager:
-                        self.repo_manager.archive_file(final_path, "replaced_by_import")
+                    # Check if content is actually different before archiving
+                    import filecmp
+                    files_are_identical = filecmp.cmp(source_path, final_path, shallow=False)
 
-                # Copy or move file
-                if source_path.lower() != final_path.lower():
+                    if files_are_identical:
+                        # Same content - no need to archive or copy, but STILL add to database
+                        logger.debug(f"File {program_number} already exists with identical content, skipping copy (will still add to DB)")
+                        result['file_path'] = final_path
+                    else:
+                        # Different content - check if it's a different PART or just an update
+                        # Get existing file's data from database
+                        temp_conn = sqlite3.connect(self.db_path, timeout=30.0)
+                        temp_cursor = temp_conn.cursor()
+                        temp_cursor.execute("""
+                            SELECT title, outer_diameter, thickness, center_bore, hub_diameter,
+                                   counter_bore_diameter, spacer_type
+                            FROM programs WHERE program_number = ?
+                        """, (program_number,))
+                        existing_data = temp_cursor.fetchone()
+                        temp_conn.close()
+
+                        # Compare key dimensions to determine if it's the same part
+                        is_different_part = False
+                        if existing_data:
+                            existing_title, existing_od, existing_thick, existing_cb, existing_hub_d, existing_step_d, existing_type = existing_data
+                            new_od = parse_result.outer_diameter
+                            new_thick = parse_result.thickness
+                            new_cb = parse_result.center_bore
+                            new_hub_d = parse_result.hub_diameter
+                            new_step_d = parse_result.counter_bore_diameter
+                            new_type = parse_result.spacer_type
+
+                            # Check if key dimensions differ significantly (different part)
+                            def dims_differ(old, new, tolerance=0.01):
+                                if old is None or new is None:
+                                    return old != new
+                                return abs(float(old) - float(new)) > tolerance
+
+                            # If OD, thickness, CB, hub diameter, or step diameter differ, it's a different part
+                            if (dims_differ(existing_od, new_od) or
+                                dims_differ(existing_thick, new_thick) or
+                                dims_differ(existing_cb, new_cb) or
+                                dims_differ(existing_hub_d, new_hub_d) or
+                                dims_differ(existing_step_d, new_step_d) or
+                                (existing_type and new_type and existing_type != new_type)):
+                                is_different_part = True
+                                logger.info(f"File {program_number}: Different part detected (dims don't match existing)")
+                                logger.debug(f"  Existing: OD={existing_od}, T={existing_thick}, CB={existing_cb}, Hub={existing_hub_d}, Step={existing_step_d}")
+                                logger.debug(f"  New:      OD={new_od}, T={new_thick}, CB={new_cb}, Hub={new_hub_d}, Step={new_step_d}")
+
+                        if is_different_part:
+                            # Different part with same program number - assign new number
+                            round_size = parse_result.outer_diameter
+                            new_number = self.find_next_available_number(round_size)
+                            if new_number:
+                                logger.info(f"Assigning new program number {new_number} to avoid overwriting different part {program_number}")
+                                result['original_number'] = program_number
+                                result['new_number'] = new_number
+                                result['collision_type'] = 'DIFFERENT_PART'
+                                result['warnings'].append(f"Different part than existing {program_number}, assigned {new_number}")
+                                program_number = new_number
+                                result['program_number'] = new_number
+                                new_filename = f"{program_number}.nc"
+                                final_path = os.path.join(self.repository_path, new_filename)
+                            else:
+                                result['errors'].append(f"Could not find available number for different part (original: {program_number})")
+                                return result
+
+                            # Copy with new name
+                            import shutil
+                            shutil.copy2(source_path, final_path)
+                            result['file_path'] = final_path
+                        else:
+                            # Same part, updated version - archive old and replace
+                            logger.info(f"Updated version detected for {program_number}, archiving old version")
+                            if hasattr(self, 'repo_manager') and self.repo_manager:
+                                self.repo_manager.archive_file(final_path, "replaced_by_update")
+
+                            # Copy new file
+                            import shutil
+                            shutil.copy2(source_path, final_path)
+                            result['file_path'] = final_path
+                elif source_path.lower() != final_path.lower():
+                    # File doesn't exist at destination - just copy
                     import shutil
                     shutil.copy2(source_path, final_path)
+                    result['file_path'] = final_path
+                else:
+                    # Source and destination are the same file
+                    result['file_path'] = final_path
 
                 # Update internal O-number if we assigned a new one
                 if result['new_number']:
                     self._update_internal_program_number(final_path, result['new_number'])
-
-                result['file_path'] = final_path
             else:
                 result['file_path'] = source_path
 
             # Step 7: Update database
+            logger.debug(f"Step 7: Updating database for {program_number}, file_path={result.get('file_path')}")
             conn = sqlite3.connect(self.db_path, timeout=30.0)
             cursor = conn.cursor()
 
@@ -2888,7 +4117,8 @@ class GCodeDatabaseGUI:
                         validation_status = ?, validation_issues = ?, validation_warnings = ?,
                         bore_warnings = ?, dimensional_issues = ?,
                         cb_from_gcode = ?, ob_from_gcode = ?, content_hash = ?,
-                        is_managed = ?, round_size = ?
+                        is_managed = ?, round_size = ?,
+                        tool_home_status = ?, tool_home_issues = ?
                     WHERE program_number = ?
                 """, (
                     parse_result.title, parse_result.outer_diameter,
@@ -2904,6 +4134,8 @@ class GCodeDatabaseGUI:
                     parse_result.cb_from_gcode, parse_result.ob_from_gcode, file_hash,
                     1 if import_mode == 'repository' else 0,
                     parse_result.outer_diameter,
+                    parse_result.tool_home_status,
+                    json.dumps(parse_result.tool_home_issues) if parse_result.tool_home_issues else None,
                     program_number
                 ))
             else:
@@ -2915,8 +4147,9 @@ class GCodeDatabaseGUI:
                         material, file_path, date_created, last_modified,
                         validation_status, validation_issues, validation_warnings,
                         bore_warnings, dimensional_issues, cb_from_gcode, ob_from_gcode,
-                        content_hash, is_managed, round_size, round_size_confidence, round_size_source, in_correct_range
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        content_hash, is_managed, round_size, round_size_confidence, round_size_source, in_correct_range,
+                        tool_home_status, tool_home_issues
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     program_number, parse_result.title, parse_result.spacer_type or 'Unknown',
                     parse_result.outer_diameter, parse_result.thickness, parse_result.thickness_display,
@@ -2932,7 +4165,9 @@ class GCodeDatabaseGUI:
                     file_hash,
                     1 if import_mode == 'repository' else 0,
                     parse_result.outer_diameter, 'HIGH', 'PARSED',
-                    1 if self.is_in_correct_range(program_number, parse_result.outer_diameter) else 0
+                    1 if self.is_in_correct_range(program_number, parse_result.outer_diameter) else 0,
+                    parse_result.tool_home_status,
+                    json.dumps(parse_result.tool_home_issues) if parse_result.tool_home_issues else None
                 ))
 
             conn.commit()
@@ -2945,9 +4180,11 @@ class GCodeDatabaseGUI:
                 self.sync_registry_for_operation('ADD', None, program_number, result['file_path'])
 
             result['success'] = True
+            logger.debug(f"Successfully processed {program_number}")
             return result
 
         except Exception as e:
+            logger.error(f"Exception in process_new_file for {result.get('program_number', 'unknown')}: {e}", exc_info=True)
             result['errors'].append(f"Unexpected error: {str(e)}")
             import traceback
             traceback.print_exc()
@@ -3015,6 +4252,7 @@ class GCodeDatabaseGUI:
             }
         }
 
+        conn = None
         try:
             conn = sqlite3.connect(self.db_path, timeout=30.0)
             cursor = conn.cursor()
@@ -3067,6 +4305,10 @@ class GCodeDatabaseGUI:
                         'file_path': reg_path
                     })
 
+            # Close connection before fix operations to avoid nested connections
+            conn.close()
+            conn = None
+
             # Fix issues if requested
             if fix_issues:
                 # Add untracked files
@@ -3075,25 +4317,33 @@ class GCodeDatabaseGUI:
                     if import_result['success']:
                         result['fixed']['files_added'] += 1
 
-                # Remove orphaned records
+                # Remove orphaned records - use single connection for batch
+                if result['orphaned_records'] or result['registry_stale']:
+                    conn = sqlite3.connect(self.db_path, timeout=30.0)
+                    cursor = conn.cursor()
+
+                    for orphan in result['orphaned_records']:
+                        cursor.execute("DELETE FROM programs WHERE program_number = ?",
+                                     (orphan['program_number'],))
+                        result['fixed']['records_removed'] += 1
+
+                    # Fix stale registry entries
+                    for stale in result['registry_stale']:
+                        cursor.execute("""
+                            UPDATE program_number_registry
+                            SET status = 'AVAILABLE', file_path = NULL
+                            WHERE program_number = ?
+                        """, (stale['program_number'],))
+                        result['fixed']['registry_updated'] += 1
+
+                    conn.commit()
+                    conn.close()
+                    conn = None
+
+                # Sync registry for removed orphans (separate connections)
                 for orphan in result['orphaned_records']:
-                    cursor.execute("DELETE FROM programs WHERE program_number = ?",
-                                 (orphan['program_number'],))
                     self.sync_registry_for_operation('REMOVE', orphan['program_number'])
-                    result['fixed']['records_removed'] += 1
 
-                # Fix stale registry entries
-                for stale in result['registry_stale']:
-                    cursor.execute("""
-                        UPDATE program_number_registry
-                        SET status = 'AVAILABLE', file_path = NULL
-                        WHERE program_number = ?
-                    """, (stale['program_number'],))
-                    result['fixed']['registry_updated'] += 1
-
-                conn.commit()
-
-            conn.close()
             return result
 
         except sqlite3.Error as e:
@@ -3102,6 +4352,9 @@ class GCodeDatabaseGUI:
         except Exception as e:
             logger.error(f"Error verifying integrity: {e}", exc_info=True)
             return result
+        finally:
+            if conn:
+                conn.close()
 
     def check_missing_m30(self, file_path):
         """
@@ -3956,6 +5209,24 @@ class GCodeDatabaseGUI:
 
         self.create_top_section(top_frame)
 
+        # User status bar (right side of top frame)
+        user_frame = tk.Frame(top_frame, bg=self.bg_color)
+        user_frame.pack(side=tk.RIGHT, padx=10)
+
+        # Role color coding
+        role_colors = {'admin': '#4CAF50', 'editor': '#2196F3', 'operator': '#FF9800', 'viewer': '#9E9E9E'}
+        role_color = role_colors.get(self.current_user_role, '#9E9E9E')
+
+        tk.Label(user_frame, text=f"Logged in as: {self.current_username}",
+                bg=self.bg_color, fg=self.fg_color, font=("Arial", 9)).pack(side=tk.LEFT, padx=5)
+
+        tk.Label(user_frame, text=f"[{self.current_user_role.upper()}]",
+                bg=self.bg_color, fg=role_color, font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=2)
+
+        tk.Button(user_frame, text="Logout", command=self.logout_user,
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 8),
+                 width=8).pack(side=tk.LEFT, padx=10)
+
         # Ribbon tabs section
         ribbon_frame = tk.Frame(main_container, bg=self.bg_color, relief=tk.RAISED, borderwidth=1)
         ribbon_frame.pack(fill=tk.X, pady=(0, 10))
@@ -3971,7 +5242,7 @@ class GCodeDatabaseGUI:
 
         self.view_mode_var = tk.StringVar(value="all")
         view_dropdown = ttk.Combobox(view_selector_frame, textvariable=self.view_mode_var,
-                                     values=["all", "repository", "external"],
+                                     values=["all", "repository", "revised", "external"],
                                      state="readonly", width=20, font=("Arial", 10))
         view_dropdown.pack(side=tk.LEFT, padx=5)
         view_dropdown.bind('<<ComboboxSelected>>', self.on_view_mode_change)
@@ -3983,6 +5254,7 @@ class GCodeDatabaseGUI:
         # Create separate frames for each view mode
         self.all_programs_tab = tk.Frame(action_buttons_frame, bg=self.bg_color)
         self.repository_tab = tk.Frame(action_buttons_frame, bg=self.bg_color)
+        self.revised_tab = tk.Frame(action_buttons_frame, bg=self.bg_color)
         self.external_tab = tk.Frame(action_buttons_frame, bg=self.bg_color)
 
         # Store reference to action buttons frame
@@ -3991,6 +5263,7 @@ class GCodeDatabaseGUI:
         # Setup tab-specific action buttons
         self.setup_all_programs_tab()
         self.setup_repository_tab()
+        self.setup_revised_tab()
         self.setup_external_tab()
 
         # Show "all" tab by default
@@ -4080,47 +5353,55 @@ class GCodeDatabaseGUI:
         repo_buttons1 = tk.Frame(self.repository_tab, bg=self.bg_color)
         repo_buttons1.pack(fill=tk.X, pady=5, padx=10)
 
-        tk.Button(repo_buttons1, text="🗑️ Delete", command=self.delete_from_repository,
-                 bg="#D32F2F", fg=self.fg_color, font=("Arial", 8, "bold"),
-                 width=12).pack(side=tk.LEFT, padx=2, expand=True, fill=tk.X)
+        # Delete button - only for admins
+        if self.has_permission('delete_files'):
+            tk.Button(repo_buttons1, text="🗑️ Delete", command=self.delete_from_repository,
+                     bg="#D32F2F", fg=self.fg_color, font=("Arial", 8, "bold"),
+                     width=12).pack(side=tk.LEFT, padx=2, expand=True, fill=tk.X)
 
+        # Export - available to all
         tk.Button(repo_buttons1, text="📤 Export", command=self.export_selected_file,
                  bg=self.button_bg, fg=self.fg_color, font=("Arial", 8, "bold"),
                  width=12).pack(side=tk.LEFT, padx=2, expand=True, fill=tk.X)
 
-        tk.Button(repo_buttons1, text="🔍 Manage Duplicates",
-                 command=self.manage_duplicates,
-                 bg="#FF6B00", fg=self.fg_color, font=("Arial", 8, "bold"),
-                 width=18).pack(side=tk.LEFT, padx=2, expand=True, fill=tk.X)
+        # Manage Duplicates - editors and above
+        if self.has_permission('manage_duplicates'):
+            tk.Button(repo_buttons1, text="🔍 Manage Duplicates",
+                     command=self.manage_duplicates,
+                     bg="#FF6B00", fg=self.fg_color, font=("Arial", 8, "bold"),
+                     width=18).pack(side=tk.LEFT, padx=2, expand=True, fill=tk.X)
 
-        tk.Button(repo_buttons1, text="🔄 Sync Filenames",
-                 command=self.sync_filenames_with_database,
-                 bg="#00BCD4", fg=self.fg_color, font=("Arial", 8, "bold"),
-                 width=16).pack(side=tk.LEFT, padx=2, expand=True, fill=tk.X)
+        # Sync Filenames - editors and above
+        if self.has_permission('edit_files'):
+            tk.Button(repo_buttons1, text="🔄 Sync Filenames",
+                     command=self.sync_filenames_with_database,
+                     bg="#00BCD4", fg=self.fg_color, font=("Arial", 8, "bold"),
+                     width=16).pack(side=tk.LEFT, padx=2, expand=True, fill=tk.X)
 
-        # Repository management buttons - Row 2 (Program Number Management)
-        repo_buttons2 = tk.Frame(self.repository_tab, bg=self.bg_color)
-        repo_buttons2.pack(fill=tk.X, pady=2, padx=10)
+        # Repository management buttons - Row 2 (Program Number Management) - editors and above
+        if self.has_permission('batch_operations'):
+            repo_buttons2 = tk.Frame(self.repository_tab, bg=self.bg_color)
+            repo_buttons2.pack(fill=tk.X, pady=2, padx=10)
 
-        tk.Button(repo_buttons2, text="📋 Registry",
-                 command=self.show_registry_window,
-                 bg="#6B5B93", fg=self.fg_color, font=("Arial", 8, "bold"),
-                 width=12).pack(side=tk.LEFT, padx=2, expand=True, fill=tk.X)
+            tk.Button(repo_buttons2, text="📋 Registry",
+                     command=self.show_registry_window,
+                     bg="#6B5B93", fg=self.fg_color, font=("Arial", 8, "bold"),
+                     width=12).pack(side=tk.LEFT, padx=2, expand=True, fill=tk.X)
 
-        tk.Button(repo_buttons2, text="⚠️ Out-of-Range",
-                 command=self.show_out_of_range_window,
-                 bg="#C41E3A", fg=self.fg_color, font=("Arial", 8, "bold"),
-                 width=14).pack(side=tk.LEFT, padx=2, expand=True, fill=tk.X)
+            tk.Button(repo_buttons2, text="⚠️ Out-of-Range",
+                     command=self.show_out_of_range_window,
+                     bg="#C41E3A", fg=self.fg_color, font=("Arial", 8, "bold"),
+                     width=14).pack(side=tk.LEFT, padx=2, expand=True, fill=tk.X)
 
-        tk.Button(repo_buttons2, text="🔧 Batch Rename",
-                 command=self.show_batch_rename_window,
-                 bg="#9B59B6", fg=self.fg_color, font=("Arial", 8, "bold"),
-                 width=14).pack(side=tk.LEFT, padx=2, expand=True, fill=tk.X)
+            tk.Button(repo_buttons2, text="🔧 Batch Rename",
+                     command=self.show_batch_rename_window,
+                     bg="#9B59B6", fg=self.fg_color, font=("Arial", 8, "bold"),
+                     width=14).pack(side=tk.LEFT, padx=2, expand=True, fill=tk.X)
 
-        tk.Button(repo_buttons2, text="🎯 Move to Range",
-                 command=self.move_to_correct_range,
-                 bg="#E91E63", fg=self.fg_color, font=("Arial", 8, "bold"),
-                 width=14).pack(side=tk.LEFT, padx=2, expand=True, fill=tk.X)
+            tk.Button(repo_buttons2, text="🎯 Move to Range",
+                     command=self.move_to_correct_range,
+                     bg="#E91E63", fg=self.fg_color, font=("Arial", 8, "bold"),
+                     width=14).pack(side=tk.LEFT, padx=2, expand=True, fill=tk.X)
 
         # Repository management buttons - Row 3 (Utilities)
         repo_buttons3 = tk.Frame(self.repository_tab, bg=self.bg_color)
@@ -4136,9 +5417,77 @@ class GCodeDatabaseGUI:
                  bg="#FF9800", fg=self.fg_color, font=("Arial", 8, "bold"),
                  width=14).pack(side=tk.LEFT, padx=2, expand=True, fill=tk.X)
 
+        tk.Button(repo_buttons3, text="🔄 Rebase Paths",
+                 command=self.quick_rebase_paths,
+                 bg="#2196F3", fg=self.fg_color, font=("Arial", 8, "bold"),
+                 width=14).pack(side=tk.LEFT, padx=2, expand=True, fill=tk.X)
+
         tk.Button(repo_buttons3, text="🔢 Fix Prog# Format",
                  command=self.fix_program_number_formatting,
                  bg="#9C27B0", fg=self.fg_color, font=("Arial", 8, "bold"),
+                 width=16).pack(side=tk.LEFT, padx=2, expand=True, fill=tk.X)
+
+    def setup_revised_tab(self):
+        """Setup the Revised Repository tab (hand-refined programs)"""
+        # Info and action buttons
+        info_frame = tk.Frame(self.revised_tab, bg=self.bg_color)
+        info_frame.pack(fill=tk.X, pady=5, padx=10)
+
+        # Info label
+        tk.Label(info_frame, text="Revised Repository: Hand-refined programs in revised_repository/ folder",
+                bg=self.bg_color, fg="#FFD700", font=("Arial", 10, "italic")).pack(side=tk.LEFT)
+
+        # Stats button
+        tk.Button(info_frame, text="📊 Stats", command=self.show_revised_stats,
+                 bg=self.accent_color, fg=self.fg_color, font=("Arial", 9, "bold"),
+                 width=10, height=1).pack(side=tk.RIGHT, padx=5)
+
+        # Refresh button
+        tk.Button(info_frame, text="🔄 Refresh", command=self.refresh_revised_scan,
+                 bg="#4CAF50", fg=self.fg_color, font=("Arial", 9, "bold"),
+                 width=10, height=1).pack(side=tk.RIGHT, padx=5)
+
+        # Revised repository management buttons - Row 1
+        revised_buttons1 = tk.Frame(self.revised_tab, bg=self.bg_color)
+        revised_buttons1.pack(fill=tk.X, pady=5, padx=10)
+
+        tk.Button(revised_buttons1, text="📥 Import from Main",
+                 command=self.import_to_revised_repository,
+                 bg="#FF9800", fg=self.fg_color, font=("Arial", 8, "bold"),
+                 width=16).pack(side=tk.LEFT, padx=2, expand=True, fill=tk.X)
+
+        tk.Button(revised_buttons1, text="📤 Move to Main",
+                 command=self.move_to_main_repository,
+                 bg="#2196F3", fg=self.fg_color, font=("Arial", 8, "bold"),
+                 width=14).pack(side=tk.LEFT, padx=2, expand=True, fill=tk.X)
+
+        tk.Button(revised_buttons1, text="🗑️ Delete",
+                 command=self.delete_from_revised_repository,
+                 bg="#D32F2F", fg=self.fg_color, font=("Arial", 8, "bold"),
+                 width=12).pack(side=tk.LEFT, padx=2, expand=True, fill=tk.X)
+
+        tk.Button(revised_buttons1, text="📤 Export",
+                 command=self.export_from_revised,
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 8, "bold"),
+                 width=12).pack(side=tk.LEFT, padx=2, expand=True, fill=tk.X)
+
+        # Row 2 - Comparison tools
+        revised_buttons2 = tk.Frame(self.revised_tab, bg=self.bg_color)
+        revised_buttons2.pack(fill=tk.X, pady=2, padx=10)
+
+        tk.Button(revised_buttons2, text="⚖️ Compare with Main",
+                 command=self.compare_revised_with_main,
+                 bg="#9C27B0", fg=self.fg_color, font=("Arial", 8, "bold"),
+                 width=18).pack(side=tk.LEFT, padx=2, expand=True, fill=tk.X)
+
+        tk.Button(revised_buttons2, text="📁 Open Folder",
+                 command=lambda: os.startfile(self.revised_repository_path) if os.path.exists(self.revised_repository_path) else None,
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 8, "bold"),
+                 width=14).pack(side=tk.LEFT, padx=2, expand=True, fill=tk.X)
+
+        tk.Button(revised_buttons2, text="🔍 Find Differences",
+                 command=self.find_revised_differences,
+                 bg="#673AB7", fg=self.fg_color, font=("Arial", 8, "bold"),
                  width=16).pack(side=tk.LEFT, padx=2, expand=True, fill=tk.X)
 
     def setup_external_tab(self):
@@ -4178,6 +5527,7 @@ class GCodeDatabaseGUI:
         # Hide all tab frames
         self.all_programs_tab.pack_forget()
         self.repository_tab.pack_forget()
+        self.revised_tab.pack_forget()
         self.external_tab.pack_forget()
 
         # Show the selected tab frame
@@ -4187,6 +5537,9 @@ class GCodeDatabaseGUI:
         elif view_mode == 'repository':
             self.repository_tab.pack(fill=tk.X)
             self.refresh_results(view_mode='repository')
+        elif view_mode == 'revised':
+            self.revised_tab.pack(fill=tk.X)
+            self.refresh_results(view_mode='revised')
         elif view_mode == 'external':
             self.external_tab.pack(fill=tk.X)
             self.refresh_results(view_mode='external')
@@ -4229,184 +5582,187 @@ class GCodeDatabaseGUI:
         files_group = tk.Frame(tab_files, bg=self.bg_color)
         files_group.pack(fill=tk.X, padx=5, pady=5)
 
-        tk.Button(files_group, text="⚡ Process New", command=self.process_new_files_workflow,
-                 bg="#4CAF50", fg=self.fg_color, font=("Arial", 9, "bold"),
-                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+        # Process New - requires add permission
+        if self.has_permission('add_files'):
+            tk.Button(files_group, text="⚡ Process New", command=self.process_new_files_workflow,
+                     bg="#4CAF50", fg=self.fg_color, font=("Arial", 9, "bold"),
+                     width=14, height=2).pack(side=tk.LEFT, padx=3)
 
         tk.Button(files_group, text="📁 Scan Folder", command=self.scan_folder,
                  bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
                  width=14, height=2).pack(side=tk.LEFT, padx=3)
 
-        tk.Button(files_group, text="🆕 Scan New Only", command=self.scan_for_new_files,
-                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
-                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+        # Rescan Database - requires batch operations
+        if self.has_permission('batch_operations'):
+            tk.Button(files_group, text="🔄 Rescan Database", command=self.rescan_database,
+                     bg="#FF6F00", fg=self.fg_color, font=("Arial", 9, "bold"),
+                     width=14, height=2).pack(side=tk.LEFT, padx=3)
 
-        tk.Button(files_group, text="🔄 Rescan Database", command=self.rescan_database,
-                 bg="#FF6F00", fg=self.fg_color, font=("Arial", 9, "bold"),
-                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+            tk.Button(files_group, text="⚡ Rescan Changed", command=self.rescan_changed_files,
+                     bg="#2E7D32", fg=self.fg_color, font=("Arial", 9, "bold"),
+                     width=14, height=2).pack(side=tk.LEFT, padx=3)
 
-        tk.Button(files_group, text="⚡ Rescan Changed", command=self.rescan_changed_files,
-                 bg="#2E7D32", fg=self.fg_color, font=("Arial", 9, "bold"),
-                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+        # Organize by OD - requires move permission
+        if self.has_permission('move_files'):
+            tk.Button(files_group, text="📁 Organize by OD", command=self.organize_files_by_od,
+                     bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
+                     width=14, height=2).pack(side=tk.LEFT, padx=3)
 
-        tk.Button(files_group, text="📁 Organize by OD", command=self.organize_files_by_od,
-                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
-                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+        # Export functions - available to all with export permission
+        if self.has_permission('export_data'):
+            tk.Button(files_group, text="📋 Copy Filtered", command=self.copy_filtered_view,
+                     bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
+                     width=14, height=2).pack(side=tk.LEFT, padx=3)
 
-        tk.Button(files_group, text="📋 Copy Filtered", command=self.copy_filtered_view,
-                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
-                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+            tk.Button(files_group, text="📊 Export Filtered", command=self.export_filtered_to_excel,
+                     bg="#1976D2", fg=self.fg_color, font=("Arial", 9, "bold"),
+                     width=14, height=2).pack(side=tk.LEFT, padx=3)
 
-        tk.Button(files_group, text="➕ Add Entry", command=self.add_entry,
-                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
-                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+        # Add Entry - requires add permission
+        if self.has_permission('add_files'):
+            tk.Button(files_group, text="➕ Add Entry", command=self.add_entry,
+                     bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
+                     width=14, height=2).pack(side=tk.LEFT, padx=3)
 
-        # Tab 2: Duplicates
-        tab_duplicates = tk.Frame(ribbon, bg=self.bg_color)
-        ribbon.add(tab_duplicates, text='🔍 Duplicates')
+        # Tab 2: Duplicates - only show if user has manage_duplicates permission
+        if self.has_permission('manage_duplicates'):
+            tab_duplicates = tk.Frame(ribbon, bg=self.bg_color)
+            ribbon.add(tab_duplicates, text='🔍 Duplicates')
 
-        dup_group = tk.Frame(tab_duplicates, bg=self.bg_color)
-        dup_group.pack(fill=tk.X, padx=5, pady=5)
+            dup_group = tk.Frame(tab_duplicates, bg=self.bg_color)
+            dup_group.pack(fill=tk.X, padx=5, pady=5)
 
-        tk.Button(dup_group, text="🔍 Find Repeats", command=self.find_and_mark_repeats,
-                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
-                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+            tk.Button(dup_group, text="🔍 Find Repeats", command=self.find_and_mark_repeats,
+                     bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
+                     width=14, height=2).pack(side=tk.LEFT, padx=3)
 
-        tk.Button(dup_group, text="⚖️ Compare Files", command=self.compare_files,
-                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
-                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+            tk.Button(dup_group, text="📝 Rename Duplicates", command=self.rename_duplicate_files,
+                     bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
+                     width=14, height=2).pack(side=tk.LEFT, padx=3)
 
-        tk.Button(dup_group, text="📝 Rename Duplicates", command=self.rename_duplicate_files,
-                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
-                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+            if self.has_permission('delete_files'):
+                tk.Button(dup_group, text="🗑️ Delete Duplicates", command=self.delete_duplicates,
+                         bg="#D32F2F", fg=self.fg_color, font=("Arial", 9, "bold"),
+                         width=14, height=2).pack(side=tk.LEFT, padx=3)
 
-        tk.Button(dup_group, text="🔧 Fix Program #s", command=self.fix_program_numbers,
-                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
-                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+            tk.Button(dup_group, text="📐 View Variations", command=self.show_dimensional_variations,
+                     bg="#9C27B0", fg=self.fg_color, font=("Arial", 9, "bold"),
+                     width=14, height=2).pack(side=tk.LEFT, padx=3)
 
-        tk.Button(dup_group, text="🗑️ Delete Duplicates", command=self.delete_duplicates,
-                 bg="#D32F2F", fg=self.fg_color, font=("Arial", 9, "bold"),
-                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+        # Tab 3: Reports - available to all with export permission
+        if self.has_permission('export_data'):
+            tab_reports = tk.Frame(ribbon, bg=self.bg_color)
+            ribbon.add(tab_reports, text='📊 Reports')
 
-        tk.Button(dup_group, text="📐 View Variations", command=self.show_dimensional_variations,
-                 bg="#9C27B0", fg=self.fg_color, font=("Arial", 9, "bold"),
-                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+            reports_group = tk.Frame(tab_reports, bg=self.bg_color)
+            reports_group.pack(fill=tk.X, padx=5, pady=5)
 
-        # Tab 3: Reports
-        tab_reports = tk.Frame(ribbon, bg=self.bg_color)
-        ribbon.add(tab_reports, text='📊 Reports')
+            tk.Button(reports_group, text="📊 Export Excel", command=self.export_csv,
+                     bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
+                     width=14, height=2).pack(side=tk.LEFT, padx=3)
 
-        reports_group = tk.Frame(tab_reports, bg=self.bg_color)
-        reports_group.pack(fill=tk.X, padx=5, pady=5)
+            tk.Button(reports_group, text="📈 Google Sheets", command=self.export_google_sheets,
+                     bg="#34A853", fg=self.fg_color, font=("Arial", 9, "bold"),
+                     width=14, height=2).pack(side=tk.LEFT, padx=3)
 
-        tk.Button(reports_group, text="📊 Export Excel", command=self.export_csv,
-                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
-                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+            tk.Button(reports_group, text="📋 Unused #s", command=self.export_unused_numbers,
+                     bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
+                     width=14, height=2).pack(side=tk.LEFT, padx=3)
 
-        tk.Button(reports_group, text="📈 Google Sheets", command=self.export_google_sheets,
-                 bg="#34A853", fg=self.fg_color, font=("Arial", 9, "bold"),
-                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+            tk.Button(reports_group, text="🔧 Tool Analysis", command=self.view_tool_statistics,
+                     bg="#9C27B0", fg=self.fg_color, font=("Arial", 9, "bold"),
+                     width=14, height=2).pack(side=tk.LEFT, padx=3)
 
-        tk.Button(reports_group, text="📋 Unused #s", command=self.export_unused_numbers,
-                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
-                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+            tk.Button(reports_group, text="🔩 Tool Positions", command=self.scan_tool_change_positions,
+                     bg="#FF5722", fg=self.fg_color, font=("Arial", 9, "bold"),
+                     width=14, height=2).pack(side=tk.LEFT, padx=3)
 
-        tk.Button(reports_group, text="📊 Statistics", command=self.show_statistics,
-                 bg="#1976D2", fg=self.fg_color, font=("Arial", 9, "bold"),
-                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+            tk.Button(reports_group, text="❓ Legend/Help", command=self.show_legend,
+                     bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
+                     width=14, height=2).pack(side=tk.LEFT, padx=3)
 
-        tk.Button(reports_group, text="🔧 Tool Analysis", command=self.view_tool_statistics,
-                 bg="#9C27B0", fg=self.fg_color, font=("Arial", 9, "bold"),
-                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+        # Tab 4: Backup & Database - only for those with backup permission
+        if self.has_permission('backup_restore'):
+            tab_database = tk.Frame(ribbon, bg=self.bg_color)
+            ribbon.add(tab_database, text='💾 Backup')
 
-        tk.Button(reports_group, text="❓ Help & Workflow", command=self.show_legend,
-                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
-                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+            db_group = tk.Frame(tab_database, bg=self.bg_color)
+            db_group.pack(fill=tk.X, padx=5, pady=5)
 
-        # Tab 4: Backup & Database
-        tab_database = tk.Frame(ribbon, bg=self.bg_color)
-        ribbon.add(tab_database, text='💾 Backup')
+            tk.Button(db_group, text="📦 Full Backup", command=self.create_full_backup,
+                     bg="#2E7D32", fg=self.fg_color, font=("Arial", 9, "bold"),
+                     width=14, height=2).pack(side=tk.LEFT, padx=3)
 
-        db_group = tk.Frame(tab_database, bg=self.bg_color)
-        db_group.pack(fill=tk.X, padx=5, pady=5)
+            tk.Button(db_group, text="📂 Restore Backup", command=self.restore_from_backup,
+                     bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
+                     width=14, height=2).pack(side=tk.LEFT, padx=3)
 
-        tk.Button(db_group, text="💾 Backup DB", command=self.create_manual_backup,
-                 bg="#1976D2", fg=self.fg_color, font=("Arial", 9, "bold"),
-                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+            tk.Button(db_group, text="📋 View Backups", command=self.view_backups,
+                     bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
+                     width=14, height=2).pack(side=tk.LEFT, padx=3)
 
-        tk.Button(db_group, text="📦 Full Backup", command=self.create_full_backup,
-                 bg="#2E7D32", fg=self.fg_color, font=("Arial", 9, "bold"),
-                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+            tk.Button(db_group, text="📋 Manage Profiles", command=self.manage_database_profiles,
+                     bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
+                     width=14, height=2).pack(side=tk.LEFT, padx=3)
 
-        tk.Button(db_group, text="📂 Restore Backup", command=self.restore_from_backup,
-                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
-                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+        # Tab 5: Workflow - only for editors and above
+        if self.has_permission('batch_operations'):
+            tab_workflow = tk.Frame(ribbon, bg=self.bg_color)
+            ribbon.add(tab_workflow, text='🔄 Workflow')
 
-        tk.Button(db_group, text="📋 View Backups", command=self.view_backups,
-                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
-                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+            workflow_group = tk.Frame(tab_workflow, bg=self.bg_color)
+            workflow_group.pack(fill=tk.X, padx=5, pady=5)
 
-        tk.Button(db_group, text="💾 Save Profile", command=self.save_database_profile,
-                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
-                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+            tk.Button(workflow_group, text="🧙 Workflow Wizard", command=self.show_workflow_wizard,
+                     bg="#E91E63", fg=self.fg_color, font=("Arial", 9, "bold"),
+                     width=14, height=2).pack(side=tk.LEFT, padx=3)
 
-        tk.Button(db_group, text="📂 Load Profile", command=self.load_database_profile,
-                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
-                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+            tk.Button(workflow_group, text="🔄 Sync Registry", command=self.sync_registry_ui,
+                     bg="#9C27B0", fg=self.fg_color, font=("Arial", 9, "bold"),
+                     width=14, height=2).pack(side=tk.LEFT, padx=3)
 
-        tk.Button(db_group, text="📋 Manage Profiles", command=self.manage_database_profiles,
-                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
-                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+            tk.Button(workflow_group, text="🎯 Detect Round Sizes", command=self.detect_round_sizes_ui,
+                     bg="#673AB7", fg=self.fg_color, font=("Arial", 9, "bold"),
+                     width=14, height=2).pack(side=tk.LEFT, padx=3)
 
-        # Tab 5: Workflow
-        tab_workflow = tk.Frame(ribbon, bg=self.bg_color)
-        ribbon.add(tab_workflow, text='🔄 Workflow')
+            tk.Button(workflow_group, text="📊 Round Size Stats", command=self.show_round_size_stats,
+                     bg="#3F51B5", fg=self.fg_color, font=("Arial", 9, "bold"),
+                     width=14, height=2).pack(side=tk.LEFT, padx=3)
 
-        workflow_group = tk.Frame(tab_workflow, bg=self.bg_color)
-        workflow_group.pack(fill=tk.X, padx=5, pady=5)
+        # Tab 6: Maintenance - only for admins
+        if self.has_permission('clear_database'):
+            tab_maint = tk.Frame(ribbon, bg=self.bg_color)
+            ribbon.add(tab_maint, text='⚙️ Maintenance')
 
-        tk.Button(workflow_group, text="🧙 Workflow Wizard", command=self.show_workflow_wizard,
-                 bg="#E91E63", fg=self.fg_color, font=("Arial", 9, "bold"),
-                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+            maint_group = tk.Frame(tab_maint, bg=self.bg_color)
+            maint_group.pack(fill=tk.X, padx=5, pady=5)
 
-        tk.Button(workflow_group, text="🔄 Sync Registry", command=self.sync_registry_ui,
-                 bg="#9C27B0", fg=self.fg_color, font=("Arial", 9, "bold"),
-                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+            tk.Button(maint_group, text="🗑️ Clear Database", command=self.clear_database,
+                     bg="#D32F2F", fg=self.fg_color, font=("Arial", 9, "bold"),
+                     width=14, height=2).pack(side=tk.LEFT, padx=3)
 
-        tk.Button(workflow_group, text="🎯 Detect Round Sizes", command=self.detect_round_sizes_ui,
-                 bg="#673AB7", fg=self.fg_color, font=("Arial", 9, "bold"),
-                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+            tk.Button(maint_group, text="❌ Delete Filtered", command=self.delete_filtered_view,
+                     bg="#D32F2F", fg=self.fg_color, font=("Arial", 9, "bold"),
+                     width=14, height=2).pack(side=tk.LEFT, padx=3)
 
-        tk.Button(workflow_group, text="📊 Round Size Stats", command=self.show_round_size_stats,
-                 bg="#3F51B5", fg=self.fg_color, font=("Arial", 9, "bold"),
-                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+            tk.Button(maint_group, text="🔍 Integrity Check", command=self.show_extended_integrity_check,
+                     bg="#FF9800", fg=self.fg_color, font=("Arial", 9, "bold"),
+                     width=14, height=2).pack(side=tk.LEFT, padx=3)
 
-        tk.Button(workflow_group, text="📘 Workflow Guide", command=self.show_workflow_guide,
-                 bg="#2196F3", fg=self.fg_color, font=("Arial", 9, "bold"),
-                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+            tk.Button(maint_group, text="🔢 Resolve Suffixes", command=self.show_resolve_suffixes,
+                     bg="#9C27B0", fg=self.fg_color, font=("Arial", 9, "bold"),
+                     width=14, height=2).pack(side=tk.LEFT, padx=3)
 
-        # Tab 6: Maintenance
-        tab_maint = tk.Frame(ribbon, bg=self.bg_color)
-        ribbon.add(tab_maint, text='⚙️ Maintenance')
+            # User Management - admin only
+            if self.has_permission('manage_users'):
+                tk.Button(maint_group, text="👥 User Management", command=self.show_user_management,
+                         bg="#1976D2", fg=self.fg_color, font=("Arial", 9, "bold"),
+                         width=14, height=2).pack(side=tk.LEFT, padx=3)
 
-        maint_group = tk.Frame(tab_maint, bg=self.bg_color)
-        maint_group.pack(fill=tk.X, padx=5, pady=5)
-
-        tk.Button(maint_group, text="🗑️ Clear Database", command=self.clear_database,
-                 bg="#D32F2F", fg=self.fg_color, font=("Arial", 9, "bold"),
-                 width=14, height=2).pack(side=tk.LEFT, padx=3)
-
-        tk.Button(maint_group, text="❌ Delete Filtered", command=self.delete_filtered_view,
-                 bg="#D32F2F", fg=self.fg_color, font=("Arial", 9, "bold"),
-                 width=14, height=2).pack(side=tk.LEFT, padx=3)
-
-        tk.Button(maint_group, text="🔍 Integrity Check", command=self.show_extended_integrity_check,
-                 bg="#FF9800", fg=self.fg_color, font=("Arial", 9, "bold"),
-                 width=14, height=2).pack(side=tk.LEFT, padx=3)
-
-        tk.Button(maint_group, text="🔢 Resolve Suffixes", command=self.show_resolve_suffixes,
-                 bg="#9C27B0", fg=self.fg_color, font=("Arial", 9, "bold"),
-                 width=14, height=2).pack(side=tk.LEFT, padx=3)
+            # Change Password - available to all logged-in users
+            tk.Button(maint_group, text="🔐 Change Password", command=self.show_change_password,
+                     bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
+                     width=14, height=2).pack(side=tk.LEFT, padx=3)
 
     def create_filter_section(self, parent):
         """Create filter controls"""
@@ -4557,7 +5913,13 @@ class GCodeDatabaseGUI:
             "CHAMFER",
             "STEP",
             "HUB",
-            "BORE"
+            "BORE",
+            "Z-16",
+            "Z-13",
+            "Z-11",
+            "Z-9",
+            "G53",
+            "TOOL_HOME"
         ]
         self.filter_error_text = ttk.Combobox(row2_6, values=common_errors, width=47)
         self.filter_error_text.pack(side=tk.LEFT, padx=2)
@@ -4667,7 +6029,7 @@ class GCodeDatabaseGUI:
         
         # Treeview
         columns = ("Program #", "Dup", "Title", "Type", "Lathe", "OD", "Thick", "CB", "Hub H", "Hub D",
-                  "CB Bore", "Step D", "Material", "Status", "Warning Details", "File")
+                  "CB Bore", "Step D", "Material", "Tool Home", "Status", "Warning Details", "File")
 
         self.tree = ttk.Treeview(tree_frame, columns=columns, show="headings",
                                 yscrollcommand=vsb.set, xscrollcommand=hsb.set,
@@ -4675,9 +6037,11 @@ class GCodeDatabaseGUI:
 
         # Configure tags for color coding (severity-based)
         self.tree.tag_configure('critical', background='#4d1f1f', foreground='#ff6b6b')         # RED - Critical errors
+        self.tree.tag_configure('tool_home_critical', background='#5d0f0f', foreground='#ff3333')  # DARK RED - G53 Z-16 (dangerous)
         self.tree.tag_configure('safety_error', background='#3d1515', foreground='#ff4444')    # DARK RED - Safety blocks missing
         self.tree.tag_configure('tool_error', background='#4d2515', foreground='#ff7744')      # ORANGE-RED - Tool errors
         self.tree.tag_configure('bore_warning', background='#4d3520', foreground='#ffa500')    # ORANGE - Bore warnings
+        self.tree.tag_configure('tool_home_warning', background='#4d3820', foreground='#ffbb44')  # AMBER - G53 Z mismatch
         self.tree.tag_configure('dimensional', background='#3d1f4d', foreground='#da77f2')     # PURPLE - P-code/thickness
         self.tree.tag_configure('tool_warning', background='#4d4015', foreground='#ffcc44')    # AMBER - Tool suggestions
         self.tree.tag_configure('warning', background='#4d3d1f', foreground='#ffd43b')         # YELLOW - General warnings
@@ -4702,6 +6066,7 @@ class GCodeDatabaseGUI:
             "CB Bore": 80,
             "Step D": 70,
             "Material": 100,
+            "Tool Home": 75,
             "Status": 90,
             "Warning Details": 300,
             "File": 200
@@ -4726,8 +6091,9 @@ class GCodeDatabaseGUI:
         # Context menu
         self.tree.bind("<Button-3>", self.show_context_menu)
         self.tree.bind("<Double-1>", self.open_file)
-        
-        # Bottom action buttons - made more compact
+        self.tree.bind("<F5>", self.refresh_selected_file)  # F5 to refresh selected file
+
+        # Bottom action buttons - made more compact, hidden based on permissions
         action_frame = tk.Frame(parent, bg=self.bg_color)
         action_frame.pack(fill=tk.X, padx=10, pady=(0, 5))
 
@@ -4736,15 +6102,19 @@ class GCodeDatabaseGUI:
                             font=("Arial", 8, "bold"), width=10)
         btn_open.pack(side=tk.LEFT, padx=3)
 
-        btn_edit = tk.Button(action_frame, text="✏️ Edit", command=self.edit_entry,
-                            bg=self.button_bg, fg=self.fg_color,
-                            font=("Arial", 8, "bold"), width=10)
-        btn_edit.pack(side=tk.LEFT, padx=3)
+        # Edit button - only for editors and above
+        if self.has_permission('edit_files'):
+            btn_edit = tk.Button(action_frame, text="✏️ Edit", command=self.edit_entry,
+                                bg=self.button_bg, fg=self.fg_color,
+                                font=("Arial", 8, "bold"), width=10)
+            btn_edit.pack(side=tk.LEFT, padx=3)
 
-        btn_delete = tk.Button(action_frame, text="🗑️ Delete", command=self.delete_entry,
-                              bg=self.button_bg, fg=self.fg_color,
-                              font=("Arial", 8, "bold"), width=10)
-        btn_delete.pack(side=tk.LEFT, padx=3)
+        # Delete button - only for admins
+        if self.has_permission('delete_files'):
+            btn_delete = tk.Button(action_frame, text="🗑️ Delete", command=self.delete_entry,
+                                  bg=self.button_bg, fg=self.fg_color,
+                                  font=("Arial", 8, "bold"), width=10)
+            btn_delete.pack(side=tk.LEFT, padx=3)
 
         btn_view = tk.Button(action_frame, text="👁️ Details", command=self.view_details,
                             bg=self.button_bg, fg=self.fg_color,
@@ -5063,12 +6433,18 @@ class GCodeDatabaseGUI:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
-        target_folder = self.config.get("target_folder", "")
+        # Use repository folder by default for drag & drop imports
+        target_folder = self.repository_path if hasattr(self, 'repository_path') else self.config.get("target_folder", "")
         if not target_folder or not os.path.exists(target_folder):
-            messagebox.showerror("No Target Folder",
-                               "Please set a target folder in settings before importing files.")
-            conn.close()
-            return
+            # Try to create repository folder if it doesn't exist
+            if hasattr(self, 'repository_path'):
+                os.makedirs(self.repository_path, exist_ok=True)
+                target_folder = self.repository_path
+            else:
+                messagebox.showerror("No Target Folder",
+                                   "Repository folder not found. Please check your installation.")
+                conn.close()
+                return
 
         for original_path, suggested_filename, _ in files_to_add:
             try:
@@ -5093,8 +6469,8 @@ class GCodeDatabaseGUI:
                         paired_program, material, notes, date_created, last_modified, file_path,
                         detection_confidence, detection_method, validation_status, validation_issues,
                         validation_warnings, cb_from_gcode, ob_from_gcode, bore_warnings, dimensional_issues,
-                        lathe, duplicate_type
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        lathe
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     record.program_number,
                     record.title,
@@ -5122,9 +6498,11 @@ class GCodeDatabaseGUI:
                     record.ob_from_gcode,
                     record.bore_warnings,
                     record.dimensional_issues,
-                    record.lathe,
-                    record.duplicate_type
+                    record.lathe
                 ))
+
+                # Sync registry for this program
+                self.sync_registry_for_operation('ADD', None, record.program_number, dest_path)
 
                 warnings.append(f"✅ Added: {suggested_filename}")
 
@@ -5133,6 +6511,71 @@ class GCodeDatabaseGUI:
 
         conn.commit()
         conn.close()
+
+    def _import_single_file(self, filepath):
+        """Import a single file into the database"""
+        try:
+            # Parse the file
+            record = self.parse_gcode_file(filepath)
+            if not record:
+                logger.warning(f"Failed to parse file: {filepath}")
+                return False
+
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            # Insert into database (or update if exists)
+            cursor.execute("""
+                INSERT OR REPLACE INTO programs (
+                    program_number, title, spacer_type, outer_diameter, thickness, thickness_display,
+                    center_bore, hub_height, hub_diameter, counter_bore_diameter, counter_bore_depth,
+                    paired_program, material, notes, date_created, last_modified, file_path,
+                    detection_confidence, detection_method, validation_status, validation_issues,
+                    validation_warnings, cb_from_gcode, ob_from_gcode, bore_warnings, dimensional_issues,
+                    lathe
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                record.program_number,
+                record.title,
+                record.spacer_type,
+                record.outer_diameter,
+                record.thickness,
+                record.thickness_display,
+                record.center_bore,
+                record.hub_height,
+                record.hub_diameter,
+                record.counter_bore_diameter,
+                record.counter_bore_depth,
+                record.paired_program,
+                record.material,
+                record.notes,
+                record.date_created,
+                record.last_modified,
+                record.file_path,
+                record.detection_confidence,
+                record.detection_method,
+                record.validation_status,
+                record.validation_issues,
+                record.validation_warnings,
+                record.cb_from_gcode,
+                record.ob_from_gcode,
+                record.bore_warnings,
+                record.dimensional_issues,
+                record.lathe
+            ))
+
+            conn.commit()
+            conn.close()
+
+            # Sync registry for this program
+            self.sync_registry_for_operation('ADD', None, record.program_number, filepath)
+
+            logger.info(f"Imported single file: {record.program_number}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error importing single file {filepath}: {e}", exc_info=True)
+            return False
 
     def parse_gcode_file(self, filepath: str) -> Optional[ProgramRecord]:
         """Parse a gcode file using the improved parser"""
@@ -5146,8 +6589,12 @@ class GCodeDatabaseGUI:
             validation_status = "PASS"
             if result.validation_issues:
                 validation_status = "CRITICAL"  # RED - Critical errors
+            elif result.tool_home_status == "CRITICAL":
+                validation_status = "TOOL_HOME_CRITICAL"  # DARK RED - G53 Z-16 or beyond (dangerous)
             elif result.bore_warnings:
                 validation_status = "BORE_WARNING"  # ORANGE - Bore dimension warnings
+            elif result.tool_home_status == "WARNING":
+                validation_status = "TOOL_HOME_WARNING"  # AMBER - G53 Z doesn't match thickness
             elif result.dimensional_issues:
                 validation_status = "DIMENSIONAL"  # PURPLE - P-code/thickness mismatches
             elif result.validation_warnings:
@@ -5181,7 +6628,9 @@ class GCodeDatabaseGUI:
                 dimensional_issues=json.dumps(result.dimensional_issues) if result.dimensional_issues else None,
                 cb_from_gcode=result.cb_from_gcode,
                 ob_from_gcode=result.ob_from_gcode,
-                lathe=result.lathe
+                lathe=result.lathe,
+                tool_home_status=result.tool_home_status,
+                tool_home_issues=result.tool_home_issues
             )
 
         except Exception as e:
@@ -5249,7 +6698,7 @@ class GCodeDatabaseGUI:
             return False
 
     def scan_folder(self):
-        """Scan a folder for gcode files and import them"""
+        """Scan a folder for gcode files and import them - runs in background thread"""
         folder = filedialog.askdirectory(title="Select Folder with G-Code Files",
                                         initialdir=self.config.get("last_folder", ""))
 
@@ -5311,7 +6760,7 @@ class GCodeDatabaseGUI:
 
         self.config["last_folder"] = folder
         self.save_config()
-        
+
         # Show progress window
         progress_window = tk.Toplevel(self.root)
         progress_window.title("Scanning Files...")
@@ -5329,336 +6778,475 @@ class GCodeDatabaseGUI:
                                                  width=80, height=20)
         progress_text.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
 
-        self.root.update()
+        # Cancel button and flag
+        scan_cancelled = [False]
 
-        # Scan for gcode files (with or without extension)
-        all_scanned_files = []
-        file_count = 0
-        for root, dirs, files in os.walk(folder):
-            for file in files:
-                # Match any file containing o##### pattern (4+ digits)
-                # This includes: o57000, o57000.nc, o57000.gcode, etc.
-                if re.search(r'[oO]\d{4,}', file):
-                    all_scanned_files.append(os.path.join(root, file))
-                    file_count += 1
-                    # Update progress every 50 files
-                    if file_count % 50 == 0:
-                        progress_label.config(text=f"Scanning... found {file_count} files so far")
-                        self.root.update()
+        def cancel_scan():
+            scan_cancelled[0] = True
+            cancel_btn.config(state=tk.DISABLED, text="Cancelling...")
 
-        progress_label.config(text=f"Analyzing {len(all_scanned_files)} files...")
-        progress_text.insert(tk.END, f"Found {len(all_scanned_files)} total files. Analyzing...\n\n")
-        progress_text.see(tk.END)
-        self.root.update()
+        cancel_btn = tk.Button(progress_window, text="Cancel Scan",
+                              command=cancel_scan,
+                              bg="#D32F2F", fg=self.fg_color,
+                              font=("Arial", 10, "bold"))
+        cancel_btn.pack(pady=5)
 
-        # Get existing files from database
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute("SELECT file_path FROM programs WHERE file_path IS NOT NULL")
-        existing_files_data = {}  # {filename_lower: [file_paths]}
+        # Message queue for thread-safe GUI updates
+        msg_queue = queue.Queue()
 
-        for row in cursor.fetchall():
-            file_path = row[0]
-            if file_path and os.path.exists(file_path):
-                basename = os.path.basename(file_path).lower()
-                if basename not in existing_files_data:
-                    existing_files_data[basename] = []
-                existing_files_data[basename].append(file_path)
+        # Capture values needed by background thread (thread safety)
+        db_path = self.db_path
+        current_username = self.current_username
+        repository_path = self.repository_path if hasattr(self, 'repository_path') else None
 
-        # Detect duplicates within the scan AND against database
-        files_by_name = {}  # Group scanned files by filename
-        for filepath in all_scanned_files:
-            basename_lower = os.path.basename(filepath).lower()
-            if basename_lower not in files_by_name:
-                files_by_name[basename_lower] = []
-            files_by_name[basename_lower].append(filepath)
-
-        # Categorize files
-        files_to_process = []
-        exact_duplicates_db = []  # Same name + content as database
-        exact_duplicates_scan = []  # Same name + content within scan
-        name_collisions_db = []  # Same name, different content vs database
-        name_collisions_scan = []  # Same name, different content within scan
-
-        analyzed_count = 0
-        total_unique_names = len(files_by_name)
-
-        for basename_lower, filepaths in files_by_name.items():
-            analyzed_count += 1
-            # Update progress every 10 unique filenames
-            if analyzed_count % 10 == 0 or analyzed_count == total_unique_names:
-                progress_label.config(text=f"Analyzing duplicates... {analyzed_count}/{total_unique_names}")
-                self.root.update()
-            # Check against database first
-            in_database = basename_lower in existing_files_data
-
-            if len(filepaths) == 1:
-                # Single file with this name in scan
-                filepath = filepaths[0]
-
-                if in_database:
-                    # Compare content with database file(s)
-                    try:
-                        with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
-                            new_content = f.read()
-
-                        is_exact_match = False
-                        for db_path in existing_files_data[basename_lower]:
-                            try:
-                                with open(db_path, 'r', encoding='utf-8', errors='ignore') as f:
-                                    db_content = f.read()
-                                if new_content == db_content:
-                                    is_exact_match = True
-                                    break
-                            except:
-                                continue
-
-                        if is_exact_match:
-                            exact_duplicates_db.append(filepath)
-                        else:
-                            name_collisions_db.append((filepath, existing_files_data[basename_lower][0]))
-                    except:
-                        name_collisions_db.append((filepath, existing_files_data[basename_lower][0]))
-                else:
-                    # New file, safe to add
-                    files_to_process.append(filepath)
-
-            else:
-                # Multiple files with same name in scan
-                # Read all contents and find unique ones
-                file_contents = {}
-                for filepath in filepaths:
-                    try:
-                        with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
-                            content = f.read()
-                        if content not in file_contents:
-                            file_contents[content] = []
-                        file_contents[content].append(filepath)
-                    except:
-                        # If can't read, treat as unique
-                        file_contents[filepath] = [filepath]
-
-                # For each unique content, keep first file
-                for content, paths in file_contents.items():
-                    first_file = paths[0]
-                    duplicates_in_scan = paths[1:]
-
-                    # Check if this content matches database
-                    if in_database:
-                        try:
-                            is_exact_match = False
-                            for db_path in existing_files_data[basename_lower]:
-                                try:
-                                    with open(db_path, 'r', encoding='utf-8', errors='ignore') as f:
-                                        db_content = f.read()
-                                    if content == db_content:
-                                        is_exact_match = True
-                                        break
-                                except:
-                                    continue
-
-                            if is_exact_match:
-                                exact_duplicates_db.append(first_file)
-                            else:
-                                name_collisions_db.append((first_file, existing_files_data[basename_lower][0]))
-                        except:
-                            name_collisions_db.append((first_file, existing_files_data[basename_lower][0]))
-                    else:
-                        # New unique content, add first one
-                        files_to_process.append(first_file)
-
-                    # Mark duplicates within scan
-                    for dup in duplicates_in_scan:
-                        exact_duplicates_scan.append((dup, first_file))
-
-        # Display analysis results
-        progress_text.insert(tk.END, f"=== SCAN ANALYSIS ===\n")
-        progress_text.insert(tk.END, f"Files to process: {len(files_to_process)}\n")
-        progress_text.insert(tk.END, f"Exact duplicates (vs database): {len(exact_duplicates_db)}\n")
-        progress_text.insert(tk.END, f"Exact duplicates (within scan): {len(exact_duplicates_scan)}\n")
-        progress_text.insert(tk.END, f"Name collisions (vs database): {len(name_collisions_db)}\n")
-        progress_text.insert(tk.END, f"Name collisions (within scan): {len(name_collisions_scan)}\n\n")
-
-        # Show details
-        if exact_duplicates_db:
-            progress_text.insert(tk.END, f"=== SKIPPING - Already in Database (Exact Match) ===\n")
-            for dup in exact_duplicates_db[:10]:
-                progress_text.insert(tk.END, f"  SKIP: {os.path.basename(dup)}\n")
-            if len(exact_duplicates_db) > 10:
-                progress_text.insert(tk.END, f"  ... and {len(exact_duplicates_db) - 10} more\n")
-            progress_text.insert(tk.END, "\n")
-
-        if exact_duplicates_scan:
-            progress_text.insert(tk.END, f"=== SKIPPING - Duplicates Within Scan ===\n")
-            for dup, kept in exact_duplicates_scan[:10]:
-                progress_text.insert(tk.END, f"  SKIP: {os.path.basename(dup)} (same as {os.path.basename(kept)})\n")
-            if len(exact_duplicates_scan) > 10:
-                progress_text.insert(tk.END, f"  ... and {len(exact_duplicates_scan) - 10} more\n")
-            progress_text.insert(tk.END, "\n")
-
-        if name_collisions_db:
-            progress_text.insert(tk.END, f"⚠️  WARNING - Name Collisions vs Database ===\n")
-            progress_text.insert(tk.END, f"These files will be SKIPPED. Rename them first!\n\n")
-            for new_file, db_file in name_collisions_db[:5]:
-                progress_text.insert(tk.END, f"  ⚠️  {os.path.basename(new_file)}\n")
-                progress_text.insert(tk.END, f"     Scan: {new_file}\n")
-                progress_text.insert(tk.END, f"     Database: {db_file}\n\n")
-            if len(name_collisions_db) > 5:
-                progress_text.insert(tk.END, f"  ... and {len(name_collisions_db) - 5} more\n")
-            progress_text.insert(tk.END, "\n")
-
-        progress_text.insert(tk.END, f"Processing {len(files_to_process)} files...\n\n")
-        progress_text.see(tk.END)
-        self.root.update()
-
-        # Process only the unique files
-        added = 0
-        updated = 0
-        errors = 0
-        duplicates_within_processing = 0  # Track duplicates found during processing
-
-        # Track which program numbers we've seen during processing
-        seen_in_scan = {}  # program_number -> filepath
-        gcode_files = files_to_process  # Use filtered list
-        total_to_process = len(gcode_files)
-
-        for idx, filepath in enumerate(gcode_files, 1):
-            filename = os.path.basename(filepath)
-            progress_label.config(text=f"Processing {idx}/{total_to_process}: {filename}")
-            progress_text.insert(tk.END, f"[{idx}/{total_to_process}] Processing: {filename}\n")
-            progress_text.see(tk.END)
-            self.root.update()
-            
+        def update_gui():
+            """Process messages from the background thread to update GUI"""
             try:
-                record = self.parse_gcode_file(filepath)
-            except Exception as e:
-                errors += 1
-                progress_text.insert(tk.END, f"  PARSE EXCEPTION: {str(e)[:100]}\n")
-                progress_text.see(tk.END)
-                continue
-
-            if record:
-                try:
-                    # Check for duplicate in this scan and assign unique suffix
-                    original_prog_num = record.program_number
-                    if record.program_number in seen_in_scan:
-                        # Find next available suffix
-                        suffix = 1
-                        while f"{original_prog_num}({suffix})" in seen_in_scan:
-                            suffix += 1
-                        record.program_number = f"{original_prog_num}({suffix})"
-                        progress_text.insert(tk.END, f"  DUPLICATE: {original_prog_num} -> saved as {record.program_number}\n")
+                while True:
+                    msg = msg_queue.get_nowait()
+                    if msg[0] == 'label':
+                        progress_label.config(text=msg[1])
+                    elif msg[0] == 'text':
+                        progress_text.insert(tk.END, msg[1])
                         progress_text.see(tk.END)
-                        duplicates_within_processing += 1
+                    elif msg[0] == 'done':
+                        # Scan complete - show close button
+                        cancel_btn.pack_forget()
+                        close_btn = tk.Button(progress_window, text="Close",
+                                             command=progress_window.destroy,
+                                             bg=self.button_bg, fg=self.fg_color,
+                                             font=("Arial", 10, "bold"))
+                        close_btn.pack(pady=10)
+                        # Refresh results on main thread
+                        self.refresh_filter_values()
+                        self.refresh_results()
+                        return  # Stop the update loop
+                    elif msg[0] == 'cancelled':
+                        progress_label.config(text="Scan cancelled by user")
+                        cancel_btn.pack_forget()
+                        close_btn = tk.Button(progress_window, text="Close",
+                                             command=progress_window.destroy,
+                                             bg=self.button_bg, fg=self.fg_color,
+                                             font=("Arial", 10, "bold"))
+                        close_btn.pack(pady=10)
+                        self.refresh_filter_values()
+                        self.refresh_results()
+                        return
+            except queue.Empty:
+                pass
 
-                    # Track this file with its (possibly modified) program number
-                    seen_in_scan[record.program_number] = filepath
+            # Schedule next check
+            if progress_window.winfo_exists():
+                progress_window.after(100, update_gui)
 
-                    # Check if exists in database
-                    cursor.execute("SELECT program_number FROM programs WHERE program_number = ?",
-                                 (record.program_number,))
-                    exists = cursor.fetchone()
+        def scan_thread():
+            """Background thread that does the actual scanning"""
+            try:
+                # Create a local parser instance for thread safety
+                local_parser = ImprovedGCodeParser()
 
-                    if exists:
-                        # Update existing
-                        cursor.execute('''
-                            UPDATE programs SET
-                                title = ?, spacer_type = ?, outer_diameter = ?, thickness = ?, thickness_display = ?,
-                                center_bore = ?, hub_height = ?, hub_diameter = ?,
-                                counter_bore_diameter = ?, counter_bore_depth = ?,
-                                material = ?, last_modified = ?, file_path = ?,
-                                detection_confidence = ?, detection_method = ?,
-                                validation_status = ?, validation_issues = ?,
-                                validation_warnings = ?, bore_warnings = ?, dimensional_issues = ?,
-                                cb_from_gcode = ?, ob_from_gcode = ?, lathe = ?
-                            WHERE program_number = ?
-                        ''', (record.title, record.spacer_type, record.outer_diameter, record.thickness, record.thickness_display,
-                             record.center_bore, record.hub_height, record.hub_diameter,
-                             record.counter_bore_diameter, record.counter_bore_depth,
-                             record.material, record.last_modified, record.file_path,
-                             record.detection_confidence, record.detection_method,
-                             record.validation_status, record.validation_issues,
-                             record.validation_warnings, record.bore_warnings, record.dimensional_issues,
-                             record.cb_from_gcode, record.ob_from_gcode, record.lathe,
-                             record.program_number))
-                        updated += 1
+                # Scan for gcode files (with or without extension)
+                all_scanned_files = []
+                file_count = 0
+                for root_dir, dirs, files in os.walk(folder):
+                    if scan_cancelled[0]:
+                        msg_queue.put(('cancelled', None))
+                        return
+                    for file in files:
+                        # Match any file containing o##### pattern (4+ digits)
+                        if re.search(r'[oO]\d{4,}', file):
+                            all_scanned_files.append(os.path.join(root_dir, file))
+                            file_count += 1
+                            # Update progress every 50 files
+                            if file_count % 50 == 0:
+                                msg_queue.put(('label', f"Scanning... found {file_count} files so far"))
+
+                if scan_cancelled[0]:
+                    msg_queue.put(('cancelled', None))
+                    return
+
+                msg_queue.put(('label', f"Analyzing {len(all_scanned_files)} files..."))
+                msg_queue.put(('text', f"Found {len(all_scanned_files)} total files. Analyzing...\n\n"))
+
+                # Get existing files from database
+                conn = sqlite3.connect(db_path)
+                cursor = conn.cursor()
+                cursor.execute("SELECT file_path FROM programs WHERE file_path IS NOT NULL")
+                existing_files_data = {}  # {filename_lower: [file_paths]}
+
+                for row in cursor.fetchall():
+                    file_path = row[0]
+                    if file_path and os.path.exists(file_path):
+                        basename = os.path.basename(file_path).lower()
+                        if basename not in existing_files_data:
+                            existing_files_data[basename] = []
+                        existing_files_data[basename].append(file_path)
+
+                # Detect duplicates within the scan AND against database
+                files_by_name = {}  # Group scanned files by filename
+                for filepath in all_scanned_files:
+                    basename_lower = os.path.basename(filepath).lower()
+                    if basename_lower not in files_by_name:
+                        files_by_name[basename_lower] = []
+                    files_by_name[basename_lower].append(filepath)
+
+                # Categorize files
+                files_to_process = []
+                exact_duplicates_db = []  # Same name + content as database
+                exact_duplicates_scan = []  # Same name + content within scan
+                name_collisions_db = []  # Same name, different content vs database
+                name_collisions_scan = []  # Same name, different content within scan
+
+                analyzed_count = 0
+                total_unique_names = len(files_by_name)
+
+                for basename_lower, filepaths in files_by_name.items():
+                    if scan_cancelled[0]:
+                        conn.close()
+                        msg_queue.put(('cancelled', None))
+                        return
+
+                    analyzed_count += 1
+                    # Update progress every 10 unique filenames
+                    if analyzed_count % 10 == 0 or analyzed_count == total_unique_names:
+                        msg_queue.put(('label', f"Analyzing duplicates... {analyzed_count}/{total_unique_names}"))
+
+                    # Check against database first
+                    in_database = basename_lower in existing_files_data
+
+                    if len(filepaths) == 1:
+                        # Single file with this name in scan
+                        filepath = filepaths[0]
+
+                        if in_database:
+                            # Compare content with database file(s)
+                            try:
+                                with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+                                    new_content = f.read()
+
+                                is_exact_match = False
+                                for db_path in existing_files_data[basename_lower]:
+                                    try:
+                                        with open(db_path, 'r', encoding='utf-8', errors='ignore') as f:
+                                            db_content = f.read()
+                                        if new_content == db_content:
+                                            is_exact_match = True
+                                            break
+                                    except:
+                                        continue
+
+                                if is_exact_match:
+                                    exact_duplicates_db.append(filepath)
+                                else:
+                                    name_collisions_db.append((filepath, existing_files_data[basename_lower][0]))
+                            except:
+                                name_collisions_db.append((filepath, existing_files_data[basename_lower][0]))
+                        else:
+                            # New file, safe to add
+                            files_to_process.append(filepath)
+
                     else:
-                        # If user chose repository mode, import the file first
-                        final_file_path = record.file_path
-                        is_managed_file = 0
+                        # Multiple files with same name in scan
+                        # Read all contents and find unique ones
+                        file_contents = {}
+                        for filepath in filepaths:
+                            try:
+                                with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+                                    content = f.read()
+                                if content not in file_contents:
+                                    file_contents[content] = []
+                                file_contents[content].append(filepath)
+                            except:
+                                # If can't read, treat as unique
+                                file_contents[filepath] = [filepath]
 
-                        if add_to_repository and record.file_path and os.path.exists(record.file_path):
-                            imported_path = self.import_to_repository(record.file_path, record.program_number)
-                            if imported_path:
-                                final_file_path = imported_path
-                                is_managed_file = 1
-                                progress_text.insert(tk.END, f"  → Imported to repository\n")
-                                progress_text.see(tk.END)
+                        # For each unique content, keep first file
+                        for content, paths in file_contents.items():
+                            first_file = paths[0]
+                            duplicates_in_scan = paths[1:]
 
-                        # Insert new
-                        cursor.execute('''
-                            INSERT INTO programs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        ''', (record.program_number, record.title, record.spacer_type, record.outer_diameter,
-                             record.thickness, record.thickness_display, record.center_bore, record.hub_height,
-                             record.hub_diameter, record.counter_bore_diameter,
-                             record.counter_bore_depth, record.paired_program,
-                             record.material, record.notes, record.date_created,
-                             record.last_modified, final_file_path, record.detection_confidence,
-                             record.detection_method, record.validation_status,
-                             record.validation_issues, record.validation_warnings,
-                             record.bore_warnings, record.dimensional_issues,
-                             record.cb_from_gcode, record.ob_from_gcode, record.lathe,
-                             None, None, None,  # duplicate_type, parent_file, duplicate_group
-                             None, self.current_username, is_managed_file,  # current_version, modified_by, is_managed
-                             None, None, None, None,  # round_size, round_size_confidence, round_size_source, in_correct_range
-                             None, None, None,  # legacy_names, last_renamed_date, rename_reason
-                             None, None, None, None, None, None))  # tools_used, tool_sequence, tool_validation_status, tool_validation_issues, safety_blocks_status, safety_blocks_issues
-                        added += 1
-                        
-                except Exception as e:
-                    errors += 1
-                    progress_text.insert(tk.END, f"  DATABASE ERROR: {str(e)[:100]}\n")
-                    progress_text.see(tk.END)
-            else:
-                errors += 1
-                progress_text.insert(tk.END, f"  PARSE ERROR: Could not extract data\n")
-                progress_text.see(tk.END)
-        
-        conn.commit()
-        conn.close()
-        
-        # Calculate total duplicates (both exact duplicates and name collisions)
-        total_duplicates = len(exact_duplicates_db) + len(exact_duplicates_scan) + len(name_collisions_db) + len(name_collisions_scan)
+                            # Check if this content matches database
+                            if in_database:
+                                try:
+                                    is_exact_match = False
+                                    for db_path in existing_files_data[basename_lower]:
+                                        try:
+                                            with open(db_path, 'r', encoding='utf-8', errors='ignore') as f:
+                                                db_content = f.read()
+                                            if content == db_content:
+                                                is_exact_match = True
+                                                break
+                                        except:
+                                            continue
 
-        # Show results
-        progress_label.config(text="Complete!")
-        progress_text.insert(tk.END, f"\n{'='*50}\n")
-        progress_text.insert(tk.END, f"SCAN SUMMARY\n")
-        progress_text.insert(tk.END, f"{'='*50}\n")
-        progress_text.insert(tk.END, f"Total files scanned: {len(all_scanned_files)}\n")
-        progress_text.insert(tk.END, f"Files to process: {len(files_to_process)}\n")
-        progress_text.insert(tk.END, f"Duplicates skipped: {total_duplicates}\n")
-        progress_text.insert(tk.END, f"  - Exact match (DB): {len(exact_duplicates_db)}\n")
-        progress_text.insert(tk.END, f"  - Exact match (scan): {len(exact_duplicates_scan)}\n")
-        progress_text.insert(tk.END, f"  - Name collision (DB): {len(name_collisions_db)}\n")
-        progress_text.insert(tk.END, f"  - Name collision (scan): {len(name_collisions_scan)}\n")
-        progress_text.insert(tk.END, f"Added: {added}\n")
-        progress_text.insert(tk.END, f"Updated: {updated}\n")
-        progress_text.insert(tk.END, f"Errors: {errors}\n")
-        if duplicates_within_processing > 0:
-            progress_text.insert(tk.END, f"Program number conflicts (saved with suffix): {duplicates_within_processing}\n")
-        progress_text.insert(tk.END, f"Unique programs: {len(seen_in_scan)}\n")
-        progress_text.see(tk.END)
-        
-        close_btn = tk.Button(progress_window, text="Close", 
-                             command=progress_window.destroy,
-                             bg=self.button_bg, fg=self.fg_color,
-                             font=("Arial", 10, "bold"))
-        close_btn.pack(pady=10)
+                                    if is_exact_match:
+                                        exact_duplicates_db.append(first_file)
+                                    else:
+                                        name_collisions_db.append((first_file, existing_files_data[basename_lower][0]))
+                                except:
+                                    name_collisions_db.append((first_file, existing_files_data[basename_lower][0]))
+                            else:
+                                # New unique content, add first one
+                                files_to_process.append(first_file)
 
-        # Refresh filter dropdowns with new values
-        self.refresh_filter_values()
-        self.refresh_results()
+                            # Mark duplicates within scan
+                            for dup in duplicates_in_scan:
+                                exact_duplicates_scan.append((dup, first_file))
+
+                # Display analysis results
+                msg_queue.put(('text', f"=== SCAN ANALYSIS ===\n"))
+                msg_queue.put(('text', f"Files to process: {len(files_to_process)}\n"))
+                msg_queue.put(('text', f"Exact duplicates (vs database): {len(exact_duplicates_db)}\n"))
+                msg_queue.put(('text', f"Exact duplicates (within scan): {len(exact_duplicates_scan)}\n"))
+                msg_queue.put(('text', f"Name collisions (vs database): {len(name_collisions_db)}\n"))
+                msg_queue.put(('text', f"Name collisions (within scan): {len(name_collisions_scan)}\n\n"))
+
+                # Show details
+                if exact_duplicates_db:
+                    msg_queue.put(('text', f"=== SKIPPING - Already in Database (Exact Match) ===\n"))
+                    for dup in exact_duplicates_db[:10]:
+                        msg_queue.put(('text', f"  SKIP: {os.path.basename(dup)}\n"))
+                    if len(exact_duplicates_db) > 10:
+                        msg_queue.put(('text', f"  ... and {len(exact_duplicates_db) - 10} more\n"))
+                    msg_queue.put(('text', "\n"))
+
+                if exact_duplicates_scan:
+                    msg_queue.put(('text', f"=== SKIPPING - Duplicates Within Scan ===\n"))
+                    for dup, kept in exact_duplicates_scan[:10]:
+                        msg_queue.put(('text', f"  SKIP: {os.path.basename(dup)} (same as {os.path.basename(kept)})\n"))
+                    if len(exact_duplicates_scan) > 10:
+                        msg_queue.put(('text', f"  ... and {len(exact_duplicates_scan) - 10} more\n"))
+                    msg_queue.put(('text', "\n"))
+
+                if name_collisions_db:
+                    msg_queue.put(('text', f"⚠️  WARNING - Name Collisions vs Database ===\n"))
+                    msg_queue.put(('text', f"These files will be SKIPPED. Rename them first!\n\n"))
+                    for new_file, db_file in name_collisions_db[:5]:
+                        msg_queue.put(('text', f"  ⚠️  {os.path.basename(new_file)}\n"))
+                        msg_queue.put(('text', f"     Scan: {new_file}\n"))
+                        msg_queue.put(('text', f"     Database: {db_file}\n\n"))
+                    if len(name_collisions_db) > 5:
+                        msg_queue.put(('text', f"  ... and {len(name_collisions_db) - 5} more\n"))
+                    msg_queue.put(('text', "\n"))
+
+                msg_queue.put(('text', f"Processing {len(files_to_process)} files...\n\n"))
+
+                # Process only the unique files
+                added = 0
+                updated = 0
+                errors = 0
+                duplicates_within_processing = 0  # Track duplicates found during processing
+
+                # Track which program numbers we've seen during processing
+                seen_in_scan = {}  # program_number -> filepath
+                gcode_files = files_to_process  # Use filtered list
+                total_to_process = len(gcode_files)
+
+                for idx, filepath in enumerate(gcode_files, 1):
+                    if scan_cancelled[0]:
+                        conn.commit()
+                        conn.close()
+                        msg_queue.put(('text', f"\n\nScan cancelled after processing {idx-1} files.\n"))
+                        msg_queue.put(('text', f"Added: {added}, Updated: {updated}, Errors: {errors}\n"))
+                        msg_queue.put(('cancelled', None))
+                        return
+
+                    filename = os.path.basename(filepath)
+                    msg_queue.put(('label', f"Processing {idx}/{total_to_process}: {filename}"))
+                    msg_queue.put(('text', f"[{idx}/{total_to_process}] Processing: {filename}\n"))
+
+                    try:
+                        # Parse using local parser (thread-safe)
+                        result = local_parser.parse_file(filepath)
+                        if not result:
+                            errors += 1
+                            msg_queue.put(('text', f"  PARSE ERROR: Could not extract data\n"))
+                            continue
+
+                        # Determine validation status
+                        validation_status = "PASS"
+                        if result.validation_issues:
+                            validation_status = "CRITICAL"
+                        elif result.tool_home_status == "CRITICAL":
+                            validation_status = "TOOL_HOME_CRITICAL"
+                        elif result.bore_warnings:
+                            validation_status = "BORE_WARNING"
+                        elif result.tool_home_status == "WARNING":
+                            validation_status = "TOOL_HOME_WARNING"
+                        elif result.dimensional_issues:
+                            validation_status = "DIMENSIONAL"
+                        elif result.validation_warnings:
+                            validation_status = "WARNING"
+
+                        # Convert to ProgramRecord
+                        record = ProgramRecord(
+                            program_number=result.program_number,
+                            title=result.title,
+                            spacer_type=result.spacer_type,
+                            outer_diameter=result.outer_diameter,
+                            thickness=result.thickness,
+                            thickness_display=result.thickness_display,
+                            center_bore=result.center_bore,
+                            hub_height=result.hub_height,
+                            hub_diameter=result.hub_diameter,
+                            counter_bore_diameter=result.counter_bore_diameter,
+                            counter_bore_depth=result.counter_bore_depth,
+                            paired_program=None,
+                            material=result.material,
+                            notes=None,
+                            date_created=result.date_created,
+                            last_modified=result.last_modified,
+                            file_path=result.file_path,
+                            detection_confidence=result.detection_confidence,
+                            detection_method=result.detection_method,
+                            validation_status=validation_status,
+                            validation_issues=json.dumps(result.validation_issues) if result.validation_issues else None,
+                            validation_warnings=json.dumps(result.validation_warnings) if result.validation_warnings else None,
+                            bore_warnings=json.dumps(result.bore_warnings) if result.bore_warnings else None,
+                            dimensional_issues=json.dumps(result.dimensional_issues) if result.dimensional_issues else None,
+                            cb_from_gcode=result.cb_from_gcode,
+                            ob_from_gcode=result.ob_from_gcode,
+                            lathe=result.lathe,
+                            tool_home_status=result.tool_home_status,
+                            tool_home_issues=result.tool_home_issues
+                        )
+                    except Exception as e:
+                        errors += 1
+                        msg_queue.put(('text', f"  PARSE EXCEPTION: {str(e)[:100]}\n"))
+                        continue
+
+                    try:
+                        # Check for duplicate in this scan and assign unique suffix
+                        original_prog_num = record.program_number
+                        if record.program_number in seen_in_scan:
+                            # Find next available suffix
+                            suffix = 1
+                            while f"{original_prog_num}({suffix})" in seen_in_scan:
+                                suffix += 1
+                            record.program_number = f"{original_prog_num}({suffix})"
+                            msg_queue.put(('text', f"  DUPLICATE: {original_prog_num} -> saved as {record.program_number}\n"))
+                            duplicates_within_processing += 1
+
+                        # Track this file with its (possibly modified) program number
+                        seen_in_scan[record.program_number] = filepath
+
+                        # Check if exists in database
+                        cursor.execute("SELECT program_number FROM programs WHERE program_number = ?",
+                                     (record.program_number,))
+                        exists = cursor.fetchone()
+
+                        if exists:
+                            # Update existing
+                            cursor.execute('''
+                                UPDATE programs SET
+                                    title = ?, spacer_type = ?, outer_diameter = ?, thickness = ?, thickness_display = ?,
+                                    center_bore = ?, hub_height = ?, hub_diameter = ?,
+                                    counter_bore_diameter = ?, counter_bore_depth = ?,
+                                    material = ?, last_modified = ?, file_path = ?,
+                                    detection_confidence = ?, detection_method = ?,
+                                    validation_status = ?, validation_issues = ?,
+                                    validation_warnings = ?, bore_warnings = ?, dimensional_issues = ?,
+                                    cb_from_gcode = ?, ob_from_gcode = ?, lathe = ?,
+                                    tool_home_status = ?, tool_home_issues = ?
+                                WHERE program_number = ?
+                            ''', (record.title, record.spacer_type, record.outer_diameter, record.thickness, record.thickness_display,
+                                 record.center_bore, record.hub_height, record.hub_diameter,
+                                 record.counter_bore_diameter, record.counter_bore_depth,
+                                 record.material, record.last_modified, record.file_path,
+                                 record.detection_confidence, record.detection_method,
+                                 record.validation_status, record.validation_issues,
+                                 record.validation_warnings, record.bore_warnings, record.dimensional_issues,
+                                 record.cb_from_gcode, record.ob_from_gcode, record.lathe,
+                                 record.tool_home_status,
+                                 json.dumps(record.tool_home_issues) if record.tool_home_issues else None,
+                                 record.program_number))
+                            updated += 1
+                        else:
+                            # If user chose repository mode, import the file first
+                            final_file_path = record.file_path
+                            is_managed_file = 0
+
+                            if add_to_repository and record.file_path and os.path.exists(record.file_path) and repository_path:
+                                # Copy file to repository (inline to avoid calling self methods from thread)
+                                try:
+                                    prog_num = record.program_number.lower()
+                                    if not prog_num.startswith('o'):
+                                        prog_num = 'o' + prog_num
+                                    new_filename = prog_num + '.nc'
+                                    dest_path = os.path.join(repository_path, new_filename)
+                                    if not os.path.exists(dest_path):
+                                        shutil.copy2(record.file_path, dest_path)
+                                        final_file_path = dest_path
+                                        is_managed_file = 1
+                                        msg_queue.put(('text', f"  → Imported to repository\n"))
+                                except Exception as copy_err:
+                                    msg_queue.put(('text', f"  → Import failed: {str(copy_err)[:50]}\n"))
+
+                            # Insert new
+                            cursor.execute('''
+                                INSERT INTO programs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            ''', (record.program_number, record.title, record.spacer_type, record.outer_diameter,
+                                 record.thickness, record.thickness_display, record.center_bore, record.hub_height,
+                                 record.hub_diameter, record.counter_bore_diameter,
+                                 record.counter_bore_depth, record.paired_program,
+                                 record.material, record.notes, record.date_created,
+                                 record.last_modified, final_file_path, record.detection_confidence,
+                                 record.detection_method, record.validation_status,
+                                 record.validation_issues, record.validation_warnings,
+                                 record.cb_from_gcode, record.ob_from_gcode,
+                                 record.bore_warnings, record.dimensional_issues, record.lathe,
+                                 None, None, None,  # duplicate_type, parent_file, duplicate_group
+                                 None, current_username, is_managed_file,  # current_version, modified_by, is_managed
+                                 None, None, None, None,  # round_size, round_size_confidence, round_size_source, in_correct_range
+                                 None, None, None,  # legacy_names, last_renamed_date, rename_reason
+                                 None, None, None, None, None, None,  # tools_used, tool_sequence, tool_validation_status, tool_validation_issues, safety_blocks_status, safety_blocks_issues
+                                 None,  # content_hash
+                                 record.tool_home_status, json.dumps(record.tool_home_issues) if record.tool_home_issues else None,  # tool_home_status, tool_home_issues
+                                 None, None))  # hub_height_display, counter_bore_depth_display
+                            added += 1
+
+                    except Exception as e:
+                        errors += 1
+                        msg_queue.put(('text', f"  DATABASE ERROR: {str(e)[:100]}\n"))
+
+                conn.commit()
+                conn.close()
+
+                # Calculate total duplicates (both exact duplicates and name collisions)
+                total_duplicates = len(exact_duplicates_db) + len(exact_duplicates_scan) + len(name_collisions_db) + len(name_collisions_scan)
+
+                # Show results
+                msg_queue.put(('label', "Complete!"))
+                msg_queue.put(('text', f"\n{'='*50}\n"))
+                msg_queue.put(('text', f"SCAN SUMMARY\n"))
+                msg_queue.put(('text', f"{'='*50}\n"))
+                msg_queue.put(('text', f"Total files scanned: {len(all_scanned_files)}\n"))
+                msg_queue.put(('text', f"Files to process: {len(files_to_process)}\n"))
+                msg_queue.put(('text', f"Duplicates skipped: {total_duplicates}\n"))
+                msg_queue.put(('text', f"  - Exact match (DB): {len(exact_duplicates_db)}\n"))
+                msg_queue.put(('text', f"  - Exact match (scan): {len(exact_duplicates_scan)}\n"))
+                msg_queue.put(('text', f"  - Name collision (DB): {len(name_collisions_db)}\n"))
+                msg_queue.put(('text', f"  - Name collision (scan): {len(name_collisions_scan)}\n"))
+                msg_queue.put(('text', f"Added: {added}\n"))
+                msg_queue.put(('text', f"Updated: {updated}\n"))
+                msg_queue.put(('text', f"Errors: {errors}\n"))
+                if duplicates_within_processing > 0:
+                    msg_queue.put(('text', f"Program number conflicts (saved with suffix): {duplicates_within_processing}\n"))
+                msg_queue.put(('text', f"Unique programs: {len(seen_in_scan)}\n"))
+
+                msg_queue.put(('done', None))
+
+            except Exception as e:
+                logger.error(f"Scan thread error: {e}", exc_info=True)
+                msg_queue.put(('text', f"\nERROR: {str(e)}\n"))
+                msg_queue.put(('done', None))
+
+        # Start the background thread
+        thread = threading.Thread(target=scan_thread, daemon=True)
+        thread.start()
+
+        # Start GUI update loop
+        update_gui()
 
     def process_new_files_workflow(self):
         """
@@ -5737,9 +7325,14 @@ class GCodeDatabaseGUI:
         log_text.pack(fill=tk.BOTH, expand=True)
 
         def log(message):
-            log_text.insert(tk.END, message + "\n")
-            log_text.see(tk.END)
-            workflow_win.update()
+            try:
+                if log_text.winfo_exists():
+                    log_text.insert(tk.END, message + "\n")
+                    log_text.see(tk.END)
+                    workflow_win.update()
+            except tk.TclError:
+                # Widget was destroyed, ignore logging
+                pass
 
         def update_step(step_idx, status='done'):
             """Update step status: 'done', 'active', 'error', 'skip'"""
@@ -5770,16 +7363,33 @@ class GCodeDatabaseGUI:
             log("=" * 60)
 
             import glob
+            import re
+
+            # Standard G-code file extensions
             gcode_patterns = ['*.nc', '*.NC', '*.tap', '*.TAP', '*.txt', '*.TXT', '*.gcode']
             all_files = []
             for pattern in gcode_patterns:
                 all_files.extend(glob.glob(os.path.join(folder, pattern)))
                 all_files.extend(glob.glob(os.path.join(folder, '**', pattern), recursive=True))
 
+            # Also find O-number files without extension (e.g., o13006, O57500)
+            log(f"Checking for extensionless O-number files...")
+            all_items = glob.glob(os.path.join(folder, '*'))
+            all_items.extend(glob.glob(os.path.join(folder, '**', '*'), recursive=True))
+            o_number_pattern = re.compile(r'^[oO]\d{4,}$')  # Matches o12345, O57600, etc. (no extension)
+            extensionless_count = 0
+            for item in all_items:
+                if os.path.isfile(item):
+                    basename = os.path.basename(item)
+                    if o_number_pattern.match(basename):
+                        all_files.append(item)
+                        extensionless_count += 1
+            log(f"Found {extensionless_count} extensionless O-number files")
+
             # Remove duplicates
             all_files = list(set(all_files))
             stats['files_found'] = len(all_files)
-            log(f"Found {len(all_files)} G-code files")
+            log(f"Found {len(all_files)} total G-code files")
             progress_var.set(10)
             update_step(0, 'done')
 
@@ -5872,8 +7482,12 @@ class GCodeDatabaseGUI:
                     file_hash = self.compute_file_hash(record.file_path or filepath)
 
                     # Insert into database
+                    # Convert tool_home_issues list to JSON
+                    import json
+                    tool_home_issues_json = json.dumps(record.tool_home_issues) if record.tool_home_issues else None
+
                     cursor.execute('''
-                        INSERT OR REPLACE INTO programs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        INSERT OR REPLACE INTO programs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''', (record.program_number, record.title, record.spacer_type, record.outer_diameter,
                          record.thickness, record.thickness_display, record.center_bore, record.hub_height,
                          record.hub_diameter, record.counter_bore_diameter,
@@ -5882,15 +7496,18 @@ class GCodeDatabaseGUI:
                          record.last_modified, record.file_path, record.detection_confidence,
                          record.detection_method, record.validation_status,
                          record.validation_issues, record.validation_warnings,
-                         record.bore_warnings, record.dimensional_issues,
-                         record.cb_from_gcode, record.ob_from_gcode, record.lathe,
+                         record.cb_from_gcode, record.ob_from_gcode,
+                         record.bore_warnings, record.dimensional_issues, record.lathe,
                          None, None, None,  # duplicate_type, parent_file, duplicate_group
-                         file_hash, self.current_username, is_managed,
+                         None, self.current_username, is_managed,  # current_version, modified_by, is_managed
                          None, None, None, None,  # round_size, round_size_confidence, round_size_source, in_correct_range
                          None, None, None,  # legacy_names, last_renamed_date, rename_reason
-                         None, None, None, None, None, None))  # tools_used, tool_sequence, etc.
+                         None, None, None, None, None, None,  # tools_used, tool_sequence, tool_validation_status, tool_validation_issues, safety_blocks_status, safety_blocks_issues
+                         file_hash,  # content_hash
+                         record.tool_home_status, tool_home_issues_json,  # tool_home_status, tool_home_issues
+                         None, None))  # hub_height_display, counter_bore_depth_display
 
-                    imported_programs.append(record.program_number)
+                    imported_programs.append((record.program_number, record.file_path))
                     stats['files_imported'] += 1
                     log(f"  Imported: {record.program_number} - {record.title or 'No title'}")
 
@@ -5905,25 +7522,84 @@ class GCodeDatabaseGUI:
             conn.commit()
             conn.close()
 
+            # Batch sync registry for all imported programs (single connection)
+            if imported_programs:
+                log(f"\nSyncing registry for {len(imported_programs)} programs...")
+                try:
+                    from datetime import datetime
+                    reg_conn = sqlite3.connect(self.db_path, timeout=30.0)
+                    reg_cursor = reg_conn.cursor()
+                    now = datetime.now().isoformat()
+                    ranges = self.get_round_size_ranges()
+
+                    for prog_num, file_path in imported_programs:
+                        # Update or insert registry entry
+                        reg_cursor.execute("""
+                            UPDATE program_number_registry
+                            SET status = 'IN_USE', file_path = ?, last_checked = ?
+                            WHERE program_number = ?
+                        """, (file_path, now, prog_num))
+
+                        if reg_cursor.rowcount == 0:
+                            try:
+                                num = int(prog_num.replace('o', '').replace('O', ''))
+                                round_size = None
+                                range_start = range_end = 0
+                                for rs, (start, end, _) in ranges.items():
+                                    if start <= num <= end:
+                                        round_size = rs
+                                        range_start = start
+                                        range_end = end
+                                        break
+                                reg_cursor.execute("""
+                                    INSERT INTO program_number_registry
+                                    (program_number, round_size, range_start, range_end, status, file_path, last_checked)
+                                    VALUES (?, ?, ?, ?, 'IN_USE', ?, ?)
+                                """, (prog_num, round_size, range_start, range_end, file_path, now))
+                            except:
+                                pass
+
+                    reg_conn.commit()
+                    reg_conn.close()
+                    log("Registry sync complete")
+                except Exception as e:
+                    log(f"Registry sync error: {e}")
+
             log(f"\nImported {stats['files_imported']} files")
             progress_var.set(50)
             update_step(2, 'done')
 
-            # Step 4: Detect round sizes
+            # Step 4: Detect round sizes (batched with single connection)
             update_step(3, 'active')
             log("\n" + "=" * 60)
             log("STEP 4: Detecting round sizes...")
             log("=" * 60)
 
-            for prog_num in imported_programs:
-                try:
-                    result = self.detect_round_size(prog_num)
-                    if result and result.get('round_size'):
-                        stats['round_sizes_detected'] += 1
-                except:
-                    pass
+            # Use single connection for all round size updates
+            rs_conn = sqlite3.connect(self.db_path, timeout=30.0)
+            rs_cursor = rs_conn.cursor()
 
-            log(f"Round sizes detected: {stats['round_sizes_detected']}")
+            for prog_num, _ in imported_programs:
+                try:
+                    # detect_round_size returns tuple: (round_size, confidence, source)
+                    round_size, confidence, source = self.detect_round_size(prog_num)
+                    if round_size:
+                        stats['round_sizes_detected'] += 1
+                        log(f"  {prog_num}: {round_size}\" round ({confidence} from {source})")
+                        # Update directly with existing connection
+                        in_correct_range = 1 if self.is_in_correct_range(prog_num, round_size) else 0
+                        rs_cursor.execute("""
+                            UPDATE programs
+                            SET round_size = ?, round_size_confidence = ?, round_size_source = ?, in_correct_range = ?
+                            WHERE program_number = ?
+                        """, (round_size, confidence, source, in_correct_range, prog_num))
+                except Exception as e:
+                    log(f"  {prog_num}: Error detecting round size - {e}")
+
+            rs_conn.commit()
+            rs_conn.close()
+
+            log(f"\nRound sizes detected: {stats['round_sizes_detected']} of {len(imported_programs)}")
             progress_var.set(65)
             update_step(3, 'done')
 
@@ -5964,7 +7640,7 @@ class GCodeDatabaseGUI:
 
             mismatches = 0
             for prog_num, file_path in cursor.fetchall():
-                if file_path and os.path.exists(file_path):
+                if prog_num and file_path and os.path.exists(file_path):
                     filename = os.path.splitext(os.path.basename(file_path))[0].lower()
                     if filename != prog_num.lower():
                         mismatches += 1
@@ -6010,10 +7686,11 @@ class GCodeDatabaseGUI:
             import traceback
             log(traceback.format_exc())
 
-        # Close button
-        tk.Button(workflow_win, text="Close", command=workflow_win.destroy,
-                 bg=self.button_bg, fg=self.fg_color,
-                 font=("Arial", 10, "bold"), width=15).pack(pady=10)
+        # Close button - check if window still exists
+        if workflow_win.winfo_exists():
+            tk.Button(workflow_win, text="Close", command=workflow_win.destroy,
+                     bg=self.button_bg, fg=self.fg_color,
+                     font=("Arial", 10, "bold"), width=15).pack(pady=10)
 
     def scan_for_new_files(self):
         """Scan a folder for gcode files and import only NEW files not already in database"""
@@ -6057,9 +7734,12 @@ class GCodeDatabaseGUI:
             cursor.execute("SELECT file_path FROM programs WHERE file_path IS NOT NULL")
             existing_files_data = {}  # {filename_lower: [file_paths]}
 
+            # PERFORMANCE FIX: Don't check os.path.exists() for every file
+            # This was very slow on network drives (Google Drive). Instead, trust
+            # the database and only verify existence when we need to compare content.
             for row in cursor.fetchall():
                 file_path = row[0]
-                if file_path and os.path.exists(file_path):
+                if file_path:
                     basename = os.path.basename(file_path).lower()
                     if basename not in existing_files_data:
                         existing_files_data[basename] = []
@@ -6106,9 +7786,16 @@ class GCodeDatabaseGUI:
                     # Step 1: Quick file size check
                     new_size = os.path.getsize(new_file)
 
-                    # Compare with existing file(s)
+                    # Compare with existing file(s) - filter to only existing files
                     is_exact_match = False
-                    for existing_path in existing_paths:
+                    valid_existing_paths = [p for p in existing_paths if os.path.exists(p)]
+
+                    if not valid_existing_paths:
+                        # Database has this filename but file doesn't exist - treat as new
+                        gcode_files.append(new_file)
+                        continue
+
+                    for existing_path in valid_existing_paths:
                         try:
                             existing_size = os.path.getsize(existing_path)
 
@@ -6129,10 +7816,11 @@ class GCodeDatabaseGUI:
                     if is_exact_match:
                         exact_duplicates.append(new_file)
                     else:
-                        different_content.append((new_file, existing_paths[0]))
+                        different_content.append((new_file, valid_existing_paths[0]))
                 except:
                     # If can't read, treat as different content (to be safe)
-                    different_content.append((new_file, existing_paths[0]))
+                    if existing_paths:
+                        different_content.append((new_file, existing_paths[0]))
 
             progress_label.config(text=f"Analyzing files...")
             progress_text.insert(tk.END, f"Total files scanned: {len(gcode_files) + len(name_collisions)}\n")
@@ -6594,12 +8282,16 @@ class GCodeDatabaseGUI:
                 validation_status = "PASS"
                 if parse_result.validation_issues:
                     validation_status = "CRITICAL"  # RED - Critical errors
+                elif parse_result.tool_home_status == "CRITICAL":
+                    validation_status = "TOOL_HOME_CRITICAL"  # DARK RED - G53 Z-16 or beyond (dangerous)
                 # elif parse_result.safety_blocks_status == "MISSING":
                 #     validation_status = "SAFETY_ERROR"  # DARK RED - Missing safety blocks (DISABLED - too strict)
                 # elif parse_result.tool_validation_status == "ERROR":
                 #     validation_status = "TOOL_ERROR"  # ORANGE-RED - Wrong/missing tools (DISABLED - needs tuning)
                 elif parse_result.bore_warnings:
                     validation_status = "BORE_WARNING"  # ORANGE - Bore dimension warnings
+                elif parse_result.tool_home_status == "WARNING":
+                    validation_status = "TOOL_HOME_WARNING"  # AMBER - G53 Z doesn't match thickness
                 elif parse_result.dimensional_issues:
                     validation_status = "DIMENSIONAL"  # PURPLE - P-code/thickness mismatches
                 # elif parse_result.tool_validation_status == "WARNING":
@@ -6640,7 +8332,9 @@ class GCodeDatabaseGUI:
                         tool_validation_status = ?,
                         tool_validation_issues = ?,
                         safety_blocks_status = ?,
-                        safety_blocks_issues = ?
+                        safety_blocks_issues = ?,
+                        tool_home_status = ?,
+                        tool_home_issues = ?
                     WHERE program_number = ?
                 """, (
                     parse_result.title,
@@ -6671,6 +8365,8 @@ class GCodeDatabaseGUI:
                     None,  # tool_validation_issues - DISABLED
                     None,  # safety_blocks_status - DISABLED
                     None,  # safety_blocks_issues - DISABLED
+                    parse_result.tool_home_status,
+                    json.dumps(parse_result.tool_home_issues) if parse_result.tool_home_issues else None,
                     prog_num
                 ))
 
@@ -6834,12 +8530,16 @@ class GCodeDatabaseGUI:
                     validation_status = "PASS"
                     if parse_result.validation_issues:
                         validation_status = "CRITICAL"
+                    elif parse_result.tool_home_status == "CRITICAL":
+                        validation_status = "TOOL_HOME_CRITICAL"  # G53 Z-16 or beyond (dangerous)
                     # elif parse_result.safety_blocks_status == "MISSING":
                     #     validation_status = "SAFETY_ERROR"  # DISABLED - too strict
                     # elif parse_result.tool_validation_status == "ERROR":
                     #     validation_status = "TOOL_ERROR"  # DISABLED - needs tuning
                     elif parse_result.bore_warnings:
                         validation_status = "BORE_WARNING"
+                    elif parse_result.tool_home_status == "WARNING":
+                        validation_status = "TOOL_HOME_WARNING"  # G53 Z doesn't match thickness
                     elif parse_result.dimensional_issues:
                         validation_status = "DIMENSIONAL"
                     # elif parse_result.tool_validation_status == "WARNING":
@@ -6880,6 +8580,8 @@ class GCodeDatabaseGUI:
                             tool_validation_issues = ?,
                             safety_blocks_status = ?,
                             safety_blocks_issues = ?,
+                            tool_home_status = ?,
+                            tool_home_issues = ?,
                             last_modified = ?
                         WHERE program_number = ?
                     """, (
@@ -6911,6 +8613,8 @@ class GCodeDatabaseGUI:
                         None,  # tool_validation_issues - DISABLED
                         None,  # safety_blocks_status - DISABLED
                         None,  # safety_blocks_issues - DISABLED
+                        parse_result.tool_home_status,
+                        json.dumps(parse_result.tool_home_issues) if parse_result.tool_home_issues else None,
                         datetime.now().isoformat(),
                         prog_num
                     ))
@@ -7158,6 +8862,166 @@ class GCodeDatabaseGUI:
 
         conn.close()
 
+    def scan_tool_change_positions(self):
+        """Scan G-code files to find all G53 X Z tool change position lines"""
+        # Ask user which files to scan
+        scan_choice = messagebox.askyesnocancel(
+            "Scan Tool Positions",
+            "Scan for G53 X Z tool change position lines?\n\n"
+            "YES = Scan repository files only\n"
+            "NO = Scan a specific folder\n"
+            "CANCEL = Cancel"
+        )
+
+        if scan_choice is None:
+            return
+
+        files_to_scan = []
+
+        if scan_choice:  # YES - scan repository
+            if os.path.exists(self.repository_path):
+                for file in os.listdir(self.repository_path):
+                    file_path = os.path.join(self.repository_path, file)
+                    if os.path.isfile(file_path):
+                        files_to_scan.append(file_path)
+            # Also scan revised repository
+            if os.path.exists(self.revised_repository_path):
+                for file in os.listdir(self.revised_repository_path):
+                    file_path = os.path.join(self.revised_repository_path, file)
+                    if os.path.isfile(file_path):
+                        files_to_scan.append(file_path)
+        else:  # NO - scan specific folder
+            folder = filedialog.askdirectory(title="Select folder to scan for tool positions")
+            if not folder:
+                return
+            for root, _, files in os.walk(folder):
+                for file in files:
+                    if file.lower().endswith(('.nc', '.txt', '.tap', '.gcode', '')) and not file.startswith('.'):
+                        files_to_scan.append(os.path.join(root, file))
+
+        if not files_to_scan:
+            messagebox.showinfo("No Files", "No files found to scan.")
+            return
+
+        # Progress window
+        progress_window = tk.Toplevel(self.root)
+        progress_window.title("Scanning Tool Positions...")
+        progress_window.geometry("400x150")
+        progress_window.configure(bg=self.bg_color)
+        progress_window.transient(self.root)
+
+        tk.Label(progress_window, text="Scanning for G53 X Z lines...",
+                bg=self.bg_color, fg=self.fg_color, font=("Arial", 11)).pack(pady=20)
+
+        progress_label = tk.Label(progress_window, text="0 / 0",
+                                 bg=self.bg_color, fg=self.fg_color, font=("Arial", 10))
+        progress_label.pack(pady=10)
+
+        progress_window.update()
+
+        # Count unique G53 X Z lines - once per file only
+        line_counts = {}  # {normalized_line: number of files}
+
+        total_files = len(files_to_scan)
+        scanned = 0
+
+        for file_path in files_to_scan:
+            scanned += 1
+            if scanned % 50 == 0:
+                progress_label.config(text=f"{scanned} / {total_files}")
+                progress_window.update()
+
+            try:
+                with open(file_path, 'r', errors='ignore') as f:
+                    lines = f.readlines()
+
+                # Track lines found in THIS file (count once per file)
+                lines_in_this_file = set()
+
+                for line in lines:
+                    line_stripped = line.strip().upper()
+
+                    # Skip comments and empty lines
+                    if not line_stripped or line_stripped.startswith('(') or line_stripped.startswith(';'):
+                        continue
+
+                    # Check if line contains G53 with X and Z (tool change position)
+                    if 'G53' in line_stripped and 'X' in line_stripped and 'Z' in line_stripped:
+                        # Normalize whitespace for counting
+                        normalized = ' '.join(line_stripped.split())
+                        lines_in_this_file.add(normalized)
+
+                # Count each unique line once per file
+                for normalized in lines_in_this_file:
+                    line_counts[normalized] = line_counts.get(normalized, 0) + 1
+
+            except Exception as e:
+                logger.error(f"Error scanning {file_path}: {e}")
+                continue
+
+        progress_window.destroy()
+
+        # Create results window
+        results_window = tk.Toplevel(self.root)
+        results_window.title("Tool Change Position Lines")
+        results_window.geometry("800x600")
+        results_window.configure(bg=self.bg_color)
+
+        # Title
+        tk.Label(results_window, text="G53 X Z Tool Change Position Lines",
+                font=("Arial", 16, "bold"), bg=self.bg_color, fg=self.fg_color).pack(pady=10)
+
+        tk.Label(results_window, text=f"Scanned {total_files} files | Found {len(line_counts)} unique lines",
+                font=("Arial", 10), bg=self.bg_color, fg="#888888").pack()
+
+        # Results text area
+        text_frame = tk.Frame(results_window, bg=self.bg_color)
+        text_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        results_text = scrolledtext.ScrolledText(text_frame, bg=self.input_bg, fg=self.fg_color,
+                                                 font=("Consolas", 10), wrap=tk.NONE)
+        results_text.pack(fill=tk.BOTH, expand=True)
+
+        # Sort by count descending
+        sorted_lines = sorted(line_counts.items(), key=lambda x: x[1], reverse=True)
+
+        results_text.insert(tk.END, f"{'FILES':<10} LINE\n")
+        results_text.insert(tk.END, "=" * 70 + "\n")
+
+        for line, count in sorted_lines:
+            results_text.insert(tk.END, f"{count:<10} {line}\n")
+
+        results_text.insert(tk.END, "\n" + "=" * 70 + "\n")
+        results_text.insert(tk.END, f"Total unique position lines: {len(line_counts)}\n")
+
+        # Button frame
+        btn_frame = tk.Frame(results_window, bg=self.bg_color)
+        btn_frame.pack(pady=10)
+
+        def export_lines():
+            export_path = filedialog.asksaveasfilename(
+                title="Export Tool Position Lines",
+                defaultextension=".txt",
+                filetypes=[("Text Files", "*.txt"), ("CSV Files", "*.csv")]
+            )
+            if export_path:
+                try:
+                    with open(export_path, 'w') as f:
+                        f.write("COUNT\tLINE\n")
+                        for line, count in sorted_lines:
+                            f.write(f"{count}\t{line}\n")
+                    messagebox.showinfo("Exported", f"Exported to:\n{export_path}")
+                except Exception as e:
+                    messagebox.showerror("Error", f"Export failed:\n{e}")
+
+        tk.Button(btn_frame, text="Export", command=export_lines,
+                 bg="#4CAF50", fg=self.fg_color, font=("Arial", 10, "bold"),
+                 width=12).pack(side=tk.LEFT, padx=10)
+
+        tk.Button(btn_frame, text="Close", command=results_window.destroy,
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold"),
+                 width=12).pack(side=tk.LEFT, padx=10)
+
     def fix_program_numbers(self):
         """Update internal O-numbers to match filenames - FILTERED VIEW ONLY"""
         # Get currently displayed items (respects filters)
@@ -7349,12 +9213,26 @@ class GCodeDatabaseGUI:
         close_btn.pack(pady=10)
 
     def clear_database(self):
-        """Clear all records from the database"""
+        """Clear all records from the database and backup repository"""
+        # Permission check
+        if not self.require_permission('clear_database', 'clear the database'):
+            return
+
+        # Count files in repository
+        repo_file_count = 0
+        if os.path.exists(self.repository_path):
+            repo_file_count = len([f for f in os.listdir(self.repository_path) if os.path.isfile(os.path.join(self.repository_path, f))])
+
         # Confirm with user
         result = messagebox.askyesno(
-            "Clear Database",
-            "Are you sure you want to delete ALL records from the database?\n\n"
-            "This action cannot be undone!",
+            "Clear Database & Repository",
+            f"This will:\n\n"
+            f"1. Backup the repository folder ({repo_file_count} files) with timestamp\n"
+            f"2. Clear all database records\n"
+            f"3. Reset all program numbers to AVAILABLE\n"
+            f"4. Create a fresh empty repository\n\n"
+            f"The backup will be saved in 'repository_backups' folder.\n\n"
+            f"Continue?",
             icon='warning'
         )
 
@@ -7364,7 +9242,7 @@ class GCodeDatabaseGUI:
         # Double confirm
         result2 = messagebox.askyesno(
             "Confirm Clear",
-            "This will permanently delete all program records.\n\n"
+            "This will move ALL files to backup and start fresh.\n\n"
             "Are you absolutely sure?",
             icon='warning'
         )
@@ -7372,35 +9250,75 @@ class GCodeDatabaseGUI:
         if not result2:
             return
 
-        # Create auto-backup before destructive operation
+        # Create auto-backup of database before destructive operation
         backup_path = self.create_auto_backup("clear_database")
         if backup_path:
             logger.info("Auto-backup created before clearing database")
 
         try:
+            from datetime import datetime
+            import shutil
+
+            # Step 1: Backup repository folder
+            if os.path.exists(self.repository_path) and repo_file_count > 0:
+                # Create repository_backups directory
+                backups_base = os.path.join(os.path.dirname(self.repository_path), "repository_backups")
+                os.makedirs(backups_base, exist_ok=True)
+
+                # Create timestamped backup folder
+                timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+                backup_folder = os.path.join(backups_base, f"repository_{timestamp}")
+
+                logger.info(f"Moving repository to backup: {backup_folder}")
+
+                # Move entire repository to backup
+                shutil.move(self.repository_path, backup_folder)
+
+                logger.info(f"Repository backed up: {repo_file_count} files moved to {backup_folder}")
+
+            # Step 2: Create fresh empty repository
+            os.makedirs(self.repository_path, exist_ok=True)
+            logger.info("Created fresh empty repository folder")
+
+            # Step 3: Clear database and reset registry
             conn = sqlite3.connect(self.db_path, timeout=30.0)
             cursor = conn.cursor()
 
             # Get count before deletion
             cursor.execute("SELECT COUNT(*) FROM programs")
-            count = cursor.fetchone()[0]
+            db_count = cursor.fetchone()[0]
 
-            # Delete all records
+            # Delete all program records
             cursor.execute("DELETE FROM programs")
+
+            # Reset all registry entries to AVAILABLE
+            cursor.execute("""
+                UPDATE program_number_registry
+                SET status = 'AVAILABLE', file_path = NULL, last_checked = ?
+            """, (datetime.now().isoformat(),))
+            registry_reset_count = cursor.rowcount
+
             conn.commit()
             conn.close()
+
+            logger.info(f"Database cleared: {db_count} records deleted, {registry_reset_count} registry entries reset")
 
             # Refresh the display
             self.refresh_filter_values()
             self.refresh_results()
 
             messagebox.showinfo(
-                "Database Cleared",
-                f"Successfully deleted {count} records from the database.\n\n"
-                "The database is now empty."
+                "Database & Repository Cleared",
+                f"Successfully completed:\n\n"
+                f"• Repository backed up: {repo_file_count} files\n"
+                f"  Location: repository_backups/repository_{timestamp}\n\n"
+                f"• Database cleared: {db_count} records deleted\n\n"
+                f"• Registry reset: {registry_reset_count} numbers now available\n\n"
+                f"Ready for fresh scan."
             )
 
         except Exception as e:
+            logger.error(f"Error clearing database: {e}", exc_info=True)
             messagebox.showerror("Error", f"Failed to clear database:\n{str(e)}")
 
     def save_database_profile(self):
@@ -8079,7 +9997,7 @@ class GCodeDatabaseGUI:
         """Refresh the results table based on current filters
 
         Args:
-            view_mode: 'all' (default), 'repository', or 'external'
+            view_mode: 'all' (default), 'repository', 'revised', or 'external'
             external_only: Deprecated, use view_mode='external' instead
         """
         # Handle deprecated parameter
@@ -8096,10 +10014,15 @@ class GCodeDatabaseGUI:
 
         # Add view mode filter
         if view_mode == 'repository':
-            # Only show managed files (in repository)
-            query += " AND is_managed = 1"
+            # Only show managed files in MAIN repository (not revised)
+            query += " AND is_managed = 1 AND file_path NOT LIKE ?"
+            params.append("%revised_repository%")
+        elif view_mode == 'revised':
+            # Only show files in revised repository
+            query += " AND file_path LIKE ?"
+            params.append("%revised_repository%")
         elif view_mode == 'external':
-            # Only show external files (NOT in repository)
+            # Only show external files (NOT in any repository)
             query += " AND (is_managed = 0 OR is_managed IS NULL)"
         # 'all' mode shows everything (no additional filter)
 
@@ -8225,11 +10148,11 @@ class GCodeDatabaseGUI:
             query += " AND counter_bore_diameter <= ?"
             params.append(float(self.filter_step_d_max.get()))
 
-        # Error text filter (searches in validation_issues, bore_warnings, dimensional_issues)
+        # Error text filter (searches in validation_issues, bore_warnings, dimensional_issues, tool_home_issues)
         if self.filter_error_text.get():
             error_search = f"%{self.filter_error_text.get()}%"
-            query += " AND (validation_issues LIKE ? OR bore_warnings LIKE ? OR dimensional_issues LIKE ?)"
-            params.extend([error_search, error_search, error_search])
+            query += " AND (validation_issues LIKE ? OR bore_warnings LIKE ? OR dimensional_issues LIKE ? OR tool_home_issues LIKE ?)"
+            params.extend([error_search, error_search, error_search, error_search])
 
         # Missing file path filter
         if self.filter_missing_file_path.get():
@@ -8239,13 +10162,36 @@ class GCodeDatabaseGUI:
 
         # Note: Duplicates filter is applied after query in the display logic
         # since it requires checking for duplicate filenames across all results
-        
+
         # Execute query
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute(query, params)
-        results = cursor.fetchall()
-        conn.close()
+        logger.debug(f"refresh_results: Executing query...")
+        conn = None
+        column_names = []
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
+            cursor = conn.cursor()
+            cursor.execute(query, params)
+            results = cursor.fetchall()
+            # Get column names for dynamic index lookup
+            column_names = [desc[0] for desc in cursor.description] if cursor.description else []
+            logger.debug(f"refresh_results: Query returned {len(results)} records")
+        except Exception as e:
+            logger.error(f"refresh_results: Query failed: {e}", exc_info=True)
+            results = []
+        finally:
+            if conn:
+                conn.close()
+
+        # Helper function to get column index by name
+        def get_col_idx(name, default=-1):
+            try:
+                return column_names.index(name)
+            except ValueError:
+                return default
+
+        # Get dynamic column indices for tool_home fields
+        tool_home_status_idx = get_col_idx('tool_home_status')
+        tool_home_issues_idx = get_col_idx('tool_home_issues')
 
         # Populate tree
         # Column indices (based on database schema):
@@ -8277,9 +10223,11 @@ class GCodeDatabaseGUI:
         # Count status breakdown
         status_counts = {
             'CRITICAL': 0,
+            'TOOL_HOME_CRITICAL': 0,
             'SAFETY_ERROR': 0,
             'TOOL_ERROR': 0,
             'BORE_WARNING': 0,
+            'TOOL_HOME_WARNING': 0,
             'DIMENSIONAL': 0,
             'TOOL_WARNING': 0,
             'WARNING': 0,
@@ -8343,6 +10291,11 @@ class GCodeDatabaseGUI:
 
             # Validation status (index 19 - validation_status)
             validation_status = row[19] if len(row) > 19 and row[19] else "N/A"  # Shifted from row[18]
+
+            # Tool Home status (dynamic index)
+            tool_home = "-"
+            if tool_home_status_idx >= 0 and len(row) > tool_home_status_idx and row[tool_home_status_idx]:
+                tool_home = row[tool_home_status_idx]
 
             # Extract warning details based on status type
             warning_details = "-"
@@ -8421,6 +10374,22 @@ class GCodeDatabaseGUI:
                         warning_details = "; ".join(issues[:2]) if issues else str(row[31])[:100]
                     except:
                         warning_details = str(row[31])[:100] if row[31] else ""
+            elif (validation_status in ('TOOL_HOME_CRITICAL', 'TOOL_HOME_WARNING') or tool_home in ('CRITICAL', 'WARNING')) and tool_home_issues_idx >= 0 and len(row) > tool_home_issues_idx and row[tool_home_issues_idx]:  # tool_home_issues
+                # Parse TOOL_HOME issues (G53 Z position)
+                # Check both validation_status and tool_home since tool home status is stored separately
+                try:
+                    import json
+                    if isinstance(row[tool_home_issues_idx], str):
+                        issues = json.loads(row[tool_home_issues_idx])
+                    else:
+                        issues = row[tool_home_issues_idx] if isinstance(row[tool_home_issues_idx], list) else []
+                    warning_details = "; ".join(str(x) for x in issues[:2]) if issues else ""
+                except:
+                    try:
+                        issues = [i.strip() for i in str(row[tool_home_issues_idx]).split('|') if i.strip()]
+                        warning_details = "; ".join(issues[:2]) if issues else str(row[tool_home_issues_idx])[:100]
+                    except:
+                        warning_details = str(row[tool_home_issues_idx])[:100] if row[tool_home_issues_idx] else ""
             elif validation_status == 'WARNING' and len(row) > 21 and row[21]:  # validation_warnings
                 # Parse general WARNING
                 try:
@@ -8447,12 +10416,16 @@ class GCodeDatabaseGUI:
             tag = ''
             if validation_status == 'CRITICAL':
                 tag = 'critical'  # RED - Critical errors (CB/OB way off)
+            elif validation_status == 'TOOL_HOME_CRITICAL' or tool_home == 'CRITICAL':
+                tag = 'tool_home_critical'  # DARK RED - G53 Z-16 or beyond (dangerous)
             elif validation_status == 'SAFETY_ERROR':
                 tag = 'safety_error'  # DARK RED - Missing safety blocks
             elif validation_status == 'TOOL_ERROR':
                 tag = 'tool_error'  # ORANGE-RED - Wrong/missing tools
             elif validation_status == 'BORE_WARNING':
                 tag = 'bore_warning'  # ORANGE - Bore dimensions at tolerance limit
+            elif validation_status == 'TOOL_HOME_WARNING' or tool_home == 'WARNING':
+                tag = 'tool_home_warning'  # AMBER - G53 Z doesn't match thickness
             elif validation_status == 'DIMENSIONAL':
                 tag = 'dimensional'  # PURPLE - P-code/thickness mismatches
             elif validation_status == 'TOOL_WARNING':
@@ -8469,7 +10442,7 @@ class GCodeDatabaseGUI:
 
             self.tree.insert("", "end", values=(
                 program_number, is_dup, title, spacer_type, lathe, od, thick, cb,
-                hub_h, hub_d, cb_bore, step_d, material, validation_status, warning_details, filename
+                hub_h, hub_d, cb_bore, step_d, material, tool_home, validation_status, warning_details, filename
             ), tags=(tag,))
 
         # Update count with status breakdown and view mode indicator
@@ -8665,18 +10638,388 @@ class GCodeDatabaseGUI:
                 messagebox.showerror("File Not Found", f"File not found:\n{filepath}")
         else:
             messagebox.showerror("Error", "No file path in database")
-            
+
+    def refresh_selected_file(self, event=None):
+        """Re-parse selected file and update database - useful after editing a file"""
+        selected = self.tree.selection()
+        if not selected:
+            messagebox.showwarning("No Selection", "Please select a program to refresh")
+            return
+
+        program_number = self.tree.item(selected[0])['values'][0]
+
+        # Get file path from database
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT file_path FROM programs WHERE program_number = ?", (program_number,))
+        result = cursor.fetchone()
+
+        if not result or not result[0]:
+            conn.close()
+            messagebox.showerror("Error", "No file path in database")
+            return
+
+        filepath = result[0]
+        if not os.path.exists(filepath):
+            conn.close()
+            messagebox.showerror("File Not Found", f"File not found:\n{filepath}")
+            return
+
+        try:
+            # Re-parse the file
+            parse_result = self.parse_gcode_file(filepath)
+
+            # Determine validation status
+            validation_status = 'OK'
+            if parse_result.tool_home_status == "CRITICAL":
+                validation_status = "TOOL_HOME_CRITICAL"
+            elif parse_result.bore_warnings:
+                validation_status = "CB_OB_WARNING"
+            elif parse_result.tool_home_status == "WARNING":
+                validation_status = "TOOL_HOME_WARNING"
+            elif parse_result.dimensional_issues:
+                validation_status = "WARNING"
+
+            # Update database
+            cursor.execute("""
+                UPDATE programs SET
+                    title = ?, spacer_type = ?, outer_diameter = ?, thickness = ?, thickness_display = ?,
+                    center_bore = ?, hub_diameter = ?, hub_height = ?, step_depth = ?,
+                    counter_bore_diameter = ?, counter_bore_depth = ?, material = ?,
+                    lathe = ?, validation_status = ?, validation_issues = ?,
+                    bore_warnings = ?, dimensional_issues = ?,
+                    tool_home_status = ?, tool_home_issues = ?,
+                    last_modified = ?
+                WHERE program_number = ?
+            """, (
+                parse_result.title, parse_result.spacer_type, parse_result.outer_diameter,
+                parse_result.thickness, parse_result.thickness_display,
+                parse_result.center_bore, parse_result.hub_diameter, parse_result.hub_height,
+                parse_result.step_depth, parse_result.counter_bore_diameter, parse_result.counter_bore_depth,
+                parse_result.material, parse_result.lathe, validation_status,
+                json.dumps(parse_result.validation_issues) if parse_result.validation_issues else None,
+                json.dumps(parse_result.bore_warnings) if parse_result.bore_warnings else None,
+                json.dumps(parse_result.dimensional_issues) if parse_result.dimensional_issues else None,
+                parse_result.tool_home_status,
+                json.dumps(parse_result.tool_home_issues) if parse_result.tool_home_issues else None,
+                datetime.now().isoformat(),
+                program_number
+            ))
+            conn.commit()
+            conn.close()
+
+            # Refresh the display
+            self.refresh_results()
+
+            messagebox.showinfo("Refreshed", f"{program_number} has been re-parsed and updated.\n\nStatus: {validation_status}\nTool Home: {parse_result.tool_home_status}")
+
+        except Exception as e:
+            conn.close()
+            messagebox.showerror("Error", f"Failed to refresh file:\n{str(e)}")
+
+    def create_program_copy(self):
+        """Create a copy of selected program with a new program number for editing"""
+        # Permission check
+        if not self.require_permission('copy_files', 'create copies'):
+            return
+
+        selected = self.tree.selection()
+        if not selected:
+            messagebox.showwarning("No Selection", "Please select a program to copy")
+            return
+
+        program_number = self.tree.item(selected[0])['values'][0]
+
+        # Get source file info from database
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT file_path, title, outer_diameter, round_size
+            FROM programs WHERE program_number = ?
+        """, (program_number,))
+        result = cursor.fetchone()
+        conn.close()
+
+        if not result or not result[0]:
+            messagebox.showerror("Error", "No file path found for this program")
+            return
+
+        source_path, title, od, round_size = result
+
+        if not os.path.exists(source_path):
+            messagebox.showerror("File Not Found", f"Source file not found:\n{source_path}")
+            return
+
+        # Determine round size for finding next available number
+        rs = round_size if round_size else od
+
+        # Create copy dialog
+        copy_win = tk.Toplevel(self.root)
+        copy_win.title("Create Program Copy")
+        copy_win.geometry("500x350")
+        copy_win.configure(bg=self.bg_color)
+        copy_win.transient(self.root)
+        copy_win.grab_set()
+
+        # Center the window
+        copy_win.update_idletasks()
+        x = self.root.winfo_x() + (self.root.winfo_width() - 500) // 2
+        y = self.root.winfo_y() + (self.root.winfo_height() - 350) // 2
+        copy_win.geometry(f"+{x}+{y}")
+
+        # Header
+        tk.Label(copy_win, text="Create Program Copy",
+                bg=self.bg_color, fg=self.fg_color,
+                font=("Arial", 14, "bold")).pack(pady=15)
+
+        # Source info
+        info_frame = tk.Frame(copy_win, bg=self.bg_color)
+        info_frame.pack(fill=tk.X, padx=20, pady=5)
+
+        tk.Label(info_frame, text=f"Source: {program_number}",
+                bg=self.bg_color, fg=self.fg_color, font=("Arial", 11)).pack(anchor='w')
+        tk.Label(info_frame, text=f"Title: {title or 'No title'}",
+                bg=self.bg_color, fg="#888888", font=("Arial", 10)).pack(anchor='w')
+        if rs:
+            tk.Label(info_frame, text=f"Round Size: {rs}\"",
+                    bg=self.bg_color, fg="#888888", font=("Arial", 10)).pack(anchor='w')
+
+        # Find next several available numbers
+        available_nums = self.find_available_numbers(rs, count=5)
+        next_num = available_nums[0] if available_nums else None
+        suggested_name = f"o{next_num:05d}" if next_num else ""
+
+        # New program number
+        num_frame = tk.Frame(copy_win, bg=self.bg_color)
+        num_frame.pack(fill=tk.X, padx=20, pady=15)
+
+        tk.Label(num_frame, text="New Program Number:",
+                bg=self.bg_color, fg=self.fg_color, font=("Arial", 11)).pack(anchor='w')
+
+        # Entry row with quick-select buttons
+        entry_row = tk.Frame(num_frame, bg=self.bg_color)
+        entry_row.pack(fill=tk.X, pady=5)
+
+        new_num_var = tk.StringVar(value=suggested_name)
+        num_entry = tk.Entry(entry_row, textvariable=new_num_var,
+                            bg=self.input_bg, fg=self.fg_color,
+                            insertbackground=self.fg_color, font=("Arial", 12), width=15)
+        num_entry.pack(side=tk.LEFT)
+
+        # Availability indicator label
+        avail_indicator = tk.Label(entry_row, text="", bg=self.bg_color, font=("Arial", 10))
+        avail_indicator.pack(side=tk.LEFT, padx=10)
+
+        # Create button reference to enable/disable
+        create_btn_ref = [None]
+
+        def check_availability(*args):
+            """Check if entered program number is available"""
+            entered = new_num_var.get().strip().lower()
+            if not entered:
+                avail_indicator.config(text="", fg=self.fg_color)
+                if create_btn_ref[0]:
+                    create_btn_ref[0].config(state=tk.DISABLED)
+                return
+
+            # Normalize format
+            if not entered.startswith('o'):
+                entered = 'o' + entered
+
+            # Check if it's a valid format
+            clean_num = entered.replace('o', '').replace('O', '')
+            if not clean_num.isdigit():
+                avail_indicator.config(text="Invalid format", fg="#FF6B6B")
+                if create_btn_ref[0]:
+                    create_btn_ref[0].config(state=tk.DISABLED)
+                return
+
+            # Check database
+            try:
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                cursor.execute("SELECT COUNT(*) FROM programs WHERE LOWER(program_number) = ?", (entered,))
+                exists_db = cursor.fetchone()[0] > 0
+                conn.close()
+
+                # Also check if file exists in repository
+                dest_filename = entered + '.nc'
+                dest_path = os.path.join(self.repository_path, dest_filename)
+                exists_file = os.path.exists(dest_path)
+
+                if exists_db or exists_file:
+                    avail_indicator.config(text="Already exists", fg="#FF6B6B")
+                    if create_btn_ref[0]:
+                        create_btn_ref[0].config(state=tk.DISABLED)
+                else:
+                    avail_indicator.config(text="Available", fg="#4CAF50")
+                    if create_btn_ref[0]:
+                        create_btn_ref[0].config(state=tk.NORMAL)
+            except Exception as e:
+                avail_indicator.config(text="Check failed", fg="#FF9800")
+
+        # Bind to variable changes (with slight delay to avoid excessive checks)
+        new_num_var.trace_add('write', lambda *args: copy_win.after(300, check_availability))
+
+        # Initial check
+        check_availability()
+
+        # Available numbers section
+        if available_nums:
+            avail_frame = tk.Frame(num_frame, bg=self.bg_color)
+            avail_frame.pack(fill=tk.X, pady=5)
+
+            tk.Label(avail_frame, text=f"Available in {rs}\" range (click to select):",
+                    bg=self.bg_color, fg="#888888", font=("Arial", 9)).pack(anchor='w')
+
+            btn_row = tk.Frame(avail_frame, bg=self.bg_color)
+            btn_row.pack(anchor='w', pady=3)
+
+            def select_num(num):
+                new_num_var.set(f"o{num:05d}")
+
+            for num in available_nums:
+                btn = tk.Button(btn_row, text=f"o{num:05d}",
+                               command=lambda n=num: select_num(n),
+                               bg=self.input_bg, fg=self.fg_color,
+                               font=("Arial", 9), cursor="hand2",
+                               relief=tk.GROOVE, padx=5)
+                btn.pack(side=tk.LEFT, padx=2)
+
+        # Options
+        opt_frame = tk.Frame(copy_win, bg=self.bg_color)
+        opt_frame.pack(fill=tk.X, padx=20, pady=10)
+
+        open_after_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(opt_frame, text="Open file after creating copy",
+                      variable=open_after_var,
+                      bg=self.bg_color, fg=self.fg_color,
+                      selectcolor=self.input_bg, activebackground=self.bg_color,
+                      activeforeground=self.fg_color).pack(anchor='w')
+
+        add_to_db_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(opt_frame, text="Add to database immediately (uncheck to add later)",
+                      variable=add_to_db_var,
+                      bg=self.bg_color, fg=self.fg_color,
+                      selectcolor=self.input_bg, activebackground=self.bg_color,
+                      activeforeground=self.fg_color).pack(anchor='w')
+
+        # Status label
+        status_var = tk.StringVar(value="")
+        status_label = tk.Label(copy_win, textvariable=status_var,
+                               bg=self.bg_color, fg="#FF6B6B", font=("Arial", 10))
+        status_label.pack(pady=5)
+
+        def do_copy():
+            new_num = new_num_var.get().strip().lower()
+
+            # Validate new number
+            if not new_num:
+                status_var.set("Please enter a new program number")
+                return
+
+            # Normalize format
+            if not new_num.startswith('o'):
+                new_num = 'o' + new_num
+
+            # Check if number already exists
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM programs WHERE LOWER(program_number) = ?", (new_num,))
+            exists = cursor.fetchone()[0] > 0
+            conn.close()
+
+            if exists:
+                status_var.set(f"Program {new_num} already exists!")
+                return
+
+            # Create the copy
+            try:
+                # Read source file
+                with open(source_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    content = f.read()
+
+                # Update program number in content (first O##### line)
+                new_num_digits = re.sub(r'[^0-9]', '', new_num)
+                content = re.sub(r'^([Oo])(\d{4,5})', f'O{new_num_digits.zfill(5)}', content, count=1, flags=re.MULTILINE)
+
+                # Determine destination path
+                dest_filename = new_num + '.nc'
+                dest_path = os.path.join(self.repository_path, dest_filename)
+
+                # Check if file already exists
+                if os.path.exists(dest_path):
+                    status_var.set(f"File {dest_filename} already exists in repository!")
+                    return
+
+                # Write new file
+                with open(dest_path, 'w', encoding='utf-8') as f:
+                    f.write(content)
+
+                # Add to database if requested
+                if add_to_db_var.get():
+                    self._import_single_file(dest_path)
+                    self.refresh_results()
+
+                copy_win.destroy()
+
+                # Show success message
+                msg = f"Created copy: {dest_filename}\nLocation: {dest_path}"
+                if not add_to_db_var.get():
+                    msg += "\n\nNote: File not added to database yet.\nImport it when you're done editing."
+                messagebox.showinfo("Copy Created", msg)
+
+                # Open file if requested
+                if open_after_var.get():
+                    if os.name == 'nt':
+                        os.startfile(dest_path)
+                    elif os.name == 'posix':
+                        os.system(f'open "{dest_path}"' if sys.platform == 'darwin' else f'xdg-open "{dest_path}"')
+
+            except Exception as e:
+                status_var.set(f"Error: {str(e)}")
+                logger.error(f"Error creating program copy: {e}", exc_info=True)
+
+        # Buttons
+        btn_frame = tk.Frame(copy_win, bg=self.bg_color)
+        btn_frame.pack(pady=20)
+
+        create_btn = tk.Button(btn_frame, text="Create Copy", command=do_copy,
+                 bg="#4CAF50", fg="white", font=("Arial", 11),
+                 width=12, cursor="hand2")
+        create_btn.pack(side=tk.LEFT, padx=10)
+
+        # Store reference for enable/disable
+        create_btn_ref[0] = create_btn
+
+        tk.Button(btn_frame, text="Cancel", command=copy_win.destroy,
+                 bg="#666666", fg="white", font=("Arial", 11),
+                 width=12, cursor="hand2").pack(side=tk.LEFT, padx=10)
+
+        num_entry.focus_set()
+        num_entry.select_range(0, tk.END)
+
+        # Run initial availability check after button is created
+        check_availability()
+
     def add_entry(self):
         """Add a new entry manually"""
+        # Permission check
+        if not self.require_permission('add_files', 'add entries'):
+            return
         EditEntryWindow(self, None, self.refresh_results)
-        
+
     def edit_entry(self):
         """Edit selected entry"""
+        # Permission check
+        if not self.require_permission('edit_files', 'edit entries'):
+            return
+
         selected = self.tree.selection()
         if not selected:
             messagebox.showwarning("No Selection", "Please select a program to edit")
             return
-        
+
         program_number = self.tree.item(selected[0])['values'][0]
         EditEntryWindow(self, program_number, self.refresh_results)
         
@@ -8764,6 +11107,10 @@ class GCodeDatabaseGUI:
 
     def delete_entry(self):
         """Delete selected entry"""
+        # Permission check
+        if not self.require_permission('delete_files', 'delete entries'):
+            return
+
         selected = self.tree.selection()
         if not selected:
             messagebox.showwarning("No Selection", "Please select a program to delete")
@@ -9030,25 +11377,36 @@ class GCodeDatabaseGUI:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
 
-            # Define organized column order - same as Excel export
-            export_columns = [
-                'program_number', 'title',
-                'outer_diameter', 'spacer_type', 'center_bore', 'thickness',
-                'hub_diameter', 'hub_height', 'counter_bore_diameter', 'counter_bore_depth',
-                'material', 'lathe',
-                'validation_status', 'detection_confidence',
-                'last_modified'
-            ]
-
-            # Build query with ordering: OD, Type, CB, Thickness
-            # NULLS LAST ensures NULL values don't cause sorting issues
-            columns_str = ', '.join(export_columns)
-            cursor.execute(f"""
-                SELECT {columns_str} FROM programs
+            # Define organized column order per user request:
+            # Program Number, Round Size, Thickness (display), CB, OB, Hub Height, Counter Bore, CB Depth, Type, Title, Status, Warning Details
+            # Use thickness_display to show mm when applicable
+            # CB Depth shown in mm if title contains 'MM' for depth indication
+            # Sort order: Round Size, Type, CB, Thickness
+            cursor.execute("""
+                SELECT
+                    program_number, outer_diameter, thickness_display, center_bore, hub_diameter,
+                    hub_height, counter_bore_diameter,
+                    CASE
+                        WHEN counter_bore_depth IS NOT NULL AND (title LIKE '%MM B/C%' OR title LIKE '%MM DEEP%' OR title LIKE '%MM STEP%')
+                        THEN ROUND(counter_bore_depth * 25.4, 1)
+                        ELSE counter_bore_depth
+                    END as cb_depth_display,
+                    spacer_type, title, validation_status,
+                    COALESCE(tool_home_issues, '') || COALESCE(bore_warnings, '') || COALESCE(dimensional_issues, '') || COALESCE(validation_issues, '')
+                FROM programs
                 ORDER BY
                     CASE WHEN outer_diameter IS NULL THEN 1 ELSE 0 END,
                     outer_diameter,
-                    spacer_type,
+                    CASE WHEN spacer_type IS NULL THEN 99 ELSE
+                        CASE
+                            WHEN LOWER(spacer_type) = 'standard' THEN 1
+                            WHEN LOWER(spacer_type) = 'hub_centric' THEN 2
+                            WHEN LOWER(spacer_type) = 'step' THEN 3
+                            WHEN LOWER(spacer_type) LIKE '%steel%' THEN 4
+                            WHEN LOWER(spacer_type) LIKE '%2pc%' THEN 5
+                            ELSE 6
+                        END
+                    END,
                     CASE WHEN center_bore IS NULL THEN 1 ELSE 0 END,
                     center_bore,
                     CASE WHEN thickness IS NULL THEN 1 ELSE 0 END,
@@ -9060,24 +11418,30 @@ class GCodeDatabaseGUI:
             wb = openpyxl.Workbook()
             wb.remove(wb.active)  # Remove default sheet
 
-            # Define standard round sizes - combine some to reduce sheet count for Google Sheets
-            # Google Sheets has better performance with fewer sheets
+            # FIRST SHEET: All Programs together, sorted by Round Size, Type, Thickness, CB
+            ws_all = wb.create_sheet(title="All Programs")
+            self._write_google_sheet(ws_all, results)
+
+            # Define standard round sizes for individual sheets (one sheet per size)
             round_size_groups = [
-                ('5.75" - 6.00"', [5.75, 6.00]),
+                ('5.75"', [5.75]),
+                ('6.00"', [6.00]),
                 ('6.25"', [6.25]),
                 ('6.50"', [6.50]),
                 ('7.00"', [7.00]),
                 ('7.50"', [7.50]),
                 ('8.00"', [8.00]),
-                ('9.00" - 9.50"', [9.00, 9.50]),
-                ('10.00"', [10.00]),
+                ('8.50"', [8.50]),
+                ('9.50"', [9.50]),
+                ('10.25"', [10.25]),
+                ('10.50"', [10.50]),
                 ('13.00"', [13.00]),
             ]
 
             # Group programs by OD
             programs_by_od = {}
             for row in results:
-                od = row[2]  # outer_diameter column (index 2: program_number, title, outer_diameter)
+                od = row[1]  # outer_diameter is index 1 in new column order
                 if od not in programs_by_od:
                     programs_by_od[od] = []
                 programs_by_od[od].append(row)
@@ -9128,14 +11492,18 @@ class GCodeDatabaseGUI:
         """Write data to an Excel sheet optimized for Google Sheets"""
         from openpyxl.styles import Font, PatternFill, Alignment
 
-        # Header - same as Excel export
+        # Header - columns per user request:
+        # Program Number, Round Size, Thickness, CB, OB, Hub Height, Counter Bore, CB Depth, Type, Title, Status, Warning Details
+        # Note: Step Depth and CB Depth are the same thing - using just "CB Depth"
         headers = [
-            'Program #', 'Title',
-            'OD (in)', 'Type', 'CB (mm)', 'Thickness (in)',
-            'Hub (mm)', 'Hub Height (in)', 'Counterbore (mm)', 'CB Depth (in)',
-            'Material', 'Lathe',
-            'Status', 'Confidence', 'Last Modified'
+            'Program #', 'Round Size', 'Thickness', 'CB (mm)', 'OB (mm)',
+            'Hub Height', 'Counter Bore', 'CB Depth',
+            'Type', 'Title', 'Status', 'Warning Details'
         ]
+
+        # Alternating row colors - light green and medium green
+        light_green = PatternFill(start_color="E8F5E9", end_color="E8F5E9", fill_type="solid")
+        medium_green = PatternFill(start_color="C8E6C9", end_color="C8E6C9", fill_type="solid")
 
         # Write header with Google Sheets-friendly formatting
         for col, header in enumerate(headers, start=1):
@@ -9145,10 +11513,59 @@ class GCodeDatabaseGUI:
             cell.fill = PatternFill(start_color="34A853", end_color="34A853", fill_type="solid")
             cell.alignment = Alignment(horizontal="center", vertical="center")
 
-        # Write data
+        # Status column cleanup mapping
+        status_display = {
+            'OK': 'OK',
+            'WARNING': 'Warning',
+            'TOOL_HOME_WARNING': 'Tool Home Warning',
+            'TOOL_HOME_CRITICAL': 'Tool Home Critical',
+            'CB_OB_WARNING': 'CB/OB Warning',
+            'MISMATCH': 'Mismatch',
+            'ERROR': 'Error',
+        }
+
+        # Write data with alternating row colors
         for row_idx, row_data in enumerate(data, start=2):
+            # Determine row fill color (alternating)
+            row_fill = light_green if row_idx % 2 == 0 else medium_green
             for col_idx, value in enumerate(row_data, start=1):
                 cell = ws.cell(row=row_idx, column=col_idx)
+
+                # Clean up status column (column 11)
+                if col_idx == 11 and value:
+                    value = status_display.get(str(value), str(value))
+
+                # Clean up warning details column (column 12) - parse JSON and format
+                if col_idx == 12 and value:
+                    try:
+                        import json
+                        # Value might be concatenated JSON arrays, try to parse
+                        details = []
+                        # Try to extract individual JSON arrays from concatenated string
+                        raw = str(value)
+                        if raw.startswith('['):
+                            # Find all JSON arrays in the string
+                            import re
+                            json_arrays = re.findall(r'\[.*?\]', raw)
+                            for arr in json_arrays:
+                                try:
+                                    items = json.loads(arr)
+                                    if isinstance(items, list):
+                                        details.extend(items)
+                                except:
+                                    pass
+                        if details:
+                            # Clean up and join, remove prefixes like "WARNING: "
+                            cleaned = []
+                            for d in details:
+                                d = str(d).replace('WARNING: ', '').replace('CRITICAL: ', '').replace('REVIEW: ', '')
+                                if d and d not in cleaned:
+                                    cleaned.append(d)
+                            value = '; '.join(cleaned[:3])  # Limit to first 3 issues
+                        else:
+                            value = ""
+                    except:
+                        value = ""
 
                 if value is None:
                     cell.value = ""
@@ -9158,6 +11575,9 @@ class GCodeDatabaseGUI:
                     cell.number_format = '0.00'
                 else:
                     cell.value = str(value)
+
+                # Apply alternating row fill color
+                cell.fill = row_fill
 
         # Auto-adjust column widths (Google Sheets respects this)
         for column in ws.columns:
@@ -9173,67 +11593,252 @@ class GCodeDatabaseGUI:
             ws.column_dimensions[column_letter].width = adjusted_width
 
     def export_unused_numbers(self):
-        """Export a CSV of unused program numbers within standard ranges"""
+        """Export program numbers with two sheets: All Programs (in order) and Unused Numbers"""
         import csv
 
-        # Define ranges - full range from 00001 to 99999
-        ranges = [
-            ("o00001-o09999", 1, 9999),
-            ("o10000-o19999", 10000, 19999),
-            ("o20000-o29999", 20000, 29999),
-            ("o30000-o39999", 30000, 39999),
-            ("o40000-o49999", 40000, 49999),
-            ("o50000-o59999", 50000, 59999),
-            ("o60000-o69999", 60000, 69999),
-            ("o70000-o79999", 70000, 79999),
-            ("o80000-o89999", 80000, 89999),
-            ("o90000-o99999", 90000, 99999),
-        ]
+        # Get round size ranges for reference
+        round_size_ranges = self.get_round_size_ranges()
 
-        # Get all existing program numbers from database
+        # Build reverse lookup: program number -> round size
+        def get_round_size_for_number(num):
+            for rs, (start, end, name) in round_size_ranges.items():
+                if start <= num <= end:
+                    if rs > 0:
+                        return rs
+                    elif rs == 0:
+                        return "FREE"
+                    else:
+                        return "FREE2"
+            return ""
+
+        # Get all existing program data from database
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        cursor.execute("SELECT program_number FROM programs")
-        existing = set()
+        cursor.execute("""
+            SELECT program_number, outer_diameter, thickness, thickness_display,
+                   center_bore, hub_diameter, hub_height, counter_bore_depth, spacer_type
+            FROM programs
+        """)
+
+        # Build lookup of existing programs
+        existing_programs = {}  # num -> (program_number, od, thickness, cb, ob, hub_depth, piece_type)
         for row in cursor.fetchall():
-            prog = row[0]
-            # Extract numeric part (handle duplicates like o70000(1))
-            match = re.search(r'[oO]?(\d+)', str(prog))
+            prog_num, od, thickness, thickness_display, cb, ob, hub_h, cb_depth, stype = row
+            # Extract numeric part
+            match = re.search(r'[oO]?(\d+)', str(prog_num))
             if match:
-                existing.add(int(match.group(1)))
+                num = int(match.group(1))
+                # Determine piece type
+                if stype:
+                    stype_upper = stype.upper()
+                    if '2PC' in stype_upper:
+                        piece_type = '2PC'
+                    elif 'STEEL' in stype_upper:
+                        piece_type = 'STEEL'
+                    elif 'STEP' in stype_upper:
+                        piece_type = 'STEP'
+                    else:
+                        piece_type = 'STD'
+                else:
+                    piece_type = 'STD'
+
+                # Hub/Step depth (use hub_height for HC, counter_bore_depth for STEP)
+                hub_step = hub_h if hub_h else cb_depth if cb_depth else ''
+
+                # Use thickness_display if available, otherwise thickness value
+                thick_val = thickness_display if thickness_display else (thickness if thickness else '')
+
+                existing_programs[num] = (prog_num, od, thick_val, cb, ob, hub_step, piece_type)
         conn.close()
 
         # Ask user for save location
         filepath = filedialog.asksaveasfilename(
-            defaultextension=".csv",
-            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
-            title="Export Unused Program Numbers"
+            defaultextension=".xlsx",
+            filetypes=[("Excel files", "*.xlsx"), ("CSV files", "*.csv"), ("All files", "*.*")],
+            title="Export Program Numbers"
         )
 
         if not filepath:
             return
 
-        # Generate unused numbers for each range
+        # Check if user wants Excel or CSV
+        if filepath.endswith('.xlsx'):
+            self._export_unused_numbers_excel(filepath, existing_programs, get_round_size_for_number)
+        else:
+            self._export_unused_numbers_csv(filepath, existing_programs, get_round_size_for_number)
+
+    def _export_unused_numbers_excel(self, filepath, existing_programs, get_round_size_for_number):
+        """Export to Excel with two sheets"""
+        try:
+            import openpyxl
+            from openpyxl.styles import Font, PatternFill, Alignment
+            from openpyxl.worksheet.datavalidation import DataValidation
+        except ImportError:
+            messagebox.showerror("Missing Module",
+                               "openpyxl is required for Excel export.\n\n"
+                               "Install with: pip install openpyxl\n\n"
+                               "Falling back to CSV export.")
+            csv_path = filepath.replace('.xlsx', '.csv')
+            self._export_unused_numbers_csv(csv_path, existing_programs, get_round_size_for_number)
+            return
+
+        wb = openpyxl.Workbook()
+
+        # Sheet 1: All Programs (in order)
+        ws1 = wb.active
+        ws1.title = "All Programs"
+
+        # Headers: A=Program#, B=Round Size, C=Thickness, D=CB, E=OB, F=Hub/Step Depth, G=Type
+        headers = ["Program #", "Round Size", "Thickness", "CB", "OB", "Hub/Step Depth", "Type"]
+        for col, header in enumerate(headers, 1):
+            cell = ws1.cell(row=1, column=col, value=header)
+            cell.font = Font(bold=True)
+            cell.fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+            cell.font = Font(bold=True, color="FFFFFF")
+
+        # Define range to export (skip 0, start from 1)
+        # Use the round size ranges to determine which numbers to include
+        ranges_to_export = []
+        round_size_ranges = self.get_round_size_ranges()
+        for rs, (start, end, name) in sorted(round_size_ranges.items(), key=lambda x: x[1][0]):
+            ranges_to_export.append((start, end))
+
+        # Green fill for available
+        green_fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+        green_font = Font(color="006100")
+
+        row_num = 2
+        total_available = 0
+
+        for range_start, range_end in ranges_to_export:
+            for num in range(range_start, range_end + 1):
+                prog_str = f"o{num:05d}"
+                round_size = get_round_size_for_number(num)
+
+                if num in existing_programs:
+                    # Existing program - show details
+                    prog_num, od, thick_val, cb, ob, hub_step, piece_type = existing_programs[num]
+                    ws1.cell(row=row_num, column=1, value=prog_num)
+                    ws1.cell(row=row_num, column=2, value=od if od else round_size)
+                    ws1.cell(row=row_num, column=3, value=thick_val if thick_val else '')
+                    ws1.cell(row=row_num, column=4, value=round(cb, 1) if cb else '')
+                    ws1.cell(row=row_num, column=5, value=round(ob, 1) if ob else '')
+                    ws1.cell(row=row_num, column=6, value=hub_step if hub_step else '')
+                    ws1.cell(row=row_num, column=7, value=piece_type)
+                else:
+                    # Available - mark as available with green
+                    ws1.cell(row=row_num, column=1, value=prog_str)
+                    for col in range(2, 8):
+                        cell = ws1.cell(row=row_num, column=col, value="AVAILABLE")
+                        cell.fill = green_fill
+                        cell.font = green_font
+                    total_available += 1
+
+                row_num += 1
+
+        # Auto-width columns
+        for col in range(1, 8):
+            ws1.column_dimensions[openpyxl.utils.get_column_letter(col)].width = 15
+
+        # Sheet 2: Unused Numbers Only
+        ws2 = wb.create_sheet("Unused Numbers")
+
+        # Headers: A=Program#, B=Round Size, C=Range, D=Date Added, E=Status, F=Notes
+        headers2 = ["Program #", "Round Size", "Range", "Date Added", "Status", "Notes"]
+        for col, header in enumerate(headers2, 1):
+            cell = ws2.cell(row=1, column=col, value=header)
+            cell.font = Font(bold=True)
+            cell.fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+            cell.font = Font(bold=True, color="FFFFFF")
+
+        row_num = 2
+        for range_start, range_end in ranges_to_export:
+            for num in range(range_start, range_end + 1):
+                if num not in existing_programs:
+                    prog_str = f"o{num:05d}"
+                    round_size = get_round_size_for_number(num)
+                    range_name = f"o{range_start:05d}-o{range_end:05d}"
+
+                    ws2.cell(row=row_num, column=1, value=prog_str)
+                    ws2.cell(row=row_num, column=2, value=round_size)
+                    ws2.cell(row=row_num, column=3, value=range_name)
+                    ws2.cell(row=row_num, column=4, value='')  # Date Added - blank
+                    ws2.cell(row=row_num, column=5, value='Unused')  # Status - default to Unused
+                    ws2.cell(row=row_num, column=6, value='')  # Notes - blank
+
+                    row_num += 1
+
+        # Apply dropdown validation to entire Status column at once (much faster)
+        if row_num > 2:
+            status_dropdown = DataValidation(
+                type="list",
+                formula1='"Unused,Created,Added,Issue"',
+                allow_blank=True
+            )
+            status_dropdown.error = "Please select from the list"
+            status_dropdown.errorTitle = "Invalid Status"
+            # Apply to range E2:E{last_row}
+            status_dropdown.add(f"E2:E{row_num - 1}")
+            ws2.add_data_validation(status_dropdown)
+
+        # Auto-width columns
+        col_widths = [12, 12, 18, 12, 12, 30]  # Program#, Round Size, Range, Date Added, Status, Notes
+        for col, width in enumerate(col_widths, 1):
+            ws2.column_dimensions[openpyxl.utils.get_column_letter(col)].width = width
+
+        # Save
+        try:
+            wb.save(filepath)
+            messagebox.showinfo(
+                "Export Complete",
+                f"Exported to:\n{filepath}\n\n"
+                f"Sheet 1 'All Programs': All program numbers in order\n"
+                f"Sheet 2 'Unused Numbers': {total_available:,} available numbers\n\n"
+                f"Available numbers are highlighted in green."
+            )
+        except Exception as e:
+            messagebox.showerror("Export Error", f"Failed to save Excel file:\n{str(e)}")
+
+    def _export_unused_numbers_csv(self, filepath, existing_programs, get_round_size_for_number):
+        """Export to CSV (single file with all programs)"""
+        import csv
+
+        round_size_ranges = self.get_round_size_ranges()
+        ranges_to_export = []
+        for rs, (start, end, name) in sorted(round_size_ranges.items(), key=lambda x: x[1][0]):
+            ranges_to_export.append((start, end))
+
+        total_available = 0
+
         with open(filepath, 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
-            writer.writerow(["Range", "Program Number", "Available"])
+            writer.writerow(["Program #", "Round Size", "Thickness", "CB", "OB", "Hub/Step Depth", "Type"])
 
-            total_unused = 0
-            for range_name, start, end in ranges:
-                unused_in_range = []
-                for num in range(start, end + 1):
-                    if num not in existing:
-                        unused_in_range.append(num)
+            for range_start, range_end in ranges_to_export:
+                for num in range(range_start, range_end + 1):
+                    prog_str = f"o{num:05d}"
+                    round_size = get_round_size_for_number(num)
 
-                # Write unused numbers for this range
-                for num in unused_in_range:
-                    writer.writerow([range_name, f"o{num}", "Yes"])
-                    total_unused += 1
+                    if num in existing_programs:
+                        prog_num, od, thick_val, cb, ob, hub_step, piece_type = existing_programs[num]
+                        writer.writerow([
+                            prog_num,
+                            od if od else round_size,
+                            thick_val if thick_val else '',
+                            round(cb, 1) if cb else '',
+                            round(ob, 1) if ob else '',
+                            hub_step if hub_step else '',
+                            piece_type
+                        ])
+                    else:
+                        writer.writerow([prog_str, "AVAILABLE", "AVAILABLE", "AVAILABLE", "AVAILABLE", "AVAILABLE", "AVAILABLE"])
+                        total_available += 1
 
         messagebox.showinfo(
             "Export Complete",
-            f"Exported {total_unused} unused program numbers to:\n{filepath}\n\n"
-            f"These are available numbers within standard OD ranges."
+            f"Exported to:\n{filepath}\n\n"
+            f"Total available numbers: {total_available:,}\n\n"
+            f"For Excel with multiple sheets, save as .xlsx"
         )
 
     def find_and_mark_repeats(self):
@@ -10055,14 +12660,14 @@ class GCodeDatabaseGUI:
 
             # Determine OD folder
             if od is None:
-                folder_name = "Unknown OD"
+                folder_name = "Other Sizes"
             else:
                 # Find closest standard OD
                 closest_od = min(od_folders.keys(), key=lambda x: abs(x - od))
                 if abs(closest_od - od) <= 0.1:  # Within tolerance
                     folder_name = od_folders[closest_od]
                 else:
-                    folder_name = f"Other ({od:.2f})"
+                    folder_name = "Other Sizes"
 
             # Create destination folder if needed
             od_folder_path = os.path.join(dest_folder, folder_name)
@@ -10096,6 +12701,113 @@ class GCodeDatabaseGUI:
                              bg=self.button_bg, fg=self.fg_color,
                              font=("Arial", 10, "bold"))
         close_btn.pack(pady=10)
+
+    def export_filtered_to_excel(self):
+        """Export currently filtered/displayed items to Excel file"""
+        try:
+            import openpyxl
+            from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+        except ImportError:
+            messagebox.showerror("Missing Library",
+                "openpyxl is required for Excel export.\n\n"
+                "Install with: pip install openpyxl")
+            return
+
+        # Get currently displayed items from treeview
+        displayed_items = self.tree.get_children()
+        if not displayed_items:
+            messagebox.showwarning("No Results", "No files in current view to export.\n\nPlease search/filter first.")
+            return
+
+        # Ask for save location
+        from tkinter import filedialog
+        filepath = filedialog.asksaveasfilename(
+            defaultextension=".xlsx",
+            filetypes=[("Excel Workbook", "*.xlsx"), ("All files", "*.*")],
+            title=f"Export {len(displayed_items)} Filtered Records to Excel"
+        )
+
+        if not filepath:
+            return
+
+        try:
+            # Create workbook
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "Filtered Results"
+
+            # Get column headers from treeview
+            columns = list(self.tree["columns"])
+
+            # Style definitions
+            header_font = Font(bold=True, color="FFFFFF")
+            header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+            header_alignment = Alignment(horizontal="center", vertical="center")
+            thin_border = Border(
+                left=Side(style='thin'),
+                right=Side(style='thin'),
+                top=Side(style='thin'),
+                bottom=Side(style='thin')
+            )
+
+            # Write headers
+            for col_idx, col_name in enumerate(columns, 1):
+                cell = ws.cell(row=1, column=col_idx, value=col_name)
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = header_alignment
+                cell.border = thin_border
+
+            # Color fills for different statuses
+            status_fills = {
+                'CRITICAL': PatternFill(start_color="FF6B6B", end_color="FF6B6B", fill_type="solid"),
+                'TOOL_HOME_CRITICAL': PatternFill(start_color="FF3333", end_color="FF3333", fill_type="solid"),
+                'BORE_WARNING': PatternFill(start_color="FFA500", end_color="FFA500", fill_type="solid"),
+                'TOOL_HOME_WARNING': PatternFill(start_color="FFBB44", end_color="FFBB44", fill_type="solid"),
+                'DIMENSIONAL': PatternFill(start_color="DA77F2", end_color="DA77F2", fill_type="solid"),
+                'WARNING': PatternFill(start_color="FFD43B", end_color="FFD43B", fill_type="solid"),
+                'PASS': PatternFill(start_color="69DB7C", end_color="69DB7C", fill_type="solid"),
+            }
+
+            # Write data rows
+            for row_idx, item in enumerate(displayed_items, 2):
+                values = self.tree.item(item, "values")
+                status_value = None
+
+                for col_idx, value in enumerate(values, 1):
+                    cell = ws.cell(row=row_idx, column=col_idx, value=value if value != "-" else "")
+                    cell.border = thin_border
+
+                    # Track status column (index 15 = "Status" after adding Tool Home)
+                    if columns[col_idx - 1] == "Status":
+                        status_value = value
+
+                # Apply row color based on status
+                if status_value and status_value in status_fills:
+                    for col_idx in range(1, len(columns) + 1):
+                        ws.cell(row=row_idx, column=col_idx).fill = status_fills[status_value]
+
+            # Auto-adjust column widths
+            for col_idx, col_name in enumerate(columns, 1):
+                max_length = len(col_name)
+                for row_idx in range(2, len(displayed_items) + 2):
+                    cell_value = ws.cell(row=row_idx, column=col_idx).value
+                    if cell_value:
+                        max_length = max(max_length, len(str(cell_value)))
+                # Set width with some padding, max 50
+                ws.column_dimensions[openpyxl.utils.get_column_letter(col_idx)].width = min(max_length + 2, 50)
+
+            # Freeze header row
+            ws.freeze_panes = "A2"
+
+            # Save workbook
+            wb.save(filepath)
+
+            messagebox.showinfo("Export Complete",
+                f"Successfully exported {len(displayed_items)} records to:\n\n{filepath}")
+
+        except Exception as e:
+            messagebox.showerror("Export Error", f"Failed to export:\n{str(e)}")
 
     def copy_filtered_view(self):
         """Copy currently filtered/displayed files to folder with OD subfolders and auto-rename"""
@@ -10337,6 +13049,10 @@ class GCodeDatabaseGUI:
 
     def delete_filtered_view(self):
         """Delete currently filtered/displayed files from database (NOT from filesystem)"""
+        # Permission check
+        if not self.require_permission('delete_files', 'delete filtered entries'):
+            return
+
         # Get currently displayed items from treeview
         displayed_items = self.tree.get_children()
         if not displayed_items:
@@ -10554,7 +13270,7 @@ class GCodeDatabaseGUI:
         close_btn.pack(pady=10)
 
     def show_context_menu(self, event):
-        """Show right-click context menu"""
+        """Show right-click context menu - hide items user doesn't have permission for"""
         # Select row under mouse
         row_id = self.tree.identify_row(event.y)
         if row_id:
@@ -10562,13 +13278,29 @@ class GCodeDatabaseGUI:
 
             menu = tk.Menu(self.root, tearoff=0, bg=self.input_bg, fg=self.fg_color)
             menu.add_command(label="Open File", command=self.open_file)
-            menu.add_command(label="Edit Entry", command=self.edit_entry)
+            menu.add_command(label="Refresh File", command=self.refresh_selected_file)
+
+            # Edit Entry - only for editors and above
+            if self.has_permission('edit_files'):
+                menu.add_command(label="Edit Entry", command=self.edit_entry)
+
             menu.add_command(label="View Details", command=self.view_details)
             menu.add_separator()
+
+            # Create Copy option - available to operators and above
+            if self.has_permission('copy_files'):
+                menu.add_command(label="Create Copy for Editing", command=self.create_program_copy)
+                menu.add_separator()
+
             menu.add_command(label="View Version History", command=self.show_version_history_window)
-            menu.add_separator()
-            menu.add_command(label="Archive Program", command=self.archive_program)
-            menu.add_command(label="Delete Entry", command=self.delete_entry)
+
+            # Archive and Delete - only for those with permission
+            if self.has_permission('delete_files') or self.has_permission('move_files'):
+                menu.add_separator()
+                if self.has_permission('move_files'):
+                    menu.add_command(label="Archive Program", command=self.archive_program)
+                if self.has_permission('delete_files'):
+                    menu.add_command(label="Delete Entry", command=self.delete_entry)
 
             menu.post(event.x_root, event.y_root)
 
@@ -12746,9 +15478,13 @@ For more documentation, see project README files in the application directory.
             progress_text.pack(pady=10, padx=20, fill=tk.BOTH, expand=True)
 
             def log(message):
-                progress_text.insert(tk.END, message + "\n")
-                progress_text.see(tk.END)
-                progress_window.update()
+                try:
+                    if progress_text.winfo_exists():
+                        progress_text.insert(tk.END, message + "\n")
+                        progress_text.see(tk.END)
+                        progress_window.update()
+                except tk.TclError:
+                    pass
 
             log("Starting repository refresh...")
             log("-" * 60)
@@ -12791,8 +15527,12 @@ For more documentation, see project README files in the application directory.
                         validation_status = "PASS"
                         if parse_result.validation_issues:
                             validation_status = "CRITICAL"  # RED - Critical errors
+                        elif parse_result.tool_home_status == "CRITICAL":
+                            validation_status = "TOOL_HOME_CRITICAL"  # DARK RED - G53 Z-16 or beyond
                         elif parse_result.bore_warnings:
                             validation_status = "BORE_WARNING"  # ORANGE - Bore dimension warnings
+                        elif parse_result.tool_home_status == "WARNING":
+                            validation_status = "TOOL_HOME_WARNING"  # AMBER - G53 Z mismatch
                         elif parse_result.dimensional_issues:
                             validation_status = "DIMENSIONAL"  # PURPLE - P-code/thickness mismatches
                         elif parse_result.validation_warnings:
@@ -12819,7 +15559,9 @@ For more documentation, see project README files in the application directory.
                                 validation_issues = ?,
                                 validation_warnings = ?,
                                 bore_warnings = ?,
-                                dimensional_issues = ?
+                                dimensional_issues = ?,
+                                tool_home_status = ?,
+                                tool_home_issues = ?
                             WHERE program_number = ?
                         """, (
                             parse_result.title,
@@ -12841,6 +15583,8 @@ For more documentation, see project README files in the application directory.
                             json.dumps(parse_result.validation_warnings) if parse_result.validation_warnings else None,
                             json.dumps(parse_result.bore_warnings) if parse_result.bore_warnings else None,
                             json.dumps(parse_result.dimensional_issues) if parse_result.dimensional_issues else None,
+                            parse_result.tool_home_status,
+                            json.dumps(parse_result.tool_home_issues) if parse_result.tool_home_issues else None,
                             prog_num
                         ))
 
@@ -12978,6 +15722,522 @@ For more documentation, see project README files in the application directory.
         tk.Button(btn_frame, text="Close", command=dialog.destroy,
                  bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold"),
                  width=12, height=2).pack(side=tk.LEFT, padx=5)
+
+    # ========================================================================
+    # REVISED REPOSITORY METHODS
+    # ========================================================================
+
+    def refresh_revised_scan(self):
+        """Scan and refresh the revised repository files"""
+        if not os.path.exists(self.revised_repository_path):
+            messagebox.showwarning("Not Found", "Revised repository folder does not exist.")
+            return
+
+        # Scan revised repository files
+        revised_files = []
+        for file in os.listdir(self.revised_repository_path):
+            file_path = os.path.join(self.revised_repository_path, file)
+            if os.path.isfile(file_path) and not file.startswith('.'):
+                revised_files.append(file_path)
+
+        if not revised_files:
+            messagebox.showinfo("Empty", "No files found in revised repository.")
+            self.refresh_results(view_mode='revised')
+            return
+
+        # Process each file
+        added = 0
+        updated = 0
+        for file_path in revised_files:
+            try:
+                result = self.parser.parse_file(file_path)
+                if result:
+                    # Check if already in database
+                    conn = sqlite3.connect(self.db_path, timeout=30.0)
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT id FROM programs WHERE file_path = ?", (file_path,))
+                    existing = cursor.fetchone()
+
+                    if existing:
+                        # Update existing
+                        self.update_program_from_result(result, file_path)
+                        updated += 1
+                    else:
+                        # Add new
+                        self.add_program_from_result(result, file_path, is_managed=True)
+                        added += 1
+                    conn.close()
+            except Exception as e:
+                logger.error(f"Error processing revised file {file_path}: {e}")
+
+        messagebox.showinfo("Scan Complete",
+                          f"Revised Repository Scan Complete\n\n"
+                          f"Added: {added}\n"
+                          f"Updated: {updated}\n"
+                          f"Total files: {len(revised_files)}")
+
+        self.refresh_results(view_mode='revised')
+
+    def show_revised_stats(self):
+        """Show revised repository statistics"""
+        # Count files in revised repository
+        revised_count = 0
+        revised_size = 0
+
+        if os.path.exists(self.revised_repository_path):
+            for file in os.listdir(self.revised_repository_path):
+                file_path = os.path.join(self.revised_repository_path, file)
+                if os.path.isfile(file_path):
+                    revised_count += 1
+                    revised_size += os.path.getsize(file_path)
+
+        # Count in database that are in revised repository
+        conn = sqlite3.connect(self.db_path, timeout=30.0)
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM programs WHERE file_path LIKE ?",
+                      (f"%revised_repository%",))
+        db_revised_count = cursor.fetchone()[0]
+        conn.close()
+
+        # Create stats dialog
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Revised Repository Statistics")
+        dialog.geometry("450x300")
+        dialog.configure(bg=self.bg_color)
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        tk.Label(dialog, text="📊 Revised Repository Statistics",
+                font=("Arial", 14, "bold"), bg=self.bg_color, fg="#FFD700").pack(pady=10)
+
+        tk.Label(dialog, text="(Hand-refined programs in revised_repository/ folder)",
+                font=("Arial", 9, "italic"), bg=self.bg_color, fg="#888888").pack(pady=2)
+
+        stats_frame = tk.Frame(dialog, bg=self.bg_color)
+        stats_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+
+        stats_data = [
+            ("Files in Folder:", f"{revised_count}"),
+            ("Files in Database:", f"{db_revised_count}"),
+            ("", ""),
+            ("Total Size:", f"{revised_size / (1024 * 1024):.2f} MB"),
+        ]
+
+        for label, value in stats_data:
+            if label:
+                row = tk.Frame(stats_frame, bg=self.bg_color)
+                row.pack(fill=tk.X, pady=5)
+                tk.Label(row, text=label, font=("Arial", 11), bg=self.bg_color, fg=self.fg_color,
+                        anchor='w').pack(side=tk.LEFT)
+                tk.Label(row, text=value, font=("Arial", 11, "bold"), bg=self.bg_color, fg="#FFD700",
+                        anchor='e').pack(side=tk.RIGHT)
+
+        btn_frame = tk.Frame(dialog, bg=self.bg_color)
+        btn_frame.pack(pady=10)
+
+        tk.Button(btn_frame, text="🔄 Refresh", command=lambda: [dialog.destroy(), self.show_revised_stats()],
+                 bg=self.accent_color, fg=self.fg_color, font=("Arial", 10, "bold"),
+                 width=12, height=2).pack(side=tk.LEFT, padx=5)
+
+        tk.Button(btn_frame, text="Close", command=dialog.destroy,
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold"),
+                 width=12, height=2).pack(side=tk.LEFT, padx=5)
+
+    def import_to_revised_repository(self):
+        """Import selected program from main repository to revised repository"""
+        if not self.require_permission('move_files', 'import to revised repository'):
+            return
+
+        selection = self.tree.selection()
+        if not selection:
+            messagebox.showwarning("No Selection", "Please select a program to import to revised repository")
+            return
+
+        item = self.tree.item(selection[0])
+        values = item['values']
+        program_number = values[0]
+
+        # Get file path from database
+        conn = sqlite3.connect(self.db_path, timeout=30.0)
+        cursor = conn.cursor()
+        cursor.execute("SELECT file_path FROM programs WHERE program_number = ?", (program_number,))
+        result = cursor.fetchone()
+        conn.close()
+
+        if not result or not result[0]:
+            messagebox.showerror("Error", "File path not found in database")
+            return
+
+        source_path = result[0]
+
+        if not os.path.exists(source_path):
+            messagebox.showerror("Error", f"Source file not found:\n{source_path}")
+            return
+
+        # Determine destination path
+        filename = os.path.basename(source_path)
+        dest_path = os.path.join(self.revised_repository_path, filename)
+
+        # Check if already exists
+        if os.path.exists(dest_path):
+            if not messagebox.askyesno("File Exists",
+                                       f"A file with this name already exists in revised repository.\n\n"
+                                       f"Overwrite?"):
+                return
+
+        try:
+            # Copy file to revised repository
+            shutil.copy2(source_path, dest_path)
+
+            # Add to database as revised
+            result = self.parser.parse_file(dest_path)
+            if result:
+                self.add_program_from_result(result, dest_path, is_managed=True)
+
+            self.log_activity('IMPORT_TO_REVISED', program_number, f"Imported to revised repository: {filename}")
+
+            messagebox.showinfo("Success", f"Program {program_number} imported to revised repository")
+            self.refresh_results(view_mode='revised')
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to import:\n{e}")
+
+    def move_to_main_repository(self):
+        """Move selected program from revised repository to main repository"""
+        if not self.require_permission('move_files', 'move to main repository'):
+            return
+
+        selection = self.tree.selection()
+        if not selection:
+            messagebox.showwarning("No Selection", "Please select a program to move to main repository")
+            return
+
+        item = self.tree.item(selection[0])
+        values = item['values']
+        program_number = values[0]
+
+        # Get file path from database
+        conn = sqlite3.connect(self.db_path, timeout=30.0)
+        cursor = conn.cursor()
+        cursor.execute("SELECT file_path FROM programs WHERE program_number = ?", (program_number,))
+        result = cursor.fetchone()
+        conn.close()
+
+        if not result or not result[0]:
+            messagebox.showerror("Error", "File path not found in database")
+            return
+
+        source_path = result[0]
+
+        if not self.is_in_revised_repository(source_path):
+            messagebox.showwarning("Not Revised", "This file is not in the revised repository")
+            return
+
+        if not os.path.exists(source_path):
+            messagebox.showerror("Error", f"Source file not found:\n{source_path}")
+            return
+
+        # Determine destination path
+        filename = os.path.basename(source_path)
+        dest_path = os.path.join(self.repository_path, filename)
+
+        # Check if already exists in main repo
+        if os.path.exists(dest_path):
+            if not messagebox.askyesno("File Exists",
+                                       f"A file with this name already exists in main repository.\n\n"
+                                       f"This will replace the existing file. Continue?"):
+                return
+
+        try:
+            # Move file to main repository
+            shutil.move(source_path, dest_path)
+
+            # Update database path
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
+            cursor = conn.cursor()
+            cursor.execute("UPDATE programs SET file_path = ? WHERE program_number = ?",
+                         (dest_path, program_number))
+            conn.commit()
+            conn.close()
+
+            self.log_activity('MOVE_TO_MAIN', program_number, f"Moved from revised to main: {filename}")
+
+            messagebox.showinfo("Success", f"Program {program_number} moved to main repository")
+            self.refresh_results(view_mode='repository')
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to move:\n{e}")
+
+    def delete_from_revised_repository(self):
+        """Delete selected program from revised repository"""
+        if not self.require_permission('delete_files', 'delete from revised repository'):
+            return
+
+        selection = self.tree.selection()
+        if not selection:
+            messagebox.showwarning("No Selection", "Please select a program to delete")
+            return
+
+        item = self.tree.item(selection[0])
+        values = item['values']
+        program_number = values[0]
+
+        # Get file path
+        conn = sqlite3.connect(self.db_path, timeout=30.0)
+        cursor = conn.cursor()
+        cursor.execute("SELECT file_path FROM programs WHERE program_number = ?", (program_number,))
+        result = cursor.fetchone()
+
+        if not result or not result[0]:
+            messagebox.showerror("Error", "File path not found")
+            conn.close()
+            return
+
+        file_path = result[0]
+
+        if not self.is_in_revised_repository(file_path):
+            messagebox.showwarning("Not Revised", "This file is not in the revised repository")
+            conn.close()
+            return
+
+        if not messagebox.askyesno("Confirm Delete",
+                                  f"Delete {program_number} from revised repository?\n\n"
+                                  f"This will permanently delete the file."):
+            conn.close()
+            return
+
+        try:
+            # Delete file
+            if os.path.exists(file_path):
+                os.remove(file_path)
+
+            # Remove from database
+            cursor.execute("DELETE FROM programs WHERE program_number = ? AND file_path = ?",
+                         (program_number, file_path))
+            conn.commit()
+            conn.close()
+
+            self.log_activity('DELETE_REVISED', program_number, f"Deleted from revised repository")
+
+            messagebox.showinfo("Deleted", f"Program {program_number} deleted from revised repository")
+            self.refresh_results(view_mode='revised')
+
+        except Exception as e:
+            conn.close()
+            messagebox.showerror("Error", f"Failed to delete:\n{e}")
+
+    def export_from_revised(self):
+        """Export selected program from revised repository"""
+        selection = self.tree.selection()
+        if not selection:
+            messagebox.showwarning("No Selection", "Please select a program to export")
+            return
+
+        item = self.tree.item(selection[0])
+        values = item['values']
+        program_number = values[0]
+
+        # Get file path
+        conn = sqlite3.connect(self.db_path, timeout=30.0)
+        cursor = conn.cursor()
+        cursor.execute("SELECT file_path FROM programs WHERE program_number = ?", (program_number,))
+        result = cursor.fetchone()
+        conn.close()
+
+        if not result or not result[0]:
+            messagebox.showerror("Error", "File path not found")
+            return
+
+        source_path = result[0]
+
+        if not os.path.exists(source_path):
+            messagebox.showerror("Error", f"File not found:\n{source_path}")
+            return
+
+        # Ask for destination
+        dest_path = filedialog.asksaveasfilename(
+            title="Export Program",
+            initialfile=os.path.basename(source_path),
+            defaultextension=".nc",
+            filetypes=[("NC Files", "*.nc"), ("All Files", "*.*")]
+        )
+
+        if dest_path:
+            try:
+                shutil.copy2(source_path, dest_path)
+                messagebox.showinfo("Exported", f"Program exported to:\n{dest_path}")
+            except Exception as e:
+                messagebox.showerror("Error", f"Export failed:\n{e}")
+
+    def compare_revised_with_main(self):
+        """Compare selected revised program with main repository version"""
+        selection = self.tree.selection()
+        if not selection:
+            messagebox.showwarning("No Selection", "Please select a revised program to compare")
+            return
+
+        item = self.tree.item(selection[0])
+        values = item['values']
+        program_number = values[0]
+
+        # Get revised file path
+        conn = sqlite3.connect(self.db_path, timeout=30.0)
+        cursor = conn.cursor()
+        cursor.execute("SELECT file_path FROM programs WHERE program_number = ?", (program_number,))
+        result = cursor.fetchone()
+        conn.close()
+
+        if not result or not result[0]:
+            messagebox.showerror("Error", "File path not found")
+            return
+
+        revised_path = result[0]
+
+        # Find corresponding main repository file
+        filename = os.path.basename(revised_path)
+        main_path = os.path.join(self.repository_path, filename)
+
+        if not os.path.exists(main_path):
+            messagebox.showinfo("No Match", f"No corresponding file found in main repository:\n{filename}")
+            return
+
+        if not os.path.exists(revised_path):
+            messagebox.showerror("Error", f"Revised file not found:\n{revised_path}")
+            return
+
+        # Read both files
+        try:
+            with open(main_path, 'r', errors='ignore') as f:
+                main_content = f.readlines()
+            with open(revised_path, 'r', errors='ignore') as f:
+                revised_content = f.readlines()
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to read files:\n{e}")
+            return
+
+        # Create comparison window
+        compare_window = tk.Toplevel(self.root)
+        compare_window.title(f"Compare: {program_number}")
+        compare_window.geometry("1200x700")
+        compare_window.configure(bg=self.bg_color)
+
+        # Title
+        tk.Label(compare_window, text=f"Comparing {program_number}: Main vs Revised",
+                font=("Arial", 14, "bold"), bg=self.bg_color, fg=self.fg_color).pack(pady=10)
+
+        # Two panes
+        panes = tk.Frame(compare_window, bg=self.bg_color)
+        panes.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+
+        # Main repository pane
+        main_frame = tk.Frame(panes, bg=self.bg_color)
+        main_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5)
+
+        tk.Label(main_frame, text="Main Repository", font=("Arial", 11, "bold"),
+                bg=self.bg_color, fg="#4CAF50").pack()
+        tk.Label(main_frame, text=f"Lines: {len(main_content)}", font=("Arial", 9),
+                bg=self.bg_color, fg="#888888").pack()
+
+        main_text = scrolledtext.ScrolledText(main_frame, bg=self.input_bg, fg=self.fg_color,
+                                              font=("Consolas", 9), width=60, height=30)
+        main_text.pack(fill=tk.BOTH, expand=True, pady=5)
+        main_text.insert(tk.END, ''.join(main_content))
+        main_text.config(state=tk.DISABLED)
+
+        # Revised repository pane
+        revised_frame = tk.Frame(panes, bg=self.bg_color)
+        revised_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=5)
+
+        tk.Label(revised_frame, text="Revised Repository", font=("Arial", 11, "bold"),
+                bg=self.bg_color, fg="#FFD700").pack()
+        tk.Label(revised_frame, text=f"Lines: {len(revised_content)}", font=("Arial", 9),
+                bg=self.bg_color, fg="#888888").pack()
+
+        revised_text = scrolledtext.ScrolledText(revised_frame, bg=self.input_bg, fg=self.fg_color,
+                                                 font=("Consolas", 9), width=60, height=30)
+        revised_text.pack(fill=tk.BOTH, expand=True, pady=5)
+        revised_text.insert(tk.END, ''.join(revised_content))
+        revised_text.config(state=tk.DISABLED)
+
+        # Summary of differences
+        diff_count = sum(1 for a, b in zip(main_content, revised_content) if a != b)
+        diff_count += abs(len(main_content) - len(revised_content))
+
+        tk.Label(compare_window, text=f"Differences: ~{diff_count} lines differ",
+                font=("Arial", 10), bg=self.bg_color, fg="#FF9800").pack(pady=5)
+
+        tk.Button(compare_window, text="Close", command=compare_window.destroy,
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold"),
+                 width=12).pack(pady=10)
+
+    def find_revised_differences(self):
+        """Find all programs that exist in both repositories with differences"""
+        if not os.path.exists(self.revised_repository_path):
+            messagebox.showwarning("Not Found", "Revised repository folder does not exist.")
+            return
+
+        # Get list of files in both repositories
+        main_files = set(os.listdir(self.repository_path)) if os.path.exists(self.repository_path) else set()
+        revised_files = set(os.listdir(self.revised_repository_path))
+
+        # Find common files
+        common_files = main_files.intersection(revised_files)
+
+        if not common_files:
+            messagebox.showinfo("No Matches", "No common files found between main and revised repositories")
+            return
+
+        # Compare each common file
+        differences = []
+        identical = []
+
+        for filename in common_files:
+            main_path = os.path.join(self.repository_path, filename)
+            revised_path = os.path.join(self.revised_repository_path, filename)
+
+            try:
+                with open(main_path, 'rb') as f:
+                    main_hash = hashlib.md5(f.read()).hexdigest()
+                with open(revised_path, 'rb') as f:
+                    revised_hash = hashlib.md5(f.read()).hexdigest()
+
+                if main_hash != revised_hash:
+                    differences.append(filename)
+                else:
+                    identical.append(filename)
+            except Exception as e:
+                logger.error(f"Error comparing {filename}: {e}")
+
+        # Show results
+        result_window = tk.Toplevel(self.root)
+        result_window.title("Repository Comparison Results")
+        result_window.geometry("600x500")
+        result_window.configure(bg=self.bg_color)
+
+        tk.Label(result_window, text="Repository Comparison Results",
+                font=("Arial", 14, "bold"), bg=self.bg_color, fg=self.fg_color).pack(pady=10)
+
+        # Summary
+        tk.Label(result_window, text=f"Common files: {len(common_files)} | Different: {len(differences)} | Identical: {len(identical)}",
+                font=("Arial", 10), bg=self.bg_color, fg="#888888").pack(pady=5)
+
+        # Different files list
+        tk.Label(result_window, text="Files with Differences:", font=("Arial", 11, "bold"),
+                bg=self.bg_color, fg="#FF9800").pack(pady=(10, 5), anchor="w", padx=20)
+
+        diff_listbox = tk.Listbox(result_window, bg=self.input_bg, fg=self.fg_color,
+                                  font=("Consolas", 10), height=15, width=60)
+        diff_listbox.pack(fill=tk.BOTH, expand=True, padx=20, pady=5)
+
+        for filename in sorted(differences):
+            diff_listbox.insert(tk.END, filename)
+
+        if not differences:
+            diff_listbox.insert(tk.END, "(No differences found - all common files are identical)")
+
+        tk.Button(result_window, text="Close", command=result_window.destroy,
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold"),
+                 width=12).pack(pady=10)
 
     def show_all_programs_stats(self):
         """Show ALL programs statistics (repository + external combined)"""
@@ -13143,6 +16403,10 @@ For more documentation, see project README files in the application directory.
 
     def delete_from_repository(self):
         """Delete selected program from repository (and optionally from database)"""
+        # Permission check
+        if not self.require_permission('delete_files', 'delete from repository'):
+            return
+
         selection = self.tree.selection()
         if not selection:
             messagebox.showwarning("No Selection", "Please select a program to delete")
@@ -13238,6 +16502,10 @@ For more documentation, see project README files in the application directory.
 
     def add_selected_to_repository(self):
         """Add selected external program to repository"""
+        # Permission check
+        if not self.require_permission('add_files', 'add to repository'):
+            return
+
         selection = self.tree.selection()
         if not selection:
             messagebox.showwarning("No Selection", "Please select a program to add to repository")
@@ -14280,9 +17548,12 @@ For more documentation, see project README files in the application directory.
 
             # Group by program number (name duplicates)
             name_groups = {}
+            import re
             for prog_num, title, file_path in all_files:
+                # Skip records with None program_number
+                if not prog_num:
+                    continue
                 # Extract base program number (remove suffixes like (1), (2))
-                import re
                 base_num = re.sub(r'\(\d+\)$', '', prog_num)
 
                 if base_num not in name_groups:
@@ -14442,6 +17713,9 @@ For more documentation, see project README files in the application directory.
             import re
             name_groups = {}
             for prog_num, title, file_path in all_files:
+                # Skip records with None program_number
+                if not prog_num:
+                    continue
                 base_num = re.sub(r'\(\d+\)$', '', prog_num)
 
                 if base_num not in name_groups:
@@ -16507,14 +19781,17 @@ For more documentation, see project README files in the application directory.
 
             # Check each program's file_path
             needs_repair = []
+            import re
             for prog_num, file_path, title in all_programs:
+                # Skip records with None program_number
+                if not prog_num:
+                    continue
                 # Check if file exists at stored path
                 if file_path and os.path.exists(file_path):
                     continue  # Path is correct
 
                 # File doesn't exist at stored path - try to find it
                 # Strip any suffixes like (1), _1, etc. to get base program number
-                import re
                 # Remove suffix patterns: (1), (2), _1, _2, etc.
                 base_prog = re.sub(r'[\(_]\d+[\)]?$', '', prog_num).lower()
 
@@ -16679,6 +19956,153 @@ For more documentation, see project README files in the application directory.
 
             tk.Button(progress_window, text="Close", command=progress_window.destroy,
                      bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold")).pack(pady=10)
+
+    def quick_rebase_paths(self):
+        """
+        Fast path rebase - updates all file_path entries to point to current repository location.
+        Use this when moving the database between computers where only the base path has changed.
+        Much faster than repair_file_paths as it doesn't scan files or check duplicates.
+        """
+        # Confirm with user
+        result = messagebox.askyesno(
+            "Quick Path Rebase",
+            "This will update ALL managed file paths to point to the current repository location:\n\n"
+            f"Repository: {self.repository_path}\n"
+            f"Revised: {self.revised_repository_path}\n\n"
+            "Use this after moving the database to a new computer.\n\n"
+            "This is much faster than 'Repair Paths' as it assumes:\n"
+            "• Files are named {program_number}.nc\n"
+            "• All files are in the repository folder\n"
+            "• No duplicate checking needed\n\n"
+            "Continue?",
+            icon='question'
+        )
+
+        if not result:
+            return
+
+        # Show progress window
+        progress_window = tk.Toplevel(self.root)
+        progress_window.title("Quick Path Rebase")
+        progress_window.geometry("600x400")
+        progress_window.configure(bg=self.bg_color)
+
+        tk.Label(progress_window, text="🔄 Quick Path Rebase",
+                font=("Arial", 14, "bold"),
+                bg=self.bg_color, fg=self.fg_color).pack(pady=10)
+
+        output_text = scrolledtext.ScrolledText(progress_window,
+                                                wrap=tk.WORD,
+                                                width=70, height=20,
+                                                font=("Courier New", 9),
+                                                bg="#1e1e1e", fg="#ffffff")
+        output_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        progress_window.update()
+
+        conn = None
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
+            cursor = conn.cursor()
+
+            output_text.insert(tk.END, "=" * 60 + "\n")
+            output_text.insert(tk.END, "QUICK PATH REBASE\n")
+            output_text.insert(tk.END, "=" * 60 + "\n\n")
+            output_text.insert(tk.END, f"Repository path: {self.repository_path}\n")
+            output_text.insert(tk.END, f"Revised path: {self.revised_repository_path}\n\n")
+            progress_window.update()
+
+            # Get all managed programs
+            cursor.execute("""
+                SELECT program_number, file_path
+                FROM programs
+                WHERE is_managed = 1
+            """)
+            programs = cursor.fetchall()
+
+            output_text.insert(tk.END, f"Found {len(programs)} managed programs\n\n")
+            output_text.insert(tk.END, "Updating paths...\n")
+            progress_window.update()
+
+            updated = 0
+            not_found = 0
+            already_correct = 0
+
+            for prog_num, old_path in programs:
+                # Build expected filename - handle various formats
+                base_num = prog_num.lower()
+                if not base_num.startswith('o'):
+                    base_num = 'o' + base_num
+
+                # Try main repository first
+                filename = f"{base_num}.nc"
+                new_path = os.path.join(self.repository_path, filename)
+
+                # Check revised repository if not in main
+                if not os.path.exists(new_path):
+                    new_path = os.path.join(self.revised_repository_path, filename)
+
+                # Try without .nc extension (some files might not have it)
+                if not os.path.exists(new_path):
+                    new_path = os.path.join(self.repository_path, base_num)
+
+                if os.path.exists(new_path):
+                    if old_path == new_path:
+                        already_correct += 1
+                    else:
+                        # Update the path
+                        cursor.execute("""
+                            UPDATE programs
+                            SET file_path = ?
+                            WHERE program_number = ?
+                        """, (new_path, prog_num))
+
+                        # Also update registry if it exists
+                        cursor.execute("""
+                            UPDATE program_number_registry
+                            SET file_path = ?
+                            WHERE program_number = ?
+                        """, (new_path, prog_num))
+
+                        updated += 1
+                else:
+                    not_found += 1
+
+                # Progress update every 500 files
+                if (updated + not_found + already_correct) % 500 == 0:
+                    output_text.insert(tk.END, f"  Processed {updated + not_found + already_correct}/{len(programs)}...\n")
+                    output_text.see(tk.END)
+                    progress_window.update()
+
+            conn.commit()
+
+            output_text.insert(tk.END, "\n" + "=" * 60 + "\n")
+            output_text.insert(tk.END, "COMPLETE\n")
+            output_text.insert(tk.END, "=" * 60 + "\n\n")
+            output_text.insert(tk.END, f"✅ Updated: {updated}\n")
+            output_text.insert(tk.END, f"✓ Already correct: {already_correct}\n")
+            output_text.insert(tk.END, f"⚠️ File not found: {not_found}\n")
+            output_text.insert(tk.END, f"\nTotal processed: {len(programs)}\n")
+
+            if not_found > 0:
+                output_text.insert(tk.END, f"\n⚠️ {not_found} files were not found in the repository.\n")
+                output_text.insert(tk.END, "These may have different filenames or be missing.\n")
+
+            output_text.see(tk.END)
+
+            # Refresh UI
+            self.refresh_results()
+
+        except Exception as e:
+            output_text.insert(tk.END, f"\n❌ ERROR: {str(e)}\n")
+            import traceback
+            output_text.insert(tk.END, f"\n{traceback.format_exc()}\n")
+        finally:
+            if conn:
+                conn.close()
+
+        tk.Button(progress_window, text="Close", command=progress_window.destroy,
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 10, "bold")).pack(pady=10)
 
     # ===== Program Number Registry Management =====
 
@@ -16967,12 +20391,16 @@ For more documentation, see project README files in the application directory.
                     validation_status = "PASS"
                     if parse_result.validation_issues:
                         validation_status = "CRITICAL"
+                    elif parse_result.tool_home_status == "CRITICAL":
+                        validation_status = "TOOL_HOME_CRITICAL"  # G53 Z-16 or beyond (dangerous)
                     # elif parse_result.safety_blocks_status == "MISSING":
                     #     validation_status = "SAFETY_ERROR"  # DISABLED - too strict
                     # elif parse_result.tool_validation_status == "ERROR":
                     #     validation_status = "TOOL_ERROR"  # DISABLED - needs tuning
                     elif parse_result.bore_warnings:
                         validation_status = "BORE_WARNING"
+                    elif parse_result.tool_home_status == "WARNING":
+                        validation_status = "TOOL_HOME_WARNING"  # G53 Z doesn't match thickness
                     elif parse_result.dimensional_issues:
                         validation_status = "DIMENSIONAL"
                     # elif parse_result.tool_validation_status == "WARNING":
@@ -16990,7 +20418,8 @@ For more documentation, see project README files in the application directory.
                             validation_status = ?, validation_issues = ?, validation_warnings = ?,
                             bore_warnings = ?, dimensional_issues = ?,
                             tools_used = ?, tool_sequence = ?, tool_validation_status = ?,
-                            tool_validation_issues = ?, safety_blocks_status = ?, safety_blocks_issues = ?
+                            tool_validation_issues = ?, safety_blocks_status = ?, safety_blocks_issues = ?,
+                            tool_home_status = ?, tool_home_issues = ?
                         WHERE program_number = ?
                     """, (
                         parse_result.title, parse_result.spacer_type, parse_result.outer_diameter,
@@ -17007,6 +20436,8 @@ For more documentation, see project README files in the application directory.
                         None,  # tool_validation_issues - DISABLED
                         None,  # safety_blocks_status - DISABLED
                         None,  # safety_blocks_issues - DISABLED
+                        parse_result.tool_home_status,
+                        json.dumps(parse_result.tool_home_issues) if parse_result.tool_home_issues else None,
                         prog_num
                     ))
                     success += 1
@@ -17178,9 +20609,13 @@ For more documentation, see project README files in the application directory.
         log_text.pack(fill=tk.BOTH, expand=True)
 
         def log(message):
-            log_text.insert(tk.END, message + "\n")
-            log_text.see(tk.END)
-            progress_window.update()
+            try:
+                if log_text.winfo_exists():
+                    log_text.insert(tk.END, message + "\n")
+                    log_text.see(tk.END)
+                    progress_window.update()
+            except tk.TclError:
+                pass
 
         # Run sync
         try:
@@ -17286,9 +20721,13 @@ For more documentation, see project README files in the application directory.
         log_text.pack(fill=tk.BOTH, expand=True)
 
         def log(message):
-            log_text.insert(tk.END, message + "\n")
-            log_text.see(tk.END)
-            progress_window.update()
+            try:
+                if log_text.winfo_exists():
+                    log_text.insert(tk.END, message + "\n")
+                    log_text.see(tk.END)
+                    progress_window.update()
+            except tk.TclError:
+                pass
 
         # Run detection
         try:
@@ -18108,20 +21547,23 @@ class EditEntryWindow:
                      datetime.now().isoformat(), file_path, program_number))
             else:  # Insert
                 cursor.execute('''
-                    INSERT INTO programs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO programs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (program_number, None,  # title
                      spacer_type, outer_diameter, thickness, None,  # thickness_display
                      center_bore, hub_height, hub_diameter, cb_diameter, cb_depth,
                      paired_program, material, notes, datetime.now().isoformat(),
                      datetime.now().isoformat(), file_path,
                      None, None, None, None, None,  # detection_confidence, detection_method, validation_status, validation_issues, validation_warnings
-                     None, None,  # bore_warnings, dimensional_issues
-                     None, None, None,  # cb_from_gcode, ob_from_gcode, lathe
+                     None, None,  # cb_from_gcode, ob_from_gcode
+                     None, None, None,  # bore_warnings, dimensional_issues, lathe
                      None, None, None,  # duplicate_type, parent_file, duplicate_group
                      1, self.parent.current_username, 0,  # current_version, modified_by, is_managed
                      None, None, None, None,  # round_size, round_size_confidence, round_size_source, in_correct_range
                      None, None, None,  # legacy_names, last_renamed_date, rename_reason
-                     None, None, None, None, None, None))  # tools_used, tool_sequence, tool_validation_status, tool_validation_issues, safety_blocks_status, safety_blocks_issues
+                     None, None, None, None, None, None,  # tools_used, tool_sequence, tool_validation_status, tool_validation_issues, safety_blocks_status, safety_blocks_issues
+                     None,  # content_hash
+                     None, None,  # tool_home_status, tool_home_issues
+                     None, None))  # hub_height_display, counter_bore_depth_display
             
             conn.commit()
             messagebox.showinfo("Success", "Entry saved successfully")
@@ -19765,9 +23207,13 @@ Legacy names will be tracked in the database and added as comments in the files.
         log_text.pack(fill=tk.BOTH, expand=True)
 
         def log(message):
-            log_text.insert(tk.END, message + "\n")
-            log_text.see(tk.END)
-            progress_window.update()
+            try:
+                if log_text.winfo_exists():
+                    log_text.insert(tk.END, message + "\n")
+                    log_text.see(tk.END)
+                    progress_window.update()
+            except tk.TclError:
+                pass
 
         # Progress callback
         def progress_callback(current, total, prog_num):
@@ -19861,15 +23307,28 @@ Legacy names will be tracked in the database and added as comments in the files.
 
 
 def main():
+    logger.info("Starting G-Code Database Manager...")
+
     # Try to use TkinterDnD for drag & drop support, fallback to regular Tk
     try:
         from tkinterdnd2 import TkinterDnD
         root = TkinterDnD.Tk()
+        logger.info("Using TkinterDnD for drag & drop support")
     except ImportError:
         root = tk.Tk()
+        logger.info("TkinterDnD not available, using standard Tk")
 
-    app = GCodeDatabaseGUI(root)
-    root.mainloop()
+    try:
+        app = GCodeDatabaseGUI(root)
+        root.mainloop()
+    except Exception as e:
+        logger.critical(f"Application crashed: {e}", exc_info=True)
+        import traceback
+        traceback.print_exc()
+        # Show error dialog
+        import tkinter.messagebox as mb
+        mb.showerror("Fatal Error", f"Application crashed:\n\n{e}\n\nCheck logs/gcode_database.log for details")
+        raise
 
 
 if __name__ == "__main__":
