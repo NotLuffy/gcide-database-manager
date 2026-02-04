@@ -131,7 +131,7 @@ class BaseSpacerGenerator(ABC):
         """
         Format a numeric value for G-code output.
 
-        - Removes trailing zeros
+        - Removes trailing zeros but KEEPS at least one decimal place
         - Ensures decimal point for coordinates (G-code convention)
         - Max 4 decimal places for machine compatibility
 
@@ -140,7 +140,8 @@ class BaseSpacerGenerator(ABC):
             max_decimals: Maximum decimal places
 
         Returns:
-            Formatted string like "1.5" or "0." or "-0.15"
+            Formatted string like "1.5" or "0." or "-0.15" or "3.0"
+            CRITICAL: Never returns whole numbers like "3" - always includes decimal
         """
         if value == 0:
             return "0."
@@ -148,12 +149,19 @@ class BaseSpacerGenerator(ABC):
         # Round to max decimals
         rounded = round(value, max_decimals)
 
-        # Format and remove trailing zeros
-        formatted = f"{rounded:.{max_decimals}f}".rstrip('0').rstrip('.')
+        # Format with max decimals
+        formatted = f"{rounded:.{max_decimals}f}"
+
+        # Remove trailing zeros, but STOP before removing the last digit after decimal
+        # This ensures "3.0000" -> "3.0" but never "3"
+        # "3.1200" -> "3.12", "3.0" -> "3.0"
+        while formatted.endswith('0') and not formatted.endswith('.0'):
+            formatted = formatted[:-1]
 
         # Ensure there's at least a decimal point (G-code convention)
+        # This handles edge cases where rounding might create an integer
         if '.' not in formatted:
-            formatted += '.'
+            formatted += '.0'
 
         return formatted
 

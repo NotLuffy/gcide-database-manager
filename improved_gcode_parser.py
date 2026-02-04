@@ -84,6 +84,13 @@ class GCodeParseResult:
     tool_home_status: str                 # 'PASS', 'WARNING', 'CRITICAL', 'UNKNOWN'
     tool_home_issues: List[str]           # List of tool home position issues
 
+    # 2PC Part Field Usage (reuses existing fields):
+    # - hub_height: 2PC hub height (0.25" typical for STUD, 0.50" for special)
+    # - hub_diameter: OB diameter of the 2PC hub (mm)
+    # - counter_bore_depth: 2PC step/shelf depth (0.30-0.32" typical for LUG)
+    # - counter_bore_diameter: 2PC step/shelf diameter (mm)
+    # Detection: If BOTH hub_height AND counter_bore_depth are set for 2PC → part has BOTH hub AND step
+
     # DISABLED - Tool/Safety validation temporarily disabled (needs tuning)
     # Uncomment these fields to re-enable tool/safety validation later
     # tool_validation_status: str           # 'PASS', 'WARNING', 'ERROR'
@@ -271,16 +278,41 @@ class ImprovedGCodeParser:
             # 5a. Auto-correct title dimensions using G-code (when title parsing failed or is inaccurate)
             self._auto_correct_dimensions(result)
 
-            # 5b. Advanced 2PC classification using G-code analysis
-            if result.spacer_type == '2PC UNSURE' and lines:
+            # 5b. Advanced 2PC classification and dimension extraction using G-code analysis
+            # Run for ALL 2PC types to extract hub/step dimensions
+            if '2PC' in result.spacer_type and lines:
                 twopc_analysis = self._analyze_2pc_gcode(lines, result.thickness, result.hub_height)
-                if twopc_analysis['type']:
+
+                # Update type if UNSURE
+                if result.spacer_type == '2PC UNSURE' and twopc_analysis['type']:
                     result.spacer_type = twopc_analysis['type']
                     result.detection_method = twopc_analysis['method']
                     result.detection_confidence = twopc_analysis['confidence']
-                    result.detection_notes.append(twopc_analysis['note'])
+                    if twopc_analysis['note']:
+                        result.detection_notes.append(twopc_analysis['note'])
 
-            # 5b. Use thickness heuristic for remaining 2PC UNSURE files
+                # Populate 2PC dimensions into existing fields:
+                # - hub_height: 2PC hub (0.25" or 0.50")
+                # - hub_diameter: OB of the hub (mm) - ALWAYS use G-code value (title is often wrong)
+                # - counter_bore_depth: step depth (0.30-0.32")
+                # - counter_bore_diameter: step/shelf diameter (mm)
+                if twopc_analysis['hub_height'] and not result.hub_height:
+                    result.hub_height = twopc_analysis['hub_height']
+                # For 2PC parts, ALWAYS use G-code hub_diameter (title parsing often gets it wrong)
+                if twopc_analysis['hub_diameter']:
+                    result.hub_diameter = twopc_analysis['hub_diameter']
+                if twopc_analysis['step_depth'] and not result.counter_bore_depth:
+                    result.counter_bore_depth = twopc_analysis['step_depth']
+                if twopc_analysis['step_diameter'] and not result.counter_bore_diameter:
+                    result.counter_bore_diameter = twopc_analysis['step_diameter']
+
+                # Add note if part has BOTH hub AND step (special labeling)
+                if result.hub_height and result.counter_bore_depth:
+                    result.detection_notes.append(
+                        f'2PC with BOTH: {result.hub_height:.2f}" hub + {result.counter_bore_depth:.2f}" step'
+                    )
+
+            # 5c. Use thickness heuristic for remaining 2PC UNSURE files
             # LUG parts are typically thicker (>=1.0"), STUD parts are thinner (<1.0")
             if result.spacer_type == '2PC UNSURE' and result.thickness:
                 if result.thickness >= 1.0:
@@ -351,6 +383,9 @@ class ImprovedGCodeParser:
 
             # 11. Validate consistency
             self._validate_consistency(result)
+
+            # 11a. Haas lathe-specific G-code validations
+            self._validate_haas_gcode_patterns(result, lines)
 
             # 12. Get file timestamps
             try:
@@ -850,6 +885,8 @@ class ImprovedGCodeParser:
             r'(\d+\.?\d*)\s*IN\s+ROUND',
             r'(\d+\.?\d*)\s*"\s*(?:DIA|ROUND)',
             r'^(\d+\.?\d*)\s+\d+\.?\d*[/\d\.]*(?:IN|MM)',  # OD at start before IN or MM pattern (e.g., "13.0 170.1/220MM")
+            r'^(\d+\.?\d*)\s+\d+\.?\d*CB',      # Match "13.0 220CB" - OD followed by CB value (no IN/DIA needed)
+            r'^(\d+\.?\d*)\s+\d+\s*MM',         # Match "8 125 MM" - OD followed by MM value
         ]
         for pattern in od_patterns:
             match = re.search(pattern, title, re.IGNORECASE)
@@ -965,6 +1002,7 @@ class ImprovedGCodeParser:
                 (r'CB\s+(\d+)MM\s', 'MM', False),            # "220CB 22MM SPACER" - MM thickness after CB
                 (r'CB\s+\.(\d+)\s', 'DECIMAL', False),       # "220CB .5 SPACER" - decimal thickness after CB
                 (r'CB\s+(\d*\.?\d+)\s+SPACER', 'IN', False), # "220CB 1.0 SPACER" - thickness after CB
+                (r'CB\s+(\d+)\.\s+\w', 'IN', False),         # "221CB 5. PRESSPLATE" - number with trailing dot after CB
                 (r'B/C\s+(\d*\.?\d+)(?!\s*MM\s*DEEP)', 'IN', False),  # "B/C 1.50" but NOT "B/C 6MM DEEP"
                 (r'MM\s+(\d*\.?\d+)\s+(?:THK|HC)', 'IN', False),  # "MM 1.50 THK"
                 (r'/[\d.]+MM\s+(\d*\.?\d+)', 'IN', False),   # After slash pattern
@@ -1168,6 +1206,43 @@ class ImprovedGCodeParser:
                 except:
                     pass
 
+            # Fallback: "DIA XXX MM" pattern without ID/CB marker (common in steel parts)
+            # Example: "8IN DIA 125 MM STEEL" - 125 is the CB
+            if not result.center_bore:
+                cb_match2 = re.search(r'DIA\s+(\d+\.?\d*)\s*MM', title, re.IGNORECASE)
+                if cb_match2:
+                    try:
+                        cb_val = float(cb_match2.group(1))
+                        if 38.0 <= cb_val <= 250.0:
+                            result.center_bore = cb_val
+                    except:
+                        pass
+
+            # Fallback: "DIA XXX.X ID" pattern (no MM, just ID marker)
+            # Example: "9.5IN DIA 154.2 ID .5" - 154.2 is the CB
+            if not result.center_bore:
+                cb_match3 = re.search(r'DIA\s+(\d+\.?\d*)\s+ID', title, re.IGNORECASE)
+                if cb_match3:
+                    try:
+                        cb_val = float(cb_match3.group(1))
+                        if 38.0 <= cb_val <= 250.0:
+                            result.center_bore = cb_val
+                    except:
+                        pass
+
+            # Fallback: "DIA X.XXIN" pattern (CB in inches after DIA)
+            # Example: "4.75 DIA 1.58IN 1.375 THK" - 1.58IN is the CB (convert to mm)
+            if not result.center_bore:
+                cb_match4 = re.search(r'DIA\s+(\d+\.?\d*)IN', title, re.IGNORECASE)
+                if cb_match4:
+                    try:
+                        cb_inches = float(cb_match4.group(1))
+                        cb_val = cb_inches * 25.4  # Convert to mm
+                        if 25.0 <= cb_val <= 250.0:  # Reasonable range in mm
+                            result.center_bore = cb_val
+                    except:
+                        pass
+
         # Hub height extraction - works for ALL files with HC in title (hub-centric, 2PC, etc.)
         # Many 2PC files have HC dimensions (e.g., "1.75 HC 2PC") where HC indicates hub-centric interface
         # Extract HC dimensions EARLY so they're available regardless of spacer_type classification
@@ -1254,6 +1329,7 @@ class ImprovedGCodeParser:
     def _analyze_2pc_gcode(self, lines: List[str], thickness: Optional[float], hub_height: Optional[float]) -> dict:
         """
         Advanced 2PC LUG vs STUD classification using G-code analysis.
+        Also extracts 2PC-specific dimensions (hub height, step depth, diameters).
 
         Rules (from user specification):
         STUD indicators:
@@ -1261,46 +1337,205 @@ class ImprovedGCodeParser:
         - Creates ~0.25" hub (0.75" thick + 0.25" hub ≈ 1.00" total)
         - Thickness ≤ 0.75"
         - Hub height ≈ 0.25" (with tolerance)
-        - Special case: 0.5" hub with recess on opposite side (future)
+        - Special case: 0.5" hub with recess on opposite side
 
         LUG indicators:
         - Thickness ≥ 0.75" (typically 1.0" or greater)
         - If thickness > 0.75" with 0.25" hub → LUG (studs never exceed 0.75")
-        - Creates shelf/recess in OP1: Z-0.31 to Z-0.35 depth
+        - Creates shelf/recess in OP1: Z-0.30 to Z-0.32 depth
         - Receives the STUD insert
 
+        Special 2PC with BOTH hub AND step:
+        - Has 0.50" hub machined in OP2
+        - Has step/shelf in OP1 at 0.30-0.55" depth
+        - Usually labeled "2PC AND HUB" or has "(HUB IS .5 THK)" comment
+
         Returns:
-            dict with keys: 'type', 'method', 'confidence', 'note'
+            dict with keys: 'type', 'method', 'confidence', 'note',
+                           'hub_height', 'hub_diameter', 'step_depth', 'step_diameter'
         """
-        result = {'type': None, 'method': None, 'confidence': None, 'note': ''}
+        # print(f"DEBUG: _analyze_2pc_gcode called")
+        result = {
+            'type': None, 'method': None, 'confidence': None, 'note': '',
+            'hub_height': None, 'hub_diameter': None,
+            'step_depth': None, 'step_diameter': None
+        }
 
-        # Scan first 100 lines for patterns
-        z_depths = []
-        for line in lines[:100]:
-            # Extract Z-depth values (positive, representing recess depth)
-            z_matches = re.findall(r'Z-(\d+\.?\d*)', line, re.IGNORECASE)
-            for z_str in z_matches:
-                z_val = float(z_str)
-                # Only consider reasonable recess depths (0.1" to 1.0")
-                if 0.1 <= z_val <= 1.0:
-                    z_depths.append(z_val)
+        # Track state for OP1 vs OP2
+        in_op2 = False
+        in_bore_op1 = False
+        in_turn_op2 = False  # Track if we're in a T303 turning operation in OP2
 
-        # Rule 1: Check for LUG shelf pattern (Z-0.31 to Z-0.35)
-        lug_shelf_depths = [z for z in z_depths if 0.31 <= z <= 0.35]
-        if lug_shelf_depths:
+        # Collect Z depths and X values by operation
+        op1_bore_depths = []  # (z_depth, x_diameter) tuples from OP1 boring
+        op2_facing_depths = []  # (z_depth, x_diameter) tuples from OP2 facing
+
+        # Check for explicit hub comment like "(HUB IS .5 THK)"
+        explicit_hub_comment = None
+        for line in lines[:50]:
+            line_upper = line.upper()
+            hub_match = re.search(r'\(HUB\s+IS\s+\.?(\d+\.?\d*)\s*(?:THK|THICK)?\)', line_upper)
+            if hub_match:
+                explicit_hub_comment = float(hub_match.group(1))
+                if explicit_hub_comment < 1:  # Handle ".5" vs "0.5"
+                    pass  # Already correct
+                break
+
+        # Scan G-code for patterns
+        current_x = None
+        current_z = None
+        for i, line in enumerate(lines):
+            line_upper = line.upper()
+
+            # Detect OP2 boundary
+            if any(marker in line_upper for marker in ['OP2', 'OP 2', 'FLIP PART', 'FLIP', 'SIDE 2']):
+                in_op2 = True
+                in_bore_op1 = False
+
+            # Track tool changes
+            if 'T121' in line_upper or 'BORE' in line_upper:
+                if not in_op2:
+                    in_bore_op1 = True
+                in_turn_op2 = False
+            elif 'T303' in line_upper or 'TURN TOOL' in line_upper:
+                in_bore_op1 = False
+                if in_op2:
+                    in_turn_op2 = True
+
+            # Extract X and Z values
+            x_match = re.search(r'X\s*([\d.]+)', line, re.IGNORECASE)
+            # Match both positive and negative Z values to properly track tool position
+            z_match = re.search(r'Z\s*(-?\s*[\d.]+)', line, re.IGNORECASE)
+
+            # Update current X and Z values (they persist across lines)
+            if x_match:
+                current_x = float(x_match.group(1))
+
+            if z_match:
+                z_val = float(z_match.group(1).replace(' ', ''))
+                # Only track negative Z (below the face) for depth tracking
+                # Positive Z means tool moved back above the part
+                if z_val < 0:
+                    current_z = abs(z_val)
+                else:
+                    current_z = None  # Reset when moving back up
+
+            # Capture (Z, X) pairs when we have both values
+            if current_z and current_x:
+                # OP1 boring - look for step depths (0.28-0.55" range, shallower than full bore)
+                if in_bore_op1 and not in_op2:
+                    if 0.28 <= current_z <= 0.55:
+                        # Only add if not already in list
+                        if (current_z, current_x) not in op1_bore_depths:
+                            op1_bore_depths.append((current_z, current_x))
+
+                # OP2 turning/facing - look for hub depths
+                if in_op2 and in_turn_op2:
+                    if 0.15 <= current_z <= 1.6:  # Hub range
+                        # Only add if not already in list
+                        if (current_z, current_x) not in op2_facing_depths:
+                            op2_facing_depths.append((current_z, current_x))
+
+        # Analyze OP1 for step detection (counter bore)
+        # Step pattern: multiple bores at same shallow depth, then deeper bores at smaller X
+        step_depth = None
+        step_diameter = None
+        if op1_bore_depths:
+            # Filter out very large X values (> 5.0") which are likely facing operations
+            step_ops = [(z, x) for z, x in op1_bore_depths if x < 5.0]
+
+            if step_ops:
+                # Find depths in the step range (0.28-0.55")
+                step_range_ops = [(z, x) for z, x in step_ops if 0.28 <= z <= 0.55]
+
+                if step_range_ops:
+                    # Find the most common depth (the actual step depth)
+                    depth_counts = {}
+                    for z, x in step_range_ops:
+                        rounded_z = round(z, 2)
+                        if rounded_z not in depth_counts:
+                            depth_counts[rounded_z] = []
+                        depth_counts[rounded_z].append(x)
+
+                    # Step is the depth with multiple passes
+                    for depth, x_vals in sorted(depth_counts.items()):
+                        if len(x_vals) >= 2:
+                            step_depth = depth
+                            # Use tight tolerance (0.02") to only get final pass, not rough cuts
+                            # Similar to hub detection: exclude values significantly smaller than max
+                            max_x = max(x_vals)
+                            final_pass_vals = [x for x in x_vals if abs(x - max_x) < 0.02]
+                            if final_pass_vals:
+                                step_diameter = max(final_pass_vals) * 25.4  # Convert to mm
+                            else:
+                                step_diameter = max_x * 25.4
+                            break
+
+        # Analyze OP2 for hub detection
+        # Hub pattern: progressive facing to final depth
+        detected_hub_height = None
+        hub_diameter = None
+        if op2_facing_depths:
+            # Filter out OD values (X > 5.0") - these are facing operations, not hub
+            # Hub diameters are typically X < 5.0"
+            hub_ops = [(z, x) for z, x in op2_facing_depths if x < 5.0]
+
+            if hub_ops:
+                max_depth = max(z for z, x in hub_ops)
+                # Hub height is the maximum facing depth in OP2
+                if 0.20 <= max_depth <= 1.6:
+                    detected_hub_height = max_depth
+                    # Hub diameter: Get X value AT the maximum hub depth (final pass)
+                    # Use tight tolerance (0.02") to only get final pass, not rough cuts
+                    # Example: X3.71 at Z-0.15 (rough), X3.703 at Z-0.22 (final) - we want 3.703
+                    deep_ops = [(z, x) for z, x in hub_ops if abs(z - max_depth) < 0.02]
+                    if deep_ops:
+                        # Get the largest diameter at the deepest Z (final pass before cleanup)
+                        hub_diameter = max(x for z, x in deep_ops) * 25.4  # Convert to mm
+
+        # Use explicit comment if available
+        if explicit_hub_comment:
+            detected_hub_height = explicit_hub_comment
+
+        # Populate result dimensions
+        if detected_hub_height:
+            result['hub_height'] = round(detected_hub_height, 2)
+        if hub_diameter:
+            result['hub_diameter'] = round(hub_diameter, 1)
+        if step_depth:
+            result['step_depth'] = round(step_depth, 2)
+        if step_diameter:
+            result['step_diameter'] = round(step_diameter, 1)
+
+        # Determine 2PC type based on patterns found
+        has_step = step_depth is not None and 0.28 <= step_depth <= 0.35
+        has_large_hub = detected_hub_height is not None and detected_hub_height >= 0.45
+        has_small_hub = detected_hub_height is not None and 0.20 <= detected_hub_height <= 0.30
+
+        # Special case: 2PC with BOTH hub AND step
+        if has_step and has_large_hub:
+            result['type'] = '2PC LUG'  # LUG with 0.50" hub is a special case
+            result['method'] = 'GCODE_HUB_AND_STEP'
+            result['confidence'] = 'HIGH'
+            result['note'] = f'2PC with BOTH: {step_depth:.2f}" step AND {detected_hub_height:.2f}" hub'
+            return result
+
+        # Rule 1: Check for LUG shelf pattern (Z-0.30 to Z-0.32)
+        if has_step:
             result['type'] = '2PC LUG'
             result['method'] = 'GCODE_SHELF_DEPTH'
             result['confidence'] = 'HIGH'
-            result['note'] = f'LUG shelf detected at Z-{lug_shelf_depths[0]:.2f}" (0.31-0.35" range)'
+            result['note'] = f'LUG shelf detected at Z-{step_depth:.2f}" (0.30-0.32" range)'
             return result
 
         # Rule 2: Thickness > 0.75" with 0.25" hub = LUG (studs never exceed 0.75")
         if thickness and thickness > 0.75:
-            if hub_height and 0.20 <= hub_height <= 0.30:
+            if has_small_hub or (hub_height and 0.20 <= hub_height <= 0.30):
                 result['type'] = '2PC LUG'
                 result['method'] = 'THICKNESS_HUB_COMBO'
                 result['confidence'] = 'HIGH'
-                result['note'] = f'LUG: thickness {thickness}" > 0.75" with {hub_height}" hub (studs max 0.75")'
+                hub_h = detected_hub_height or hub_height
+                result['note'] = f'LUG: thickness {thickness}" > 0.75" with {hub_h}" hub (studs max 0.75")'
                 return result
             else:
                 # Thickness > 0.75" alone is strong LUG indicator
@@ -1312,22 +1547,22 @@ class ImprovedGCodeParser:
 
         # Rule 3: Thickness = 0.75" with 0.25" hub = STUD pattern
         if thickness and 0.70 <= thickness <= 0.80:  # Allow tolerance
-            if hub_height and 0.20 <= hub_height <= 0.30:
+            if has_small_hub or (hub_height and 0.20 <= hub_height <= 0.30):
                 result['type'] = '2PC STUD'
                 result['method'] = 'THICKNESS_HUB_COMBO'
                 result['confidence'] = 'HIGH'
-                result['note'] = f'STUD: thickness {thickness}" ≈ 0.75" with {hub_height}" hub (typical pattern)'
+                hub_h = detected_hub_height or hub_height
+                result['note'] = f'STUD: thickness {thickness}" ≈ 0.75" with {hub_h}" hub (typical pattern)'
                 return result
 
         # Rule 4: Hub height detection alone
-        if hub_height:
-            if 0.20 <= hub_height <= 0.30:
-                # 0.25" hub suggests STUD (if no other LUG indicators found)
-                result['type'] = '2PC STUD'
-                result['method'] = 'HUB_HEIGHT_ANALYSIS'
-                result['confidence'] = 'MEDIUM'
-                result['note'] = f'STUD: {hub_height}" hub (0.25" typical for STUD)'
-                return result
+        if has_small_hub or (hub_height and 0.20 <= hub_height <= 0.30):
+            result['type'] = '2PC STUD'
+            result['method'] = 'HUB_HEIGHT_ANALYSIS'
+            result['confidence'] = 'MEDIUM'
+            hub_h = detected_hub_height or hub_height
+            result['note'] = f'STUD: {hub_h}" hub (0.25" typical for STUD)'
+            return result
 
         # No definitive pattern found
         return result
@@ -2272,8 +2507,8 @@ class ImprovedGCodeParser:
         - Large X values (> 4.0") indicate facing the outer diameter
         - Deep Z values (0.5" to 3.5") indicate hub height
         """
-        # Skip if already hub_centric
-        if result.spacer_type == 'hub_centric':
+        # Skip if already hub_centric or 2PC (don't reclassify 2PC parts)
+        if result.spacer_type == 'hub_centric' or '2PC' in result.spacer_type:
             return
 
         # Don't skip based on CB/OB comparison - some HC parts have CB == OB in title
@@ -2866,6 +3101,147 @@ class ImprovedGCodeParser:
                                 result.dimensional_issues.append(
                                     f'P-CODE MISMATCH: Title thickness {result.thickness}" requires P{expected_pcode}/P{expected_pcode+1} ({result.lathe}), but G-code uses {actual_desc}'
                                 )
+
+    def _validate_haas_gcode_patterns(self, result: GCodeParseResult, lines: List[str]):
+        """
+        Validate Haas lathe-specific G-code patterns and common errors.
+
+        Checks for:
+        1. G00/G01 mixing on same line
+        2. G01 without feedrate (F word)
+        3. G96 (CSS) without G50 (max RPM limit)
+        4. M-code sequence (M03 before M08, M09 before M05)
+        5. Missing decimal points on coordinates and feedrates
+        """
+        if not lines:
+            return
+
+        # Track modal states
+        current_feedrate = None  # Last F word seen
+        g50_seen = False  # Has G50 been set before G96?
+        g96_active = False  # Is CSS mode active?
+        spindle_running = False  # M03/M04 seen
+        coolant_on = False  # M08 seen
+
+        issues = []
+        warnings = []
+
+        for line_num, line in enumerate(lines, 1):
+            # Clean line - remove comments and whitespace
+            clean_line = re.sub(r'\(.*?\)', '', line).strip().upper()
+            if not clean_line:
+                continue
+
+            # === CHECK 1: G00/G01 mixing ===
+            if 'G00' in clean_line and 'G01' in clean_line:
+                issues.append(
+                    f'Line {line_num}: G00 and G01 on same line - "{line.strip()}"'
+                )
+
+            # === CHECK 2: G01 without feedrate ===
+            # Check if G01 is present (but not G00, G02, G03, etc.)
+            # Use word boundary to match G01 or G1 (standalone, not part of other codes)
+            has_g01 = bool(re.search(r'\bG0?1\b', clean_line))
+
+            if has_g01:
+                # Update feedrate if F word is present
+                f_match = re.search(r'F(\d+\.?\d*)', clean_line)
+                if f_match:
+                    current_feedrate = float(f_match.group(1))
+                # Check if feedrate is established
+                elif current_feedrate is None:
+                    issues.append(
+                        f'Line {line_num}: G01 without feedrate (no F word) - "{line.strip()}"'
+                    )
+
+            # === CHECK 3: G96 without G50 ===
+            # Track G50 (max RPM limit)
+            if 'G50' in clean_line:
+                g50_seen = True
+                g96_active = False  # Reset CSS mode when new G50 is set
+
+            # Track G96 (CSS mode)
+            if 'G96' in clean_line:
+                if not g50_seen:
+                    issues.append(
+                        f'Line {line_num}: G96 (CSS) without prior G50 (max RPM) - "{line.strip()}"'
+                    )
+                g96_active = True
+
+            # Track G97 (RPM mode - exits CSS)
+            if 'G97' in clean_line:
+                g96_active = False
+
+            # === CHECK 4: M-code sequence validation ===
+            # M03/M04: Spindle start
+            if 'M03' in clean_line or 'M04' in clean_line:
+                spindle_running = True
+                # Reset coolant state (new operation)
+                coolant_on = False
+
+            # M08: Coolant on
+            if 'M08' in clean_line:
+                if not spindle_running:
+                    warnings.append(
+                        f'Line {line_num}: M08 (coolant on) before spindle started (M03/M04) - "{line.strip()}"'
+                    )
+                coolant_on = True
+
+            # M09: Coolant off
+            if 'M09' in clean_line:
+                coolant_on = False
+
+            # M05: Spindle stop
+            if 'M05' in clean_line:
+                if coolant_on:
+                    warnings.append(
+                        f'Line {line_num}: M05 (spindle stop) while coolant still on (M08) - should M09 first - "{line.strip()}"'
+                    )
+                spindle_running = False
+
+            # M30/M02: Program end
+            if 'M30' in clean_line or 'M02' in clean_line:
+                if coolant_on:
+                    warnings.append(
+                        f'Line {line_num}: Program end (M30/M02) with coolant still on (M08) - should M09 first'
+                    )
+
+            # === CHECK 5: Missing decimal points ===
+            # Check X and Z coordinates for missing decimals (e.g., "X3" should be "X3.0")
+            # Only check on G00/G01 lines (movement commands)
+            if 'G00' in clean_line or 'G01' in clean_line or 'G0' in clean_line or 'G1' in clean_line:
+                # Check X coordinates
+                x_matches = re.findall(r'X(-?\d+)(?![.\d])', clean_line)
+                for x_val in x_matches:
+                    # Ignore X0 (often written as X0. or X0)
+                    if x_val != '0':
+                        issues.append(
+                            f'Line {line_num}: X coordinate missing decimal point - "X{x_val}" should be "X{x_val}.0" - "{line.strip()}"'
+                        )
+
+                # Check Z coordinates
+                z_matches = re.findall(r'Z(-?\d+)(?![.\d])', clean_line)
+                for z_val in z_matches:
+                    if z_val != '0':
+                        issues.append(
+                            f'Line {line_num}: Z coordinate missing decimal point - "Z{z_val}" should be "Z{z_val}.0" - "{line.strip()}"'
+                        )
+
+            # Check feedrates for missing decimals (less critical, but good practice)
+            # F008 should be F0.008
+            f_no_decimal = re.search(r'F(\d{3,})(?!\.)', clean_line)
+            if f_no_decimal:
+                f_val = f_no_decimal.group(1)
+                # Only flag if it's 3+ digits without decimal (likely missing decimal)
+                warnings.append(
+                    f'Line {line_num}: Feed rate missing decimal point - "F{f_val}" (should be F0.{f_val}?) - "{line.strip()}"'
+                )
+
+        # Add issues and warnings to result
+        if issues:
+            result.validation_issues.extend(issues)
+        if warnings:
+            result.validation_warnings.extend(warnings)
 
     def _extract_tools(self, result: GCodeParseResult, lines: List[str]):
         """

@@ -90,6 +90,38 @@ ROLE_DESCRIPTIONS = {
     'viewer': 'Read-only access - Can only view and export'
 }
 
+# Theme definitions
+THEMES = {
+    'dark': {
+        'bg_color': '#2b2b2b',
+        'fg_color': '#ffffff',
+        'input_bg': '#3c3c3c',
+        'button_bg': '#4a4a4a',
+        'accent_color': '#4a90e2',
+        'success_color': '#4CAF50',
+        'warning_color': '#FF9800',
+        'error_color': '#D32F2F',
+        'tree_bg': '#2b2b2b',
+        'tree_fg': '#ffffff',
+        'tree_selected': '#4a90e2',
+        'header_bg': '#3c3c3c',
+    },
+    'light': {
+        'bg_color': '#f5f5f5',
+        'fg_color': '#212121',
+        'input_bg': '#ffffff',
+        'button_bg': '#e0e0e0',
+        'accent_color': '#1976D2',
+        'success_color': '#388E3C',
+        'warning_color': '#F57C00',
+        'error_color': '#C62828',
+        'tree_bg': '#ffffff',
+        'tree_fg': '#212121',
+        'tree_selected': '#1976D2',
+        'header_bg': '#e0e0e0',
+    }
+}
+
 
 def hash_password(password: str, salt: str = None) -> Tuple[str, str]:
     """Hash a password with salt using SHA256"""
@@ -335,13 +367,10 @@ class GCodeDatabaseGUI:
         logger.info("=" * 60)
 
         try:
-            # Dark mode colors
+            # Theme system - load preference or default to dark
             logger.debug("Initializing colors and theme...")
-            self.bg_color = "#2b2b2b"
-            self.fg_color = "#ffffff"
-            self.input_bg = "#3c3c3c"
-            self.button_bg = "#4a4a4a"
-            self.accent_color = "#4a90e2"
+            self.current_theme = 'dark'  # Will be updated from config
+            self._apply_theme_colors()
 
             self.root.configure(bg=self.bg_color)
 
@@ -372,10 +401,10 @@ class GCodeDatabaseGUI:
             logger.debug("Initializing G-code parser...")
             self.parser = ImprovedGCodeParser()
 
-            # Configure ttk dark theme
+            # Configure ttk theme
             style = ttk.Style()
             style.theme_use('clam')
-            style.configure('Dark.TFrame', background=self.bg_color)
+            self._update_ttk_styles()
 
             # Show login dialog - must succeed before continuing
             logger.info("Showing login dialog...")
@@ -3420,6 +3449,343 @@ class GCodeDatabaseGUI:
             logger.error(f"Error finding dimensional variations: {e}", exc_info=True)
             return variations
 
+    def find_compatible_2pc_parts(self, program_number=None, spacer_type=None,
+                                  stud_thickness_min=None, stud_thickness_max=None,
+                                  lug_thickness_min=None, lug_thickness_max=None,
+                                  cb_min=None, cb_max=None, od_min=None, od_max=None):
+        """
+        Find compatible 2PC part pairings (STUD + LUG).
+
+        Matching criteria:
+        1. Round size (OD) must match within tolerance (±1mm or ±0.04")
+        2. STUD hub diameter must fit inside LUG step diameter (with 1-3mm clearance)
+        3. STUD hub height fits inside LUG step depth (with clearance)
+        4. CB matching is optional (parts can work with different CBs)
+        5. Optional thickness filters for STUD and LUG separately
+
+        This allows matching parts where hub_diameter ≠ CB, enabling custom
+        hub configurations.
+
+        Args:
+            program_number: Optional - find matches for this specific program
+            spacer_type: Optional - '2PC STUD' or '2PC LUG'
+            stud_thickness_min: Optional - minimum STUD thickness (inches)
+            stud_thickness_max: Optional - maximum STUD thickness (inches)
+            lug_thickness_min: Optional - minimum LUG thickness (inches)
+            lug_thickness_max: Optional - maximum LUG thickness (inches)
+            cb_min: Optional - minimum center bore (mm)
+            cb_max: Optional - maximum center bore (mm)
+            od_min: Optional - minimum outer diameter (inches)
+            od_max: Optional - maximum outer diameter (inches)
+
+        Returns:
+            list: Compatible pairings with match quality scores
+        """
+        matches = []
+
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
+            cursor = conn.cursor()
+
+            # Get the reference part if program_number specified
+            reference_part = None
+            if program_number:
+                cursor.execute("""
+                    SELECT program_number, title, outer_diameter, center_bore,
+                           thickness, hub_height, hub_diameter, counter_bore_depth,
+                           counter_bore_diameter, spacer_type, file_path
+                    FROM programs
+                    WHERE program_number = ?
+                """, (program_number,))
+                row = cursor.fetchone()
+                if row:
+                    reference_part = {
+                        'program_number': row[0], 'title': row[1], 'outer_diameter': row[2],
+                        'center_bore': row[3], 'thickness': row[4], 'hub_height': row[5],
+                        'hub_diameter': row[6], 'counter_bore_depth': row[7],
+                        'counter_bore_diameter': row[8], 'spacer_type': row[9],
+                        'file_path': row[10]
+                    }
+                    # Determine which type we're looking for
+                    if '2PC STUD' in reference_part['spacer_type']:
+                        spacer_type = '2PC LUG'  # Find LUGs for this STUD
+                    elif '2PC LUG' in reference_part['spacer_type']:
+                        spacer_type = '2PC STUD'  # Find STUDs for this LUG
+                    else:
+                        conn.close()
+                        return matches  # Not a 2PC part
+
+            # Get all 2PC parts
+            cursor.execute("""
+                SELECT program_number, title, outer_diameter, center_bore,
+                       thickness, hub_height, hub_diameter, counter_bore_depth,
+                       counter_bore_diameter, spacer_type, file_path
+                FROM programs
+                WHERE spacer_type LIKE '%2PC%'
+                AND outer_diameter IS NOT NULL
+                ORDER BY outer_diameter, program_number
+            """)
+
+            all_2pc_parts = []
+            for row in cursor.fetchall():
+                all_2pc_parts.append({
+                    'program_number': row[0], 'title': row[1], 'outer_diameter': row[2],
+                    'center_bore': row[3], 'thickness': row[4], 'hub_height': row[5],
+                    'hub_diameter': row[6], 'counter_bore_depth': row[7],
+                    'counter_bore_diameter': row[8], 'spacer_type': row[9],
+                    'file_path': row[10]
+                })
+
+            conn.close()
+
+            # Separate into STUDs and LUGs, with optional filtering
+            studs = [p for p in all_2pc_parts if '2PC STUD' in p['spacer_type']]
+            lugs = [p for p in all_2pc_parts if '2PC LUG' in p['spacer_type']]
+
+            # Apply thickness filters
+            if stud_thickness_min is not None or stud_thickness_max is not None:
+                filtered_studs = []
+                for stud in studs:
+                    thickness = stud.get('thickness')
+                    if thickness is None:
+                        continue
+                    if stud_thickness_min is not None and thickness < stud_thickness_min:
+                        continue
+                    if stud_thickness_max is not None and thickness > stud_thickness_max:
+                        continue
+                    filtered_studs.append(stud)
+                studs = filtered_studs
+
+            if lug_thickness_min is not None or lug_thickness_max is not None:
+                filtered_lugs = []
+                for lug in lugs:
+                    thickness = lug.get('thickness')
+                    if thickness is None:
+                        continue
+                    if lug_thickness_min is not None and thickness < lug_thickness_min:
+                        continue
+                    if lug_thickness_max is not None and thickness > lug_thickness_max:
+                        continue
+                    filtered_lugs.append(lug)
+                lugs = filtered_lugs
+
+            # Apply CB filter (affects both STUD and LUG)
+            if cb_min is not None or cb_max is not None:
+                if cb_min is not None:
+                    studs = [s for s in studs if s.get('center_bore') and s['center_bore'] >= cb_min]
+                    lugs = [l for l in lugs if l.get('center_bore') and l['center_bore'] >= cb_min]
+                if cb_max is not None:
+                    studs = [s for s in studs if s.get('center_bore') and s['center_bore'] <= cb_max]
+                    lugs = [l for l in lugs if l.get('center_bore') and l['center_bore'] <= cb_max]
+
+            # Apply OD filter (affects both STUD and LUG)
+            if od_min is not None or od_max is not None:
+                if od_min is not None:
+                    studs = [s for s in studs if s.get('outer_diameter') and s['outer_diameter'] >= od_min]
+                    lugs = [l for l in lugs if l.get('outer_diameter') and l['outer_diameter'] >= od_min]
+                if od_max is not None:
+                    studs = [s for s in studs if s.get('outer_diameter') and s['outer_diameter'] <= od_max]
+                    lugs = [l for l in lugs if l.get('outer_diameter') and l['outer_diameter'] <= od_max]
+
+            # If we have a reference part, only match against it
+            if reference_part:
+                if '2PC STUD' in reference_part['spacer_type']:
+                    # Reference is STUD, find compatible LUGs
+                    logger.info(f"[2PC MATCH] Reference {reference_part['program_number']} is STUD, checking against {len(lugs)} LUGs")
+                    for lug in lugs:
+                        match_result = self._check_2pc_compatibility(reference_part, lug)
+                        if match_result['compatible']:
+                            matches.append({
+                                'stud': reference_part,
+                                'lug': lug,
+                                'score': match_result['score'],
+                                'notes': match_result['notes'],
+                                'clearance_mm': match_result.get('clearance_mm', 999)
+                            })
+                else:
+                    # Reference is LUG, find compatible STUDs
+                    for stud in studs:
+                        match_result = self._check_2pc_compatibility(stud, reference_part)
+                        if match_result['compatible']:
+                            matches.append({
+                                'stud': stud,
+                                'lug': reference_part,
+                                'score': match_result['score'],
+                                'notes': match_result['notes'],
+                                'clearance_mm': match_result.get('clearance_mm', 999)
+                            })
+            else:
+                # No reference - find all compatible pairings
+                for stud in studs:
+                    for lug in lugs:
+                        match_result = self._check_2pc_compatibility(stud, lug)
+                        if match_result['compatible']:
+                            matches.append({
+                                'stud': stud,
+                                'lug': lug,
+                                'score': match_result['score'],
+                                'notes': match_result['notes'],
+                                'clearance_mm': match_result.get('clearance_mm', 999)
+                            })
+
+            # Sort by clearance (tightest fit first), then by score
+            matches.sort(key=lambda x: (x['clearance_mm'], -x['score']))
+
+            return matches
+
+        except sqlite3.Error as e:
+            logger.error(f"Database error finding compatible 2PC parts: {e}")
+            return matches
+        except Exception as e:
+            logger.error(f"Error finding compatible 2PC parts: {e}", exc_info=True)
+            return matches
+
+    def _check_2pc_compatibility(self, stud, lug):
+        """
+        Check if a STUD and LUG are compatible.
+
+        Returns:
+            dict: {'compatible': bool, 'score': int (0-100), 'notes': list}
+        """
+        result = {'compatible': False, 'score': 0, 'notes': []}
+
+        # Rule 0: CRITICAL - Verify proper 2PC mating features
+        # 2PC mating uses:
+        #   - Small hub (~0.25" / 0.20-0.30") for mating
+        #   - Recess (~0.3-0.35" / 0.25-0.40" deep) for receiving the small hub
+        # Non-2PC features (ignore these):
+        #   - Large hub (~0.50" / 0.45-0.60") for mounting/handling (not for 2PC mating)
+
+        stud_hub_dia = stud.get('hub_diameter')
+        stud_hub_height = stud.get('hub_height')
+        lug_step_dia = lug.get('counter_bore_diameter')
+        lug_step_depth = lug.get('counter_bore_depth')
+
+        # Check STUD has a small hub for 2PC mating (0.20-0.30")
+        if not stud_hub_dia or not stud_hub_height:
+            result['notes'].append('❌ STUD missing hub dimensions')
+            return result
+        if stud_hub_dia <= 0 or stud_hub_height <= 0:
+            result['notes'].append('❌ STUD has invalid hub dimensions')
+            return result
+
+        # Identify if this is a 2PC mating hub (small ~0.25") or other hub (large ~0.50")
+        is_stud_small_hub = 0.20 <= stud_hub_height <= 0.30
+        is_stud_large_hub = 0.45 <= stud_hub_height <= 0.60
+
+        if not is_stud_small_hub:
+            if is_stud_large_hub:
+                result['notes'].append('❌ STUD has large hub (0.50" - not for 2PC mating)')
+            else:
+                result['notes'].append(f'❌ STUD hub height {stud_hub_height:.2f}" is not a 2PC mating hub (expected 0.20-0.30")')
+            return result
+
+        # Check LUG dimensions
+        lug_hub_dia = lug.get('hub_diameter')
+        lug_hub_height = lug.get('hub_height')
+
+        # Identify LUG features
+        has_lug_recess = lug_step_dia and lug_step_depth and lug_step_dia > 0 and lug_step_depth > 0
+        has_lug_small_hub = lug_hub_dia and lug_hub_height and lug_hub_dia > 0 and 0.20 <= lug_hub_height <= 0.30
+        has_lug_large_hub = lug_hub_height and 0.45 <= lug_hub_height <= 0.60
+
+        # LUG must have a proper 2PC recess (0.25-0.40" deep) to receive the STUD's small hub
+        is_lug_proper_recess = has_lug_recess and 0.25 <= lug_step_depth <= 0.40
+
+        # REJECT: Both parts have only small hubs (0.25") - can't mate together
+        if has_lug_small_hub and not is_lug_proper_recess:
+            result['notes'].append('❌ Both parts have 0.25" hubs - cannot mate (no recess)')
+            return result
+
+        # REJECT: LUG has no proper recess for 2PC mating
+        if not is_lug_proper_recess:
+            if has_lug_large_hub:
+                result['notes'].append('❌ LUG has only large hub (0.50") - no recess for 2PC mating')
+            else:
+                result['notes'].append('❌ LUG missing proper recess (expected 0.25-0.40" deep)')
+            return result
+
+        # ALLOW: LUG has proper recess + optional large hub (0.50" hub is for other purposes)
+        # This is valid - the 0.50" hub on LUG is not for 2PC mating with this STUD
+
+        # Rule 1: Round size (OD) must match within tolerance
+        stud_od = stud.get('outer_diameter')
+        lug_od = lug.get('outer_diameter')
+
+        if not stud_od or not lug_od:
+            result['notes'].append('Missing OD data')
+            return result
+
+        od_diff_inches = abs(stud_od - lug_od)
+        od_diff_mm = od_diff_inches * 25.4
+
+        # Tolerance: ±1mm (0.04") for OD match
+        if od_diff_mm > 1.0:
+            result['notes'].append(f'OD mismatch: {od_diff_mm:.1f}mm difference')
+            return result
+
+        # OD matches - good start
+        result['score'] += 40
+        result['notes'].append(f'✓ OD match: {stud_od:.2f}" (Δ={od_diff_mm:.1f}mm)')
+
+        # Rule 2: Hub diameter must fit inside step diameter
+        clearance_mm = lug_step_dia - stud_hub_dia
+
+        # Minimum clearance: 0.001" = 0.0254mm (parts must have positive clearance)
+        if clearance_mm < 0.025:
+            result['notes'].append(f'❌ Hub too large: {stud_hub_dia:.1f}mm hub vs {lug_step_dia:.1f}mm recess (clearance: {clearance_mm:.2f}mm)')
+            return result
+
+        # Score based on tightness of fit (tighter = better)
+        # 0.025-0.5mm clearance = excellent fit (30 points)
+        # 0.5-2.0mm clearance = good fit (25 points)
+        # 2.0-5.0mm clearance = acceptable fit (20 points)
+        # >5.0mm clearance = loose fit (10 points)
+        if clearance_mm <= 0.5:
+            result['score'] += 30
+            result['notes'].append(f'✓ Hub fit: {stud_hub_dia:.1f}mm hub → {lug_step_dia:.1f}mm recess (clearance: {clearance_mm:.2f}mm - TIGHT FIT)')
+        elif clearance_mm <= 2.0:
+            result['score'] += 25
+            result['notes'].append(f'✓ Hub fit: {stud_hub_dia:.1f}mm hub → {lug_step_dia:.1f}mm recess (clearance: {clearance_mm:.2f}mm)')
+        elif clearance_mm <= 5.0:
+            result['score'] += 20
+            result['notes'].append(f'✓ Hub fit: {stud_hub_dia:.1f}mm hub → {lug_step_dia:.1f}mm recess (clearance: {clearance_mm:.2f}mm)')
+        else:
+            result['score'] += 10
+            result['notes'].append(f'⚠ Hub fit: {stud_hub_dia:.1f}mm hub → {lug_step_dia:.1f}mm recess (clearance: {clearance_mm:.2f}mm - LOOSE FIT)')
+
+        # Store clearance for sorting
+        result['clearance_mm'] = clearance_mm
+
+        # Rule 3: Hub height must fit inside step depth
+        depth_clearance = lug_step_depth - stud_hub_height
+
+        # Need at least 0.02" clearance
+        if depth_clearance < 0.02:
+            result['notes'].append(f'❌ Hub too tall: {stud_hub_height:.2f}" hub vs {lug_step_depth:.2f}" recess depth (clearance: {depth_clearance:.3f}")')
+            return result
+
+        # Good depth clearance
+        result['score'] += 20
+        result['notes'].append(f'✓ Hub depth: {stud_hub_height:.2f}" hub → {lug_step_depth:.2f}" recess (clearance: {depth_clearance:.3f}")')
+
+        # Rule 4: CB match is a bonus (not required)
+        stud_cb = stud.get('center_bore')
+        lug_cb = lug.get('center_bore')
+
+        if stud_cb and lug_cb:
+            cb_diff_mm = abs(stud_cb - lug_cb)
+            if cb_diff_mm < 1.0:
+                result['score'] += 10
+                result['notes'].append(f'CB match: {stud_cb:.1f}mm (bonus!)')
+            else:
+                result['notes'].append(f'CB different: STUD={stud_cb:.1f}mm, LUG={lug_cb:.1f}mm (OK - not required)')
+
+        # Compatible if we got here
+        result['compatible'] = True
+
+        return result
+
     def find_suffix_programs(self):
         """
         Find all programs that have temporary suffix placeholders like (1), (2), _1, _2.
@@ -5117,22 +5483,148 @@ class GCodeDatabaseGUI:
         default_config = {
             "last_folder": "",
             "material_list": ["6061-T6", "Steel", "Stainless", "Other"],
-            "spacer_types": ["standard", "hub_centric", "steel_ring", "2pc_part1", "2pc_part2"]
+            "spacer_types": ["standard", "hub_centric", "steel_ring", "2pc_part1", "2pc_part2"],
+            "theme": "dark"
         }
-        
+
         if os.path.exists(self.config_file):
             try:
                 with open(self.config_file, 'r') as f:
                     self.config = json.load(f)
+                # Ensure theme key exists
+                if "theme" not in self.config:
+                    self.config["theme"] = "dark"
             except:
                 self.config = default_config
         else:
             self.config = default_config
-            
+
+        # Apply saved theme
+        self.current_theme = self.config.get("theme", "dark")
+        self._apply_theme_colors()
+
     def save_config(self):
         """Save configuration to file"""
         with open(self.config_file, 'w') as f:
             json.dump(self.config, f, indent=2)
+
+    def _apply_theme_colors(self):
+        """Apply current theme colors to instance variables"""
+        theme = THEMES.get(self.current_theme, THEMES['dark'])
+        self.bg_color = theme['bg_color']
+        self.fg_color = theme['fg_color']
+        self.input_bg = theme['input_bg']
+        self.button_bg = theme['button_bg']
+        self.accent_color = theme['accent_color']
+        self.success_color = theme['success_color']
+        self.warning_color = theme['warning_color']
+        self.error_color = theme['error_color']
+        self.tree_bg = theme['tree_bg']
+        self.tree_fg = theme['tree_fg']
+        self.tree_selected = theme['tree_selected']
+        self.header_bg = theme['header_bg']
+
+    def toggle_theme(self):
+        """Toggle between dark and light themes"""
+        # Switch theme
+        self.current_theme = 'light' if self.current_theme == 'dark' else 'dark'
+        self._apply_theme_colors()
+
+        # Save preference
+        self.config['theme'] = self.current_theme
+        self.save_config()
+
+        # Update toggle button text
+        if hasattr(self, 'theme_toggle_btn'):
+            icon = "🌙" if self.current_theme == 'light' else "☀️"
+            self.theme_toggle_btn.config(text=icon)
+
+        # Apply theme to all widgets
+        self._apply_theme_to_widgets(self.root)
+
+        # Update ttk styles
+        self._update_ttk_styles()
+
+        # Refresh the treeview
+        if hasattr(self, 'tree'):
+            self.tree.tag_configure('oddrow', background=self.input_bg)
+            self.tree.tag_configure('evenrow', background=self.bg_color)
+
+        logger.info(f"Theme switched to: {self.current_theme}")
+
+    def _apply_theme_to_widgets(self, widget):
+        """Recursively apply theme to all widgets"""
+        try:
+            widget_type = widget.winfo_class()
+
+            # Configure based on widget type
+            if widget_type == 'Frame' or widget_type == 'Labelframe':
+                widget.configure(bg=self.bg_color)
+            elif widget_type == 'Label':
+                widget.configure(bg=self.bg_color, fg=self.fg_color)
+            elif widget_type == 'Button':
+                # Preserve special button colors (success, error, etc.)
+                current_bg = str(widget.cget('bg')).lower()
+                if current_bg not in ['#4caf50', '#d32f2f', '#ff9800', '#2e7d32', '#1976d2',
+                                      '#9c27b0', '#e91e63', '#673ab7', '#3f51b5', '#ff5722',
+                                      '#34a853', '#ff6f00']:
+                    widget.configure(bg=self.button_bg, fg=self.fg_color)
+            elif widget_type == 'Entry':
+                widget.configure(bg=self.input_bg, fg=self.fg_color, insertbackground=self.fg_color)
+            elif widget_type == 'Text':
+                widget.configure(bg=self.input_bg, fg=self.fg_color, insertbackground=self.fg_color)
+            elif widget_type == 'Listbox':
+                widget.configure(bg=self.input_bg, fg=self.fg_color)
+            elif widget_type == 'Canvas':
+                widget.configure(bg=self.bg_color)
+            elif widget_type == 'Checkbutton':
+                widget.configure(bg=self.bg_color, fg=self.fg_color,
+                               selectcolor=self.input_bg, activebackground=self.bg_color)
+            elif widget_type == 'Radiobutton':
+                widget.configure(bg=self.bg_color, fg=self.fg_color,
+                               selectcolor=self.input_bg, activebackground=self.bg_color)
+            elif widget_type == 'Toplevel':
+                widget.configure(bg=self.bg_color)
+        except tk.TclError:
+            pass  # Some widgets don't support all options
+
+        # Recursively apply to children
+        for child in widget.winfo_children():
+            self._apply_theme_to_widgets(child)
+
+    def _update_ttk_styles(self):
+        """Update ttk widget styles for current theme"""
+        style = ttk.Style()
+
+        # Treeview styling
+        style.configure('Treeview',
+                       background=self.tree_bg,
+                       foreground=self.tree_fg,
+                       fieldbackground=self.tree_bg,
+                       rowheight=25)
+        style.configure('Treeview.Heading',
+                       background=self.header_bg,
+                       foreground=self.fg_color,
+                       font=('Arial', 9, 'bold'))
+        style.map('Treeview',
+                 background=[('selected', self.tree_selected)],
+                 foreground=[('selected', '#ffffff')])
+
+        # Notebook styling
+        style.configure('TNotebook', background=self.bg_color)
+        style.configure('TNotebook.Tab', background=self.button_bg, foreground=self.fg_color)
+        style.map('TNotebook.Tab',
+                 background=[('selected', self.accent_color)],
+                 foreground=[('selected', '#ffffff')])
+
+        # Combobox styling
+        style.configure('TCombobox',
+                       fieldbackground=self.input_bg,
+                       background=self.button_bg,
+                       foreground=self.fg_color)
+
+        # Scrollbar styling
+        style.configure('TScrollbar', background=self.button_bg, troughcolor=self.bg_color)
 
     def backup_database(self) -> bool:
         """Create a backup of the database in a special backup folder
@@ -5222,6 +5714,13 @@ class GCodeDatabaseGUI:
 
         tk.Label(user_frame, text=f"[{self.current_user_role.upper()}]",
                 bg=self.bg_color, fg=role_color, font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=2)
+
+        # Theme toggle button - sun for dark mode (click to go light), moon for light mode (click to go dark)
+        theme_icon = "☀️" if self.current_theme == 'dark' else "🌙"
+        self.theme_toggle_btn = tk.Button(user_frame, text=theme_icon, command=self.toggle_theme,
+                                          bg=self.button_bg, fg=self.fg_color, font=("Arial", 12),
+                                          width=3, relief=tk.FLAT, cursor="hand2")
+        self.theme_toggle_btn.pack(side=tk.LEFT, padx=5)
 
         tk.Button(user_frame, text="Logout", command=self.logout_user,
                  bg=self.button_bg, fg=self.fg_color, font=("Arial", 8),
@@ -5919,7 +6418,18 @@ class GCodeDatabaseGUI:
             "Z-11",
             "Z-9",
             "G53",
-            "TOOL_HOME"
+            "TOOL_HOME",
+            # Haas lathe-specific validation errors
+            "G00 and G01",
+            "G01 without feedrate",
+            "G96",
+            "G50",
+            "M08",
+            "M09",
+            "M05",
+            "M30",
+            "decimal point",
+            "coolant"
         ]
         self.filter_error_text = ttk.Combobox(row2_6, values=common_errors, width=47)
         self.filter_error_text.pack(side=tk.LEFT, padx=2)
@@ -10004,9 +10514,10 @@ class GCodeDatabaseGUI:
         if external_only:
             view_mode = 'external'
 
-        # Clear existing
-        for item in self.tree.get_children():
-            self.tree.delete(item)
+        # Clear existing - PERFORMANCE: Use delete('') to clear all at once
+        children = self.tree.get_children()
+        if children:
+            self.tree.delete(*children)
 
         # Build query
         query = "SELECT * FROM programs WHERE 1=1"
@@ -10148,11 +10659,11 @@ class GCodeDatabaseGUI:
             query += " AND counter_bore_diameter <= ?"
             params.append(float(self.filter_step_d_max.get()))
 
-        # Error text filter (searches in validation_issues, bore_warnings, dimensional_issues, tool_home_issues)
+        # Error text filter (searches in validation_issues, validation_warnings, bore_warnings, dimensional_issues, tool_home_issues)
         if self.filter_error_text.get():
             error_search = f"%{self.filter_error_text.get()}%"
-            query += " AND (validation_issues LIKE ? OR bore_warnings LIKE ? OR dimensional_issues LIKE ? OR tool_home_issues LIKE ?)"
-            params.extend([error_search, error_search, error_search, error_search])
+            query += " AND (validation_issues LIKE ? OR validation_warnings LIKE ? OR bore_warnings LIKE ? OR dimensional_issues LIKE ? OR tool_home_issues LIKE ?)"
+            params.extend([error_search, error_search, error_search, error_search, error_search])
 
         # Missing file path filter
         if self.filter_missing_file_path.get():
@@ -10200,6 +10711,9 @@ class GCodeDatabaseGUI:
         # 11:paired_program, 12:material, 13:notes, 14:date_created, 15:last_modified, 16:file_path,
         # 17:detection_confidence, 18:detection_method, 19:validation_status, ...
 
+        # PERFORMANCE: Disable UI updates during bulk insert
+        self.tree.update_idletasks()
+
         # Build set of duplicate filenames (exact filenames that appear more than once)
         filename_counts = {}
         for row in results:
@@ -10234,6 +10748,10 @@ class GCodeDatabaseGUI:
             'PASS': 0,
             'REPEAT': 0
         }
+
+        # PERFORMANCE: Batch tree inserts to reduce UI redraws
+        # Collect all items first, then insert in batches
+        tree_items = []
 
         for row in results:
             program_number = row[0]
@@ -10298,11 +10816,11 @@ class GCodeDatabaseGUI:
                 tool_home = row[tool_home_status_idx]
 
             # Extract warning details based on status type
+            # PERFORMANCE FIX: json is already imported at top of file - removed redundant imports
             warning_details = "-"
             if validation_status == 'CRITICAL' and len(row) > 20 and row[20]:  # validation_issues
                 # Parse CRITICAL issues
                 try:
-                    import json
                     if isinstance(row[20], str):
                         issues = json.loads(row[20])
                     else:
@@ -10317,7 +10835,6 @@ class GCodeDatabaseGUI:
             elif validation_status == 'BORE_WARNING' and len(row) > 24 and row[24]:  # bore_warnings
                 # Parse BORE warnings
                 try:
-                    import json
                     if isinstance(row[24], str):
                         warns = json.loads(row[24])
                     else:
@@ -10332,7 +10849,6 @@ class GCodeDatabaseGUI:
             elif validation_status == 'DIMENSIONAL' and len(row) > 25 and row[25]:  # dimensional_issues
                 # Parse DIMENSIONAL issues
                 try:
-                    import json
                     if isinstance(row[25], str):
                         dim_issues = json.loads(row[25])
                     else:
@@ -10347,7 +10863,6 @@ class GCodeDatabaseGUI:
             elif validation_status == 'SAFETY_ERROR' and len(row) > 33 and row[33]:  # safety_blocks_issues
                 # Parse SAFETY_ERROR issues
                 try:
-                    import json
                     if isinstance(row[33], str):
                         issues = json.loads(row[33])
                     else:
@@ -10362,7 +10877,6 @@ class GCodeDatabaseGUI:
             elif validation_status in ('TOOL_ERROR', 'TOOL_WARNING') and len(row) > 31 and row[31]:  # tool_validation_issues
                 # Parse TOOL_ERROR and TOOL_WARNING issues
                 try:
-                    import json
                     if isinstance(row[31], str):
                         issues = json.loads(row[31])
                     else:
@@ -10378,7 +10892,6 @@ class GCodeDatabaseGUI:
                 # Parse TOOL_HOME issues (G53 Z position)
                 # Check both validation_status and tool_home since tool home status is stored separately
                 try:
-                    import json
                     if isinstance(row[tool_home_issues_idx], str):
                         issues = json.loads(row[tool_home_issues_idx])
                     else:
@@ -10393,7 +10906,6 @@ class GCodeDatabaseGUI:
             elif validation_status == 'WARNING' and len(row) > 21 and row[21]:  # validation_warnings
                 # Parse general WARNING
                 try:
-                    import json
                     if isinstance(row[21], str):
                         warns = json.loads(row[21])
                     else:
@@ -10440,10 +10952,17 @@ class GCodeDatabaseGUI:
             elif validation_status == 'ERROR':
                 tag = 'critical'
 
-            self.tree.insert("", "end", values=(
+            # PERFORMANCE: Collect items instead of inserting immediately
+            tree_items.append((
                 program_number, is_dup, title, spacer_type, lathe, od, thick, cb,
-                hub_h, hub_d, cb_bore, step_d, material, tool_home, validation_status, warning_details, filename
-            ), tags=(tag,))
+                hub_h, hub_d, cb_bore, step_d, material, tool_home, validation_status, warning_details, filename,
+                tag
+            ))
+
+        # PERFORMANCE: Batch insert all items at once - much faster than individual inserts
+        for item in tree_items:
+            *values, tag = item
+            self.tree.insert("", "end", values=values, tags=(tag,))
 
         # Update count with status breakdown and view mode indicator
         # Add view mode label
@@ -10490,6 +11009,30 @@ class GCodeDatabaseGUI:
 
     def clear_filters(self):
         """Clear all filter fields"""
+        # PERFORMANCE: Check if any filters are actually set before clearing
+        # This avoids unnecessary refresh if filters are already empty
+        has_filters = (
+            self.filter_title.get() or
+            self.filter_program.get() or
+            len(self.filter_type.get_selected()) < len(self.filter_type.values) or
+            len(self.filter_material.get_selected()) < len(self.filter_material.values) or
+            len(self.filter_status.get_selected()) < len(self.filter_status.values) or
+            len(self.filter_dup_type.get_selected()) < len(self.filter_dup_type.values) or
+            self.filter_od_min.get() or self.filter_od_max.get() or
+            self.filter_thickness_min.get() or self.filter_thickness_max.get() or
+            self.filter_cb_min.get() or self.filter_cb_max.get() or
+            self.filter_hub_dia_min.get() or self.filter_hub_dia_max.get() or
+            self.filter_hub_h_min.get() or self.filter_hub_h_max.get() or
+            self.filter_step_d_min.get() or self.filter_step_d_max.get() or
+            self.filter_error_text.get() or
+            self.filter_duplicates.get() or
+            self.filter_missing_file_path.get()
+        )
+
+        # Only clear and refresh if there are actually filters to clear
+        if not has_filters:
+            return
+
         self.filter_title.delete(0, tk.END)
         self.filter_program.delete(0, tk.END)
         self.filter_type.clear()
@@ -10684,7 +11227,7 @@ class GCodeDatabaseGUI:
             cursor.execute("""
                 UPDATE programs SET
                     title = ?, spacer_type = ?, outer_diameter = ?, thickness = ?, thickness_display = ?,
-                    center_bore = ?, hub_diameter = ?, hub_height = ?, step_depth = ?,
+                    center_bore = ?, hub_diameter = ?, hub_height = ?,
                     counter_bore_diameter = ?, counter_bore_depth = ?, material = ?,
                     lathe = ?, validation_status = ?, validation_issues = ?,
                     bore_warnings = ?, dimensional_issues = ?,
@@ -10695,7 +11238,7 @@ class GCodeDatabaseGUI:
                 parse_result.title, parse_result.spacer_type, parse_result.outer_diameter,
                 parse_result.thickness, parse_result.thickness_display,
                 parse_result.center_bore, parse_result.hub_diameter, parse_result.hub_height,
-                parse_result.step_depth, parse_result.counter_bore_diameter, parse_result.counter_bore_depth,
+                parse_result.counter_bore_diameter, parse_result.counter_bore_depth,
                 parse_result.material, parse_result.lathe, validation_status,
                 json.dumps(parse_result.validation_issues) if parse_result.validation_issues else None,
                 json.dumps(parse_result.bore_warnings) if parse_result.bore_warnings else None,
@@ -10716,6 +11259,246 @@ class GCodeDatabaseGUI:
         except Exception as e:
             conn.close()
             messagebox.showerror("Error", f"Failed to refresh file:\n{str(e)}")
+
+    def correct_tool_home_positions(self):
+        """Correct incorrect tool home Z-positions in files with warnings"""
+        # Permission check
+        if not self.require_permission('edit_files', 'correct tool home positions'):
+            return
+
+        # Get count of files with tool home warnings
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT COUNT(*)
+            FROM programs
+            WHERE tool_home_status IN ('WARNING', 'CRITICAL')
+            AND tool_home_issues IS NOT NULL
+            AND tool_home_issues != ''
+        """)
+        warning_count = cursor.fetchone()[0]
+
+        cursor.execute("""
+            SELECT COUNT(*)
+            FROM programs
+            WHERE tool_home_status = 'CRITICAL'
+        """)
+        critical_count = cursor.fetchone()[0]
+
+        if warning_count == 0:
+            conn.close()
+            messagebox.showinfo("No Issues", "No files found with tool home warnings or critical issues")
+            return
+
+        # Ask user to confirm
+        response = messagebox.askyesno(
+            "Correct Tool Home Positions",
+            f"This will correct tool home Z-positions in {warning_count} files:\n\n"
+            f"  • {critical_count} CRITICAL (Z-16 or beyond)\n"
+            f"  • {warning_count - critical_count} WARNING (incorrect Z for thickness)\n\n"
+            f"Files will be modified based on part thickness:\n"
+            f"  • ≤ 2.50\" thick → Z-13 or higher\n"
+            f"  • 2.75\" - 3.75\" thick → Z-11 or higher\n"
+            f"  • 4.00\" - 5.00\" thick → Z-9 or higher\n\n"
+            f"Original files will be backed up with .bak extension.\n\n"
+            f"Continue with correction?",
+            icon='warning'
+        )
+
+        if not response:
+            conn.close()
+            return
+
+        # Get all files with tool home issues
+        cursor.execute("""
+            SELECT program_number, file_path, thickness, tool_home_issues, tool_home_status
+            FROM programs
+            WHERE tool_home_status IN ('WARNING', 'CRITICAL')
+            AND tool_home_issues IS NOT NULL
+            AND tool_home_issues != ''
+            AND file_path IS NOT NULL
+            ORDER BY tool_home_status DESC, program_number
+        """)
+
+        files_to_fix = cursor.fetchall()
+        conn.close()
+
+        if not files_to_fix:
+            messagebox.showinfo("No Files", "No files found with valid file paths to correct")
+            return
+
+        # Create progress dialog
+        progress_win = tk.Toplevel(self.root)
+        progress_win.title("Correcting Tool Home Positions")
+        progress_win.geometry("600x400")
+        progress_win.configure(bg=self.bg_color)
+        progress_win.transient(self.root)
+        progress_win.grab_set()
+
+        tk.Label(progress_win, text="Correcting Tool Home Positions...",
+                bg=self.bg_color, fg=self.fg_color,
+                font=("Arial", 12, "bold")).pack(pady=10)
+
+        progress_text = scrolledtext.ScrolledText(progress_win,
+                                                  bg=self.input_bg,
+                                                  fg=self.fg_color,
+                                                  font=("Courier", 9),
+                                                  height=20, width=70)
+        progress_text.pack(pady=10, padx=10, fill=tk.BOTH, expand=True)
+
+        progress_win.update()
+
+        # Process each file
+        corrected_count = 0
+        skipped_count = 0
+        error_count = 0
+
+        for prog_num, file_path, thickness, issues_json, status in files_to_fix:
+            try:
+                if not os.path.exists(file_path):
+                    progress_text.insert(tk.END, f"SKIP {prog_num}: File not found\n")
+                    skipped_count += 1
+                    progress_text.see(tk.END)
+                    progress_win.update()
+                    continue
+
+                # Parse issues to determine expected Z
+                if thickness is None:
+                    progress_text.insert(tk.END, f"SKIP {prog_num}: No thickness data\n")
+                    skipped_count += 1
+                    progress_text.see(tk.END)
+                    progress_win.update()
+                    continue
+
+                # Determine expected Z based on thickness
+                if thickness <= 2.50:
+                    expected_z = -13
+                elif 2.75 <= thickness <= 3.75:
+                    expected_z = -11
+                elif 4.00 <= thickness <= 5.00:
+                    expected_z = -9
+                else:
+                    progress_text.insert(tk.END, f"SKIP {prog_num}: Thickness {thickness}\" outside defined ranges\n")
+                    skipped_count += 1
+                    progress_text.see(tk.END)
+                    progress_win.update()
+                    continue
+
+                # Read file content
+                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    content = f.read()
+
+                # Create backup
+                backup_path = file_path + '.bak'
+                shutil.copy2(file_path, backup_path)
+
+                # Find and replace G53 lines with incorrect Z
+                lines = content.split('\n')
+                modified = False
+                changes = []
+
+                g53_pattern = re.compile(r'(G53\s*X[\d.\-]*\s*Z)([\-\d.]+)', re.IGNORECASE)
+
+                for i, line in enumerate(lines):
+                    match = g53_pattern.search(line)
+                    if match:
+                        try:
+                            current_z = float(match.group(2))
+
+                            # Check if this Z needs correction
+                            needs_correction = False
+
+                            # Always fix Z-16 or beyond (CRITICAL)
+                            if current_z <= -16:
+                                needs_correction = True
+                            # Fix if Z is below expected minimum
+                            elif current_z < expected_z:
+                                needs_correction = True
+
+                            if needs_correction:
+                                # Replace with expected Z
+                                new_line = g53_pattern.sub(f'\\g<1>{int(expected_z)}', line)
+                                lines[i] = new_line
+                                modified = True
+                                changes.append(f"  Line {i+1}: Z{int(current_z)} → Z{int(expected_z)}")
+                        except ValueError:
+                            continue
+
+                if modified:
+                    # Write corrected content
+                    new_content = '\n'.join(lines)
+                    with open(file_path, 'w', encoding='utf-8') as f:
+                        f.write(new_content)
+
+                    progress_text.insert(tk.END, f"FIXED {prog_num} ({thickness:.2f}\" → Z{int(expected_z)}): {len(changes)} line(s)\n")
+                    for change in changes[:3]:  # Show first 3 changes
+                        progress_text.insert(tk.END, f"{change}\n")
+                    if len(changes) > 3:
+                        progress_text.insert(tk.END, f"  ... and {len(changes)-3} more\n")
+
+                    corrected_count += 1
+
+                    # Re-parse and update database
+                    try:
+                        parse_result = self.parse_gcode_file(file_path)
+
+                        validation_status = 'OK'
+                        if parse_result.tool_home_status == "CRITICAL":
+                            validation_status = "TOOL_HOME_CRITICAL"
+                        elif parse_result.bore_warnings:
+                            validation_status = "CB_OB_WARNING"
+                        elif parse_result.tool_home_status == "WARNING":
+                            validation_status = "TOOL_HOME_WARNING"
+                        elif parse_result.dimensional_issues:
+                            validation_status = "WARNING"
+
+                        conn = sqlite3.connect(self.db_path)
+                        cursor = conn.cursor()
+                        cursor.execute("""
+                            UPDATE programs SET
+                                validation_status = ?, tool_home_status = ?,
+                                tool_home_issues = ?, last_modified = ?
+                            WHERE program_number = ?
+                        """, (
+                            validation_status,
+                            parse_result.tool_home_status,
+                            json.dumps(parse_result.tool_home_issues) if parse_result.tool_home_issues else None,
+                            datetime.now().isoformat(),
+                            prog_num
+                        ))
+                        conn.commit()
+                        conn.close()
+                    except Exception as e:
+                        progress_text.insert(tk.END, f"  WARNING: Database update failed: {str(e)}\n")
+                else:
+                    progress_text.insert(tk.END, f"SKIP {prog_num}: No changes needed\n")
+                    skipped_count += 1
+
+            except Exception as e:
+                progress_text.insert(tk.END, f"ERROR {prog_num}: {str(e)}\n")
+                error_count += 1
+
+            progress_text.see(tk.END)
+            progress_win.update()
+
+        # Show summary
+        progress_text.insert(tk.END, f"\n{'='*60}\n")
+        progress_text.insert(tk.END, f"SUMMARY:\n")
+        progress_text.insert(tk.END, f"  Files corrected: {corrected_count}\n")
+        progress_text.insert(tk.END, f"  Files skipped: {skipped_count}\n")
+        progress_text.insert(tk.END, f"  Errors: {error_count}\n")
+        progress_text.insert(tk.END, f"  Total processed: {len(files_to_fix)}\n")
+        progress_text.insert(tk.END, f"\nBackup files created with .bak extension\n")
+        progress_text.see(tk.END)
+
+        # Add Close button
+        tk.Button(progress_win, text="Close",
+                 command=lambda: [progress_win.destroy(), self.refresh_results()],
+                 bg=self.button_bg, fg=self.fg_color,
+                 font=("Arial", 10), width=15).pack(pady=10)
+
+        progress_win.grab_release()
 
     def create_program_copy(self):
         """Create a copy of selected program with a new program number for editing"""
@@ -12265,6 +13048,213 @@ class GCodeDatabaseGUI:
         FileComparisonWindow(self.root, files_data, self.bg_color, self.fg_color,
                            self.input_bg, self.button_bg, self.refresh_results, self)
 
+    def compare_2pc_files(self, stud, lug, stud_path, lug_path):
+        """Compare 2PC STUD and LUG files with hub/counter bore highlighting"""
+        import difflib
+
+        # Read file contents
+        try:
+            with open(stud_path, 'r', encoding='utf-8', errors='ignore') as f:
+                stud_lines = f.readlines()
+        except:
+            messagebox.showerror("Error", f"Failed to read STUD file: {stud_path}")
+            return
+
+        try:
+            with open(lug_path, 'r', encoding='utf-8', errors='ignore') as f:
+                lug_lines = f.readlines()
+        except:
+            messagebox.showerror("Error", f"Failed to read LUG file: {lug_path}")
+            return
+
+        # Create comparison window
+        comp_win = tk.Toplevel(self.root)
+        comp_win.title(f"2PC Comparison: {stud['program_number']} (STUD) + {lug['program_number']} (LUG)")
+        comp_win.geometry("1600x900")
+        comp_win.configure(bg=self.bg_color)
+
+        # Header with key dimensions
+        header_frame = tk.Frame(comp_win, bg=self.bg_color)
+        header_frame.pack(fill=tk.X, padx=10, pady=10)
+
+        # Calculate clearance
+        clearance_mm = lug.get('counter_bore_diameter', 0) - stud.get('hub_diameter', 0)
+        clearance_color = "#4CAF50" if 0.025 <= clearance_mm <= 2.0 else "#FF9800"
+
+        tk.Label(header_frame,
+                text=f"STUD: {stud['program_number']}  |  Hub: {stud.get('hub_diameter', 'N/A'):.1f}mm × {stud.get('hub_height', 'N/A'):.2f}\"",
+                bg=self.bg_color, fg="#2196F3", font=("Arial", 11, "bold")).grid(row=0, column=0, padx=10, sticky='w')
+
+        tk.Label(header_frame,
+                text=f"Clearance: {clearance_mm:.2f}mm",
+                bg=self.bg_color, fg=clearance_color, font=("Arial", 11, "bold")).grid(row=0, column=1, padx=20)
+
+        tk.Label(header_frame,
+                text=f"LUG: {lug['program_number']}  |  Counter Bore: {lug.get('counter_bore_diameter', 'N/A'):.1f}mm × {lug.get('counter_bore_depth', 'N/A'):.2f}\"",
+                bg=self.bg_color, fg="#FF5722", font=("Arial", 11, "bold")).grid(row=0, column=2, padx=10, sticky='e')
+
+        # Main comparison frame
+        main_frame = tk.Frame(comp_win, bg=self.bg_color)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+
+        # Create two text widgets side by side
+        left_frame = tk.Frame(main_frame, bg=self.bg_color)
+        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
+
+        tk.Label(left_frame, text=f"STUD: {stud['program_number']}",
+                bg=self.bg_color, fg="#2196F3", font=("Courier", 10, "bold")).pack()
+
+        stud_text = tk.Text(left_frame, wrap=tk.NONE, bg=self.input_bg, fg=self.fg_color,
+                           font=("Courier", 9), height=40)
+        stud_scroll_y = tk.Scrollbar(left_frame, orient=tk.VERTICAL, command=stud_text.yview)
+        stud_scroll_x = tk.Scrollbar(left_frame, orient=tk.HORIZONTAL, command=stud_text.xview)
+        stud_text.configure(yscrollcommand=stud_scroll_y.set, xscrollcommand=stud_scroll_x.set)
+
+        stud_scroll_y.pack(side=tk.RIGHT, fill=tk.Y)
+        stud_scroll_x.pack(side=tk.BOTTOM, fill=tk.X)
+        stud_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        right_frame = tk.Frame(main_frame, bg=self.bg_color)
+        right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(5, 0))
+
+        tk.Label(right_frame, text=f"LUG: {lug['program_number']}",
+                bg=self.bg_color, fg="#FF5722", font=("Courier", 10, "bold")).pack()
+
+        lug_text = tk.Text(right_frame, wrap=tk.NONE, bg=self.input_bg, fg=self.fg_color,
+                          font=("Courier", 9), height=40)
+        lug_scroll_y = tk.Scrollbar(right_frame, orient=tk.VERTICAL, command=lug_text.yview)
+        lug_scroll_x = tk.Scrollbar(right_frame, orient=tk.HORIZONTAL, command=lug_text.xview)
+        lug_text.configure(yscrollcommand=lug_scroll_y.set, xscrollcommand=lug_scroll_x.set)
+
+        lug_scroll_y.pack(side=tk.RIGHT, fill=tk.Y)
+        lug_scroll_x.pack(side=tk.BOTTOM, fill=tk.X)
+        lug_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # Configure tags for highlighting
+        stud_text.tag_configure("hub_highlight", background="#1976D2", foreground="white")  # Blue - 2PC hub
+        stud_text.tag_configure("large_hub_highlight", background="#4CAF50", foreground="white")  # Green - 0.5" hub
+        stud_text.tag_configure("other_step_highlight", background="#FF9800", foreground="white")  # Orange - other steps
+        lug_text.tag_configure("cb_highlight", background="#D32F2F", foreground="white")  # Red - 2PC counter bore
+        lug_text.tag_configure("other_step_highlight", background="#FF9800", foreground="white")  # Orange - other steps
+
+        import re
+
+        # Track if we're in OP2 for STUD (to distinguish 0.5" hub from 0.25" hub)
+        in_op2_stud = False
+
+        # Insert STUD content and highlight dimensions
+        for i, line in enumerate(stud_lines, 1):
+            stud_text.insert(tk.END, line)
+
+            line_upper = line.upper()
+
+            # Track OP2 boundary
+            if any(marker in line_upper for marker in ['OP2', 'OP 2', 'FLIP PART', 'FLIP', 'SIDE 2']):
+                in_op2_stud = True
+
+            # Highlight T303 turning operations
+            if 'T303' in line_upper or 'TURN TOOL' in line_upper:
+                stud_text.tag_add("hub_highlight", f"{i}.0", f"{i}.end")
+            elif in_op2_stud and 'X' in line_upper and 'Z' in line_upper:
+                # Check X and Z values for hub detection
+                x_match = re.search(r'X\s*([\d.]+)', line, re.IGNORECASE)
+                z_match = re.search(r'Z\s*-?\s*([\d.]+)', line, re.IGNORECASE)
+
+                if x_match:
+                    x_val = float(x_match.group(1))
+
+                    # Check for 2PC mating hub (0.20-0.30" height)
+                    if stud.get('hub_diameter') and stud.get('hub_height'):
+                        hub_dia_inches = stud.get('hub_diameter') / 25.4
+                        hub_height = stud.get('hub_height')
+
+                        # 2PC mating hub (small hub ~0.25")
+                        if 0.20 <= hub_height <= 0.30:
+                            if abs(x_val - hub_dia_inches) < 0.1:
+                                stud_text.tag_add("hub_highlight", f"{i}.0", f"{i}.end")
+                        # Large hub for mounting (0.45-0.60")
+                        elif 0.45 <= hub_height <= 0.60:
+                            if abs(x_val - hub_dia_inches) < 0.1:
+                                stud_text.tag_add("large_hub_highlight", f"{i}.0", f"{i}.end")
+
+        # Track if we're in OP1 for LUG (to find counter bore and other steps)
+        in_op1_lug = True
+        in_bore_op1 = False
+
+        # Insert LUG content and highlight dimensions
+        for i, line in enumerate(lug_lines, 1):
+            lug_text.insert(tk.END, line)
+
+            line_upper = line.upper()
+
+            # Track OP2 boundary
+            if any(marker in line_upper for marker in ['OP2', 'OP 2', 'FLIP PART', 'FLIP', 'SIDE 2']):
+                in_op1_lug = False
+
+            # Track bore tool
+            if 'T121' in line_upper or 'BORE' in line_upper:
+                in_bore_op1 = True
+                lug_text.tag_add("cb_highlight", f"{i}.0", f"{i}.end")
+            elif 'T303' in line_upper or 'TURN' in line_upper:
+                in_bore_op1 = False
+
+            # Highlight counter bore and other steps in OP1
+            if in_op1_lug and in_bore_op1 and 'X' in line_upper:
+                x_match = re.search(r'X\s*([\d.]+)', line, re.IGNORECASE)
+                z_match = re.search(r'Z\s*-?\s*([\d.]+)', line, re.IGNORECASE)
+
+                if x_match:
+                    x_val = float(x_match.group(1))
+
+                    # Check if this is the 2PC counter bore step
+                    if lug.get('counter_bore_diameter') and lug.get('counter_bore_depth'):
+                        cb_dia_inches = lug.get('counter_bore_diameter') / 25.4
+                        cb_depth = lug.get('counter_bore_depth')
+
+                        # Main 2PC counter bore (0.25-0.40" deep)
+                        if 0.25 <= cb_depth <= 0.40:
+                            if abs(x_val - cb_dia_inches) < 0.1:
+                                lug_text.tag_add("cb_highlight", f"{i}.0", f"{i}.end")
+                        # Other steps (different depth or diameter)
+                        elif z_match:
+                            z_val = abs(float(z_match.group(1).replace(' ', '')))
+                            # Highlight if it's a step operation but not the main CB
+                            if 0.15 <= z_val <= 1.0 and abs(x_val - cb_dia_inches) > 0.1:
+                                lug_text.tag_add("other_step_highlight", f"{i}.0", f"{i}.end")
+
+        stud_text.configure(state=tk.DISABLED)
+        lug_text.configure(state=tk.DISABLED)
+
+        # Sync scrolling
+        def sync_scroll(*args):
+            stud_text.yview(*args)
+            lug_text.yview(*args)
+
+        stud_scroll_y.configure(command=sync_scroll)
+        lug_scroll_y.configure(command=sync_scroll)
+
+        # Bottom buttons and legend
+        bottom_frame = tk.Frame(comp_win, bg=self.bg_color)
+        bottom_frame.pack(fill=tk.X, padx=10, pady=10)
+
+        # Legend
+        legend_frame = tk.Frame(bottom_frame, bg=self.bg_color)
+        legend_frame.pack(side=tk.LEFT, padx=10)
+
+        tk.Label(legend_frame,
+                text="Color Legend:",
+                bg=self.bg_color, fg=self.fg_color, font=("Arial", 10, "bold")).pack(anchor='w')
+        tk.Label(legend_frame,
+                text="🔵 Blue = 2PC Mating Hub (~0.25\" STUD)  |  🔴 Red = 2PC Counter Bore (~0.30\" LUG)",
+                bg=self.bg_color, fg=self.fg_color, font=("Arial", 9)).pack(anchor='w')
+        tk.Label(legend_frame,
+                text="🟢 Green = Large Hub (~0.5\" for mounting)  |  🟠 Orange = Other Steps (non-2PC)",
+                bg=self.bg_color, fg=self.fg_color, font=("Arial", 9)).pack(anchor='w')
+
+        tk.Button(bottom_frame, text="Close", command=comp_win.destroy,
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 10),
+                 width=15).pack(side=tk.RIGHT, padx=5)
+
     def rename_duplicate_files(self):
         """Rename physical files with duplicate filenames and update database - FILTERED VIEW ONLY"""
         # Get currently displayed items (respects filters)
@@ -13285,6 +14275,22 @@ class GCodeDatabaseGUI:
                 menu.add_command(label="Edit Entry", command=self.edit_entry)
 
             menu.add_command(label="View Details", command=self.view_details)
+
+            # Compare Files - show if multiple files are selected
+            selected_count = len(self.tree.selection())
+            if selected_count >= 2:
+                menu.add_command(label=f"🔄 Compare {selected_count} Files", command=self.compare_files)
+
+            # Find Compatible 2PC Parts - show only for 2PC parts
+            selected = self.tree.selection()
+            if selected:
+                item = self.tree.item(selected[0])
+                values = item['values']
+                if values and len(values) > 3:
+                    spacer_type = str(values[3]) if len(values) > 3 else ''
+                    if '2PC' in spacer_type:
+                        menu.add_command(label="🔗 Find Compatible 2PC Parts", command=self.show_compatible_2pc_parts)
+
             menu.add_separator()
 
             # Create Copy option - available to operators and above
@@ -13547,6 +14553,350 @@ class GCodeDatabaseGUI:
         # Info label
         tk.Label(btn_frame,
                 text="Tip: Select 2 programs and click 'Compare Selected' to see detailed differences",
+                bg=self.bg_color, fg="#888888", font=("Arial", 9)).pack(side=tk.LEFT, padx=20)
+
+    def show_2pc_filter_dialog(self):
+        """Show filter dialog for 2PC part matching with thickness filters"""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("2PC Match Filters")
+        dialog.geometry("450x400")
+        dialog.configure(bg=self.bg_color)
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        # Center the dialog
+        dialog.update_idletasks()
+        x = (dialog.winfo_screenwidth() - 450) // 2
+        y = (dialog.winfo_screenheight() - 400) // 2
+        dialog.geometry(f"+{x}+{y}")
+
+        result = [None]
+
+        # Header
+        tk.Label(dialog, text="Filter 2PC Part Matches",
+                bg=self.bg_color, fg=self.fg_color,
+                font=("Arial", 14, "bold")).pack(pady=15)
+
+        tk.Label(dialog, text="Leave fields blank to search without limits",
+                bg=self.bg_color, fg="#888888",
+                font=("Arial", 9, "italic")).pack(pady=5)
+
+        # Filter frame
+        filter_frame = tk.Frame(dialog, bg=self.bg_color)
+        filter_frame.pack(pady=20, padx=30, fill=tk.BOTH, expand=True)
+
+        # STUD Thickness filters
+        stud_frame = tk.LabelFrame(filter_frame, text=" STUD Thickness (inches) ",
+                                   bg=self.bg_color, fg=self.fg_color,
+                                   font=("Arial", 10, "bold"))
+        stud_frame.pack(fill=tk.X, pady=10)
+
+        stud_inner = tk.Frame(stud_frame, bg=self.bg_color)
+        stud_inner.pack(pady=10, padx=10)
+
+        tk.Label(stud_inner, text="Min:", bg=self.bg_color, fg=self.fg_color,
+                font=("Arial", 10)).grid(row=0, column=0, padx=5, sticky='e')
+        stud_min_entry = tk.Entry(stud_inner, bg=self.input_bg, fg=self.fg_color,
+                                  font=("Arial", 10), width=15)
+        stud_min_entry.grid(row=0, column=1, padx=5)
+
+        tk.Label(stud_inner, text="Max:", bg=self.bg_color, fg=self.fg_color,
+                font=("Arial", 10)).grid(row=1, column=0, padx=5, pady=5, sticky='e')
+        stud_max_entry = tk.Entry(stud_inner, bg=self.input_bg, fg=self.fg_color,
+                                  font=("Arial", 10), width=15)
+        stud_max_entry.grid(row=1, column=1, padx=5, pady=5)
+
+        # LUG Thickness filters
+        lug_frame = tk.LabelFrame(filter_frame, text=" LUG Thickness (inches) ",
+                                  bg=self.bg_color, fg=self.fg_color,
+                                  font=("Arial", 10, "bold"))
+        lug_frame.pack(fill=tk.X, pady=10)
+
+        lug_inner = tk.Frame(lug_frame, bg=self.bg_color)
+        lug_inner.pack(pady=10, padx=10)
+
+        tk.Label(lug_inner, text="Min:", bg=self.bg_color, fg=self.fg_color,
+                font=("Arial", 10)).grid(row=0, column=0, padx=5, sticky='e')
+        lug_min_entry = tk.Entry(lug_inner, bg=self.input_bg, fg=self.fg_color,
+                                 font=("Arial", 10), width=15)
+        lug_min_entry.grid(row=0, column=1, padx=5)
+
+        tk.Label(lug_inner, text="Max:", bg=self.bg_color, fg=self.fg_color,
+                font=("Arial", 10)).grid(row=1, column=0, padx=5, pady=5, sticky='e')
+        lug_max_entry = tk.Entry(lug_inner, bg=self.input_bg, fg=self.fg_color,
+                                 font=("Arial", 10), width=15)
+        lug_max_entry.grid(row=1, column=1, padx=5, pady=5)
+
+        def apply_filters():
+            """Validate and apply filters"""
+            try:
+                # Parse thickness values (allow empty for no filter)
+                stud_min = float(stud_min_entry.get()) if stud_min_entry.get().strip() else None
+                stud_max = float(stud_max_entry.get()) if stud_max_entry.get().strip() else None
+                lug_min = float(lug_min_entry.get()) if lug_min_entry.get().strip() else None
+                lug_max = float(lug_max_entry.get()) if lug_max_entry.get().strip() else None
+
+                # Validate ranges
+                if stud_min is not None and stud_max is not None and stud_min > stud_max:
+                    messagebox.showerror("Invalid Range", "STUD Min thickness cannot be greater than Max")
+                    return
+                if lug_min is not None and lug_max is not None and lug_min > lug_max:
+                    messagebox.showerror("Invalid Range", "LUG Min thickness cannot be greater than Max")
+                    return
+
+                result[0] = {
+                    'stud_thickness_min': stud_min,
+                    'stud_thickness_max': stud_max,
+                    'lug_thickness_min': lug_min,
+                    'lug_thickness_max': lug_max
+                }
+                dialog.destroy()
+
+            except ValueError:
+                messagebox.showerror("Invalid Input", "Please enter valid numeric values for thickness")
+
+        # Buttons
+        btn_frame = tk.Frame(dialog, bg=self.bg_color)
+        btn_frame.pack(pady=20)
+
+        tk.Button(btn_frame, text="Search", command=apply_filters,
+                 bg="#4CAF50", fg="white", font=("Arial", 11, "bold"),
+                 width=12).pack(side=tk.LEFT, padx=5)
+
+        tk.Button(btn_frame, text="Cancel", command=dialog.destroy,
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 11),
+                 width=12).pack(side=tk.LEFT, padx=5)
+
+        # Example text
+        tk.Label(dialog, text='Example: Enter "0.5" and "1.0" to find parts between 0.5" and 1.0" thick',
+                bg=self.bg_color, fg="#666666",
+                font=("Arial", 8, "italic")).pack(pady=5)
+
+        dialog.wait_window()
+        return result[0]
+
+    def show_compatible_2pc_parts(self):
+        """Show compatible 2PC STUD/LUG pairings for the selected program with optional filters"""
+
+        # Get selected program
+        selected = self.tree.selection()
+        if not selected:
+            messagebox.showwarning("No Selection", "Please select a 2PC program first")
+            return
+
+        item = self.tree.item(selected[0])
+        values = item['values']
+        program_number = values[0] if values else None
+
+        if not program_number:
+            messagebox.showwarning("No Selection", "Could not find program number")
+            return
+
+        # Show filter dialog
+        filter_result = self.show_2pc_filter_dialog()
+        if filter_result is None:
+            return  # User cancelled
+
+        # Create progress dialog
+        progress_win = tk.Toplevel(self.root)
+        progress_win.title("Finding Compatible Parts...")
+        progress_win.geometry("400x150")
+        progress_win.configure(bg=self.bg_color)
+        progress_win.transient(self.root)
+        progress_win.grab_set()
+
+        tk.Label(progress_win, text="Searching for compatible 2PC parts...",
+                bg=self.bg_color, fg=self.fg_color, font=("Arial", 12)).pack(pady=20)
+        tk.Label(progress_win, text="Analyzing hub/step dimensions and OD matching",
+                bg=self.bg_color, fg="#888888", font=("Arial", 10)).pack(pady=10)
+
+        progress_win.update()
+
+        # Find compatible parts with thickness filters
+        try:
+            logger.info(f"[2PC MATCH] Searching for matches for {program_number}")
+            logger.info(f"[2PC MATCH] Filters: STUD thick={filter_result['stud_thickness_min']}-{filter_result['stud_thickness_max']}, LUG thick={filter_result['lug_thickness_min']}-{filter_result['lug_thickness_max']}")
+
+            matches = self.find_compatible_2pc_parts(
+                program_number=program_number,
+                stud_thickness_min=filter_result['stud_thickness_min'],
+                stud_thickness_max=filter_result['stud_thickness_max'],
+                lug_thickness_min=filter_result['lug_thickness_min'],
+                lug_thickness_max=filter_result['lug_thickness_max']
+            )
+
+            logger.info(f"[2PC MATCH] Found {len(matches)} matches")
+            if matches:
+                for i, match in enumerate(matches[:3]):
+                    logger.info(f"[2PC MATCH]   Match {i+1}: {match['stud']['program_number']} + {match['lug']['program_number']} (score={match['score']})")
+
+        except Exception as e:
+            logger.error(f"[2PC MATCH] Error: {e}", exc_info=True)
+            progress_win.destroy()
+            messagebox.showerror("Error", f"Failed to find compatible parts: {str(e)}")
+            return
+
+        progress_win.destroy()
+
+        if not matches:
+            messagebox.showinfo("No Matches",
+                "No compatible 2PC parts found.\n\n"
+                "Compatibility requires:\n"
+                "• Matching round size (OD) within ±1mm\n"
+                "• STUD hub fits inside LUG step (1-3mm clearance)\n"
+                "• STUD hub height fits inside LUG step depth")
+            return
+
+        # Create results window
+        match_win = tk.Toplevel(self.root)
+        match_win.title(f"Compatible 2PC Parts for {program_number}")
+        match_win.geometry("1400x700")
+        match_win.configure(bg=self.bg_color)
+
+        # Header
+        header_frame = tk.Frame(match_win, bg=self.bg_color)
+        header_frame.pack(fill=tk.X, padx=10, pady=10)
+
+        tk.Label(header_frame,
+                text=f"Found {len(matches)} compatible 2PC pairing(s) for {program_number}",
+                bg=self.bg_color, fg=self.fg_color, font=("Arial", 12, "bold")).pack(pady=5)
+
+        tk.Label(header_frame,
+                text="STUD and LUG parts that can be assembled together based on hub/step fit and round size",
+                bg=self.bg_color, fg="#888888", font=("Arial", 10)).pack()
+
+        # Show active filters
+        filter_text_parts = []
+        if filter_result['stud_thickness_min'] is not None or filter_result['stud_thickness_max'] is not None:
+            min_str = f"{filter_result['stud_thickness_min']:.2f}" if filter_result['stud_thickness_min'] else "any"
+            max_str = f"{filter_result['stud_thickness_max']:.2f}" if filter_result['stud_thickness_max'] else "any"
+            filter_text_parts.append(f"STUD: {min_str}\" - {max_str}\"")
+        if filter_result['lug_thickness_min'] is not None or filter_result['lug_thickness_max'] is not None:
+            min_str = f"{filter_result['lug_thickness_min']:.2f}" if filter_result['lug_thickness_min'] else "any"
+            max_str = f"{filter_result['lug_thickness_max']:.2f}" if filter_result['lug_thickness_max'] else "any"
+            filter_text_parts.append(f"LUG: {min_str}\" - {max_str}\"")
+
+        if filter_text_parts:
+            tk.Label(header_frame,
+                    text=f"Filters: {' | '.join(filter_text_parts)}",
+                    bg=self.bg_color, fg="#FF9800", font=("Arial", 9, "bold")).pack(pady=3)
+
+        # Create treeview
+        tree_frame = tk.Frame(match_win, bg=self.bg_color)
+        tree_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+
+        columns = ('score', 'stud_prog', 'stud_title', 'stud_od', 'stud_thick', 'hub_h', 'hub_d',
+                  'lug_prog', 'lug_title', 'lug_od', 'lug_thick', 'step_d', 'step_depth', 'notes')
+        tree = ttk.Treeview(tree_frame, columns=columns, show='headings', height=25)
+
+        tree.heading('score', text='Score')
+        tree.heading('stud_prog', text='STUD Prog#')
+        tree.heading('stud_title', text='STUD Title')
+        tree.heading('stud_od', text='STUD OD')
+        tree.heading('stud_thick', text='STUD Thick')
+        tree.heading('hub_h', text='Hub H')
+        tree.heading('hub_d', text='Hub D (mm)')
+        tree.heading('lug_prog', text='LUG Prog#')
+        tree.heading('lug_title', text='LUG Title')
+        tree.heading('lug_od', text='LUG OD')
+        tree.heading('lug_thick', text='LUG Thick')
+        tree.heading('step_d', text='Step D (mm)')
+        tree.heading('step_depth', text='Step Depth')
+        tree.heading('notes', text='Compatibility Notes')
+
+        tree.column('score', width=50)
+        tree.column('stud_prog', width=80)
+        tree.column('stud_title', width=150)
+        tree.column('stud_od', width=70)
+        tree.column('stud_thick', width=75)
+        tree.column('hub_h', width=60)
+        tree.column('hub_d', width=80)
+        tree.column('lug_prog', width=80)
+        tree.column('lug_title', width=150)
+        tree.column('lug_od', width=70)
+        tree.column('lug_thick', width=75)
+        tree.column('step_d', width=80)
+        tree.column('step_depth', width=80)
+        tree.column('notes', width=250)
+
+        # Scrollbars
+        vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
+        hsb = ttk.Scrollbar(tree_frame, orient="horizontal", command=tree.xview)
+        tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+
+        tree.grid(row=0, column=0, sticky='nsew')
+        vsb.grid(row=0, column=1, sticky='ns')
+        hsb.grid(row=1, column=0, sticky='ew')
+
+        tree_frame.grid_rowconfigure(0, weight=1)
+        tree_frame.grid_columnconfigure(0, weight=1)
+
+        # Populate tree with matches
+        # Store match data for each row so we can retrieve it on double-click
+        match_data = {}
+        for idx, match in enumerate(matches):
+            stud = match['stud']
+            lug = match['lug']
+            score = match['score']
+            notes = ' | '.join(match['notes'])
+
+            item_id = tree.insert('', 'end', values=(
+                score,
+                stud['program_number'],
+                stud['title'][:30] if stud['title'] else '',
+                f"{stud['outer_diameter']:.2f}\"" if stud['outer_diameter'] else '',
+                f"{stud['thickness']:.3f}\"" if stud['thickness'] else '',
+                f"{stud['hub_height']:.2f}\"" if stud['hub_height'] else '',
+                f"{stud['hub_diameter']:.1f}" if stud['hub_diameter'] else '',
+                lug['program_number'],
+                lug['title'][:30] if lug['title'] else '',
+                f"{lug['outer_diameter']:.2f}\"" if lug['outer_diameter'] else '',
+                f"{lug['thickness']:.3f}\"" if lug['thickness'] else '',
+                f"{lug['counter_bore_diameter']:.1f}" if lug['counter_bore_diameter'] else '',
+                f"{lug['counter_bore_depth']:.2f}\"" if lug['counter_bore_depth'] else '',
+                notes
+            ))
+            # Store the match data indexed by tree item ID
+            match_data[item_id] = match
+
+        # Add double-click handler to compare files with 2PC highlighting
+        def on_double_click(event):
+            selection = tree.selection()
+            if not selection:
+                return
+
+            item_id = selection[0]
+            match = match_data.get(item_id)
+            if not match:
+                return
+
+            stud = match['stud']
+            lug = match['lug']
+
+            # Get file paths
+            stud_path = stud.get('file_path')
+            lug_path = lug.get('file_path')
+
+            if not stud_path or not lug_path:
+                messagebox.showwarning("Missing Files", "File paths not available for comparison")
+                return
+
+            # Open comparison viewer with 2PC dimension highlighting
+            self.compare_2pc_files(stud, lug, stud_path, lug_path)
+
+        tree.bind('<Double-1>', on_double_click)
+
+        # Button frame
+        btn_frame = tk.Frame(match_win, bg=self.bg_color)
+        btn_frame.pack(fill=tk.X, padx=10, pady=10)
+
+        tk.Button(btn_frame, text="Close", command=match_win.destroy,
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 10),
+                 width=10).pack(side=tk.RIGHT, padx=5)
+
+        # Info label
+        tk.Label(btn_frame,
+                text="Higher scores indicate better fit. Hub and step dimensions must allow proper assembly.",
                 bg=self.bg_color, fg="#888888", font=("Arial", 9)).pack(side=tk.LEFT, padx=20)
 
     def show_resolve_suffixes(self):
