@@ -41,6 +41,7 @@ class FileScanner:
             'dimensions': {},
             'warnings': [],
             'errors': [],
+            'suggestions': [],  # Best practice suggestions (don't affect PASS status)
             'raw_data': None,
             'spacer_type': None,
             'title': None,
@@ -147,6 +148,18 @@ class FileScanner:
                             'severity': 'error',
                             'category': 'Critical',
                             'message': issue.strip(),
+                            'line_number': None
+                        })
+
+            # Best practice suggestions (don't affect PASS status)
+            if hasattr(parse_result, 'best_practice_suggestions') and parse_result.best_practice_suggestions:
+                for suggestion in parse_result.best_practice_suggestions:
+                    if suggestion.strip():
+                        results['suggestions'].append({
+                            'type': 'best_practice',
+                            'severity': 'suggestion',
+                            'category': 'Best Practice',
+                            'message': suggestion.strip(),
                             'line_number': None
                         })
 

@@ -4853,12 +4853,18 @@ class GCodeDatabaseGUI:
 
         warnings_count = len(scan_results.get('warnings', []))
         errors_count = len(scan_results.get('errors', []))
+        suggestions_count = len(scan_results.get('suggestions', []))
 
+        # Status based on errors and warnings only (suggestions don't affect status)
         status_color = "#4CAF50" if errors_count == 0 and warnings_count == 0 else \
                       "#FF9800" if errors_count == 0 else "#F44336"
-        status_text = "✓ No Issues" if errors_count == 0 and warnings_count == 0 else \
+        status_text = "✓ PASS" if errors_count == 0 and warnings_count == 0 else \
                      f"⚠ {warnings_count} Warning(s)" if errors_count == 0 else \
                      f"✗ {errors_count} Error(s), {warnings_count} Warning(s)"
+
+        # Add suggestion count to display (informational only)
+        if suggestions_count > 0:
+            status_text += f" | 💡 {suggestions_count} Suggestion(s)"
 
         tk.Label(summary_frame, text=status_text, bg=self.bg_color, fg=status_color,
                 font=("Arial", 10, "bold")).pack(pady=5)
@@ -4896,8 +4902,16 @@ class GCodeDatabaseGUI:
             for warning in scan_results['warnings']:
                 issues_text.insert(tk.END, f"⚠ [{warning['category']}] {warning['message']}\n\n")
 
-        if errors_count == 0 and warnings_count == 0:
+        # Add suggestions (best practices - don't affect PASS status)
+        if suggestions_count > 0:
+            issues_text.insert(tk.END, "=== SUGGESTIONS (Best Practices) ===\n", "suggestion")
+            for suggestion in scan_results['suggestions']:
+                issues_text.insert(tk.END, f"💡 [{suggestion['category']}] {suggestion['message']}\n\n")
+
+        if errors_count == 0 and warnings_count == 0 and suggestions_count == 0:
             issues_text.insert(tk.END, "No issues found. File looks good!\n")
+        elif errors_count == 0 and warnings_count == 0:
+            issues_text.insert(tk.END, "\n✓ File PASSES validation (suggestions are optional best practices)\n")
 
         issues_text.config(state=tk.DISABLED)
 

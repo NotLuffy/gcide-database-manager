@@ -66,6 +66,7 @@ class GCodeParseResult:
     bore_warnings: List[str]              # Bore dimension warnings (ORANGE)
     dimensional_issues: List[str]         # P-code/thickness mismatches (PURPLE)
     detection_notes: List[str]
+    best_practice_suggestions: List[str]  # Suggestions (not warnings - don't affect PASS status)
 
     # Tool Analysis
     tools_used: List[str]                 # List of tool numbers used (e.g., ["T101", "T121", "T202"])
@@ -224,6 +225,7 @@ class ImprovedGCodeParser:
                 bore_warnings=[],
                 dimensional_issues=[],
                 detection_notes=[],
+                best_practice_suggestions=[],
                 tools_used=[],
                 tool_sequence=[],
                 tool_home_positions=[],
@@ -3125,6 +3127,7 @@ class ImprovedGCodeParser:
 
         issues = []
         warnings = []
+        suggestions = []  # Best practice suggestions (don't affect PASS status)
 
         for line_num, line in enumerate(lines, 1):
             # Clean line - remove comments and whitespace
@@ -3200,10 +3203,11 @@ class ImprovedGCodeParser:
                 spindle_running = False
 
             # M30/M02: Program end
+            # Note: M30/M02 automatically turns off coolant, so M09 is optional (best practice)
             if 'M30' in clean_line or 'M02' in clean_line:
                 if coolant_on:
-                    warnings.append(
-                        f'Line {line_num}: Program end (M30/M02) with coolant still on (M08) - should M09 first'
+                    suggestions.append(
+                        f'Line {line_num}: Best practice - add M09 before M30/M02 (M30 turns off coolant automatically, but explicit M09 is clearer)'
                     )
 
             # === CHECK 5: Missing decimal points ===
@@ -3237,11 +3241,13 @@ class ImprovedGCodeParser:
                     f'Line {line_num}: Feed rate missing decimal point - "F{f_val}" (should be F0.{f_val}?) - "{line.strip()}"'
                 )
 
-        # Add issues and warnings to result
+        # Add issues, warnings, and suggestions to result
         if issues:
             result.validation_issues.extend(issues)
         if warnings:
             result.validation_warnings.extend(warnings)
+        if suggestions:
+            result.best_practice_suggestions.extend(suggestions)
 
     def _extract_tools(self, result: GCodeParseResult, lines: List[str]):
         """
