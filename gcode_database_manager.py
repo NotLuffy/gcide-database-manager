@@ -22304,6 +22304,12 @@ For more documentation, see project README files in the application directory.
                     not_found_list.append("(NULL program number)")
                     continue
 
+                # Skip if file_path is None/empty (file was deleted/archived/never imported)
+                if not old_path or old_path.strip() == '':
+                    # Don't count as "not found" - this was intentionally removed
+                    already_correct += 1  # Count as "already correct" (correctly removed)
+                    continue
+
                 # Build expected filename - handle various formats
                 base_num = prog_num.lower()
                 if not base_num.startswith('o'):
