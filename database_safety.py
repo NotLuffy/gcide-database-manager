@@ -121,18 +121,29 @@ class DatabaseSafetyChecker:
 
                 # If file was modified after our last access
                 if file_mtime > last_access_dt:
-                    result['conflict_detected'] = True
-
                     # Check if it was us or someone else
                     current_computer = os.environ.get('COMPUTERNAME', 'Unknown')
                     last_modifier = self.metadata.get('last_modified_by')
 
+                    # Calculate time since last access (in seconds)
+                    time_since_access = (file_mtime - last_access_dt).total_seconds()
+
+                    # If modified by another computer -> HIGH warning
                     if last_modifier and last_modifier != current_computer:
+                        result['conflict_detected'] = True
                         result['warning_level'] = 'high'
                         result['message'] = f'Database modified by {last_modifier}'
-                    else:
+                    # If modified by us but it's been a while (>30 seconds) -> MEDIUM warning
+                    elif time_since_access > 30:
+                        result['conflict_detected'] = True
                         result['warning_level'] = 'medium'
-                        result['message'] = 'Database modified externally'
+                        result['message'] = 'Database modified externally (long time since last access)'
+                    # If modified by us recently (<=30 seconds) -> NO warning (normal operation)
+                    else:
+                        # This is expected - we just wrote to the DB
+                        result['conflict_detected'] = False
+                        result['warning_level'] = 'none'
+                        result['message'] = None
 
         except Exception as e:
             result['warning_level'] = 'low'
