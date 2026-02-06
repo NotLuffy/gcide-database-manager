@@ -22141,16 +22141,103 @@ For more documentation, see project README files in the application directory.
         Use this when moving the database between computers where only the base path has changed.
         Much faster than repair_file_paths as it doesn't scan files or check duplicates.
         """
+        # Ask user: auto-find or select custom folder?
+        from tkinter import simpledialog
+
+        # Create custom dialog for path selection
+        path_dialog = tk.Toplevel(self.root)
+        path_dialog.title("Select Repository Location")
+        path_dialog.geometry("500x300")
+        path_dialog.configure(bg=self.bg_color)
+        path_dialog.transient(self.root)
+        path_dialog.grab_set()
+
+        selected_path = None
+        user_choice = None
+
+        def use_default():
+            nonlocal user_choice
+            user_choice = 'default'
+            path_dialog.destroy()
+
+        def select_custom():
+            nonlocal selected_path, user_choice
+            custom_path = filedialog.askdirectory(
+                title="Select Folder Containing G-Code Files",
+                initialdir=os.path.dirname(self.repository_path)
+            )
+            if custom_path:
+                selected_path = custom_path
+                user_choice = 'custom'
+                path_dialog.destroy()
+            # If cancelled, keep dialog open
+
+        def cancel():
+            nonlocal user_choice
+            user_choice = 'cancel'
+            path_dialog.destroy()
+
+        # Title
+        tk.Label(path_dialog, text="🔄 Rebase File Paths",
+                font=("Arial", 14, "bold"),
+                bg=self.bg_color, fg=self.fg_color).pack(pady=15)
+
+        # Info text
+        info_text = (
+            "Where are your G-code files located?\n\n"
+            f"Default Repository:\n{self.repository_path}\n\n"
+            "Choose an option:"
+        )
+        tk.Label(path_dialog, text=info_text,
+                font=("Arial", 10),
+                bg=self.bg_color, fg=self.fg_color,
+                justify=tk.LEFT).pack(pady=10, padx=20)
+
+        # Buttons frame
+        button_frame = tk.Frame(path_dialog, bg=self.bg_color)
+        button_frame.pack(pady=20)
+
+        tk.Button(button_frame, text="📁 Use Default Repository",
+                 command=use_default,
+                 bg="#4CAF50", fg=self.fg_color,
+                 font=("Arial", 10, "bold"),
+                 width=25, height=2).pack(pady=5)
+
+        tk.Button(button_frame, text="🔍 Select Custom Folder...",
+                 command=select_custom,
+                 bg="#2196F3", fg=self.fg_color,
+                 font=("Arial", 10, "bold"),
+                 width=25, height=2).pack(pady=5)
+
+        tk.Button(button_frame, text="Cancel",
+                 command=cancel,
+                 bg=self.button_bg, fg=self.fg_color,
+                 font=("Arial", 10),
+                 width=25).pack(pady=5)
+
+        # Wait for user choice
+        self.root.wait_window(path_dialog)
+
+        if user_choice == 'cancel' or user_choice is None:
+            return
+
+        # Set the search path based on choice
+        if user_choice == 'custom':
+            search_paths = [selected_path]
+            revised_path = selected_path  # Use same path for revised
+        else:
+            search_paths = [self.repository_path, self.revised_repository_path]
+            revised_path = self.revised_repository_path
+
         # Confirm with user
+        path_display = selected_path if user_choice == 'custom' else f"{self.repository_path}\n{self.revised_repository_path}"
         result = messagebox.askyesno(
-            "Quick Path Rebase",
-            "This will update ALL managed file paths to point to the current repository location:\n\n"
-            f"Repository: {self.repository_path}\n"
-            f"Revised: {self.revised_repository_path}\n\n"
-            "Use this after moving the database to a new computer.\n\n"
-            "This is much faster than 'Repair Paths' as it assumes:\n"
-            "• Files are named {program_number}.nc\n"
-            "• All files are in the repository folder\n"
+            "Quick Path Rebase - Confirm",
+            f"This will update ALL managed file paths to search in:\n\n"
+            f"{path_display}\n\n"
+            "This assumes:\n"
+            "• Files are named {{program_number}}.nc\n"
+            "• All files are in the selected folder(s)\n"
             "• No duplicate checking needed\n\n"
             "Continue?",
             icon='question'
@@ -22186,8 +22273,11 @@ For more documentation, see project README files in the application directory.
             output_text.insert(tk.END, "=" * 60 + "\n")
             output_text.insert(tk.END, "QUICK PATH REBASE\n")
             output_text.insert(tk.END, "=" * 60 + "\n\n")
-            output_text.insert(tk.END, f"Repository path: {self.repository_path}\n")
-            output_text.insert(tk.END, f"Revised path: {self.revised_repository_path}\n\n")
+            if user_choice == 'custom':
+                output_text.insert(tk.END, f"Custom search path: {selected_path}\n\n")
+            else:
+                output_text.insert(tk.END, f"Repository path: {self.repository_path}\n")
+                output_text.insert(tk.END, f"Revised path: {self.revised_repository_path}\n\n")
             progress_window.update()
 
             # Get all managed programs
@@ -22212,19 +22302,31 @@ For more documentation, see project README files in the application directory.
                 if not base_num.startswith('o'):
                     base_num = 'o' + base_num
 
-                # Try main repository first
+                # Try searching in the selected path(s)
                 filename = f"{base_num}.nc"
-                new_path = os.path.join(self.repository_path, filename)
+                new_path = None
 
-                # Check revised repository if not in main
-                if not os.path.exists(new_path):
-                    new_path = os.path.join(self.revised_repository_path, filename)
+                # Search in all specified paths
+                for search_path in search_paths:
+                    # Try with .nc extension first
+                    test_path = os.path.join(search_path, filename)
+                    if os.path.exists(test_path):
+                        new_path = test_path
+                        break
 
-                # Try without .nc extension (some files might not have it)
-                if not os.path.exists(new_path):
-                    new_path = os.path.join(self.repository_path, base_num)
+                    # Try without .nc extension
+                    test_path = os.path.join(search_path, base_num)
+                    if os.path.exists(test_path):
+                        new_path = test_path
+                        break
 
-                if os.path.exists(new_path):
+                # If still not found and using default paths, try revised repository
+                if not new_path and user_choice == 'default':
+                    test_path = os.path.join(revised_path, filename)
+                    if os.path.exists(test_path):
+                        new_path = test_path
+
+                if new_path and os.path.exists(new_path):
                     if old_path == new_path:
                         already_correct += 1
                     else:
