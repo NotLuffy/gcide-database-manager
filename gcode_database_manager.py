@@ -22295,11 +22295,13 @@ For more documentation, see project README files in the application directory.
             updated = 0
             not_found = 0
             already_correct = 0
+            not_found_list = []  # Track which programs weren't found
 
             for prog_num, old_path in programs:
                 # Skip if program number is None/NULL
                 if not prog_num:
                     not_found += 1
+                    not_found_list.append("(NULL program number)")
                     continue
 
                 # Build expected filename - handle various formats
@@ -22352,6 +22354,7 @@ For more documentation, see project README files in the application directory.
                         updated += 1
                 else:
                     not_found += 1
+                    not_found_list.append(f"{prog_num} (expected: {filename})")
 
                 # Progress update every 500 files
                 if (updated + not_found + already_correct) % 500 == 0:
@@ -22371,7 +22374,11 @@ For more documentation, see project README files in the application directory.
 
             if not_found > 0:
                 output_text.insert(tk.END, f"\n⚠️ {not_found} files were not found in the repository.\n")
-                output_text.insert(tk.END, "These may have different filenames or be missing.\n")
+                output_text.insert(tk.END, "These may have different filenames or be missing.\n\n")
+                output_text.insert(tk.END, "Files not found:\n")
+                for missing in not_found_list:
+                    output_text.insert(tk.END, f"  • {missing}\n")
+                output_text.insert(tk.END, "\n")
 
             output_text.see(tk.END)
 
