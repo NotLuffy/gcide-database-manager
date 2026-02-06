@@ -3213,23 +3213,23 @@ class ImprovedGCodeParser:
             # === CHECK 5: Missing decimal points ===
             # Check X and Z coordinates for missing decimals (e.g., "X3" should be "X3.0")
             # Only check on G00/G01 lines (movement commands)
+            # CRITICAL: Only flag single-digit values (X0-X9, Z0-Z9) without decimals
             if 'G00' in clean_line or 'G01' in clean_line or 'G0' in clean_line or 'G1' in clean_line:
-                # Check X coordinates
-                x_matches = re.findall(r'X(-?\d+)(?![.\d])', clean_line)
+                # Check X coordinates - only single digits (0-9) without decimal
+                # Matches: X1, X0, X5 but NOT X10, X100, X1.0
+                x_matches = re.findall(r'X(-?\d)(?![.\d])', clean_line)
                 for x_val in x_matches:
-                    # Ignore X0 (often written as X0. or X0)
-                    if x_val != '0':
-                        issues.append(
-                            f'Line {line_num}: X coordinate missing decimal point - "X{x_val}" should be "X{x_val}.0" - "{line.strip()}"'
-                        )
+                    issues.append(
+                        f'Line {line_num}: X coordinate missing decimal point - "X{x_val}" should be "X{x_val}.0" - "{line.strip()}"'
+                    )
 
-                # Check Z coordinates
-                z_matches = re.findall(r'Z(-?\d+)(?![.\d])', clean_line)
+                # Check Z coordinates - only single digits (0-9) without decimal
+                # Matches: Z1, Z0, Z5 but NOT Z10, Z100, Z1.0
+                z_matches = re.findall(r'Z(-?\d)(?![.\d])', clean_line)
                 for z_val in z_matches:
-                    if z_val != '0':
-                        issues.append(
-                            f'Line {line_num}: Z coordinate missing decimal point - "Z{z_val}" should be "Z{z_val}.0" - "{line.strip()}"'
-                        )
+                    issues.append(
+                        f'Line {line_num}: Z coordinate missing decimal point - "Z{z_val}" should be "Z{z_val}.0" - "{line.strip()}"'
+                    )
 
             # Check feedrates for missing decimals (less critical, but good practice)
             # F008 should be F0.008
