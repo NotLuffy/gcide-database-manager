@@ -469,6 +469,11 @@ class GCodeDatabaseGUI:
             self.root.after(500, self._run_startup_integrity_check_background)
             logger.info("Startup complete - integrity check running in background")
 
+            # Initialize database monitoring (Phase 1.2) if enabled and available
+            if WATCHDOG_AVAILABLE and self.config.get('db_monitor_enabled', False):
+                logger.info("Starting database file monitor...")
+                self._init_database_monitor()
+
         except Exception as e:
             logger.critical(f"STARTUP FAILED: {e}", exc_info=True)
             import traceback
@@ -478,6 +483,16 @@ class GCodeDatabaseGUI:
     def _on_closing(self):
         """Handle window close - ensure clean shutdown"""
         logger.info("Application closing...")
+
+        # Stop database monitoring if active (Phase 1.2)
+        if hasattr(self, 'db_observer') and self.db_observer:
+            try:
+                self.db_observer.stop()
+                self.db_observer.join(timeout=2)
+                logger.info("Database monitoring stopped")
+            except:
+                pass
+
         try:
             self.root.destroy()
         except:
@@ -499,6 +514,55 @@ class GCodeDatabaseGUI:
 
         thread = threading.Thread(target=run_check, daemon=True)
         thread.start()
+
+    def _init_database_monitor(self):
+        """Initialize database file monitoring system (Phase 1.2)"""
+        try:
+            from watchdog.observers import Observer
+
+            # Create watcher with callback
+            self.db_watcher = DatabaseWatcher(
+                db_path=self.db_path,
+                callback=self._on_database_modified_externally
+            )
+
+            # Set up observer
+            self.db_observer = Observer()
+            db_dir = os.path.dirname(self.db_path)
+            self.db_observer.schedule(self.db_watcher, db_dir, recursive=False)
+            self.db_observer.start()
+
+            logger.info("Database monitoring active")
+        except Exception as e:
+            logger.error(f"Failed to start database monitor: {e}")
+            self.db_observer = None
+
+    def _on_database_modified_externally(self):
+        """Called when database file is modified by external process (Phase 1.2)"""
+        logger.warning("Database modified externally - changes detected")
+
+        # Show notification to user (use root.after for thread safety)
+        self.root.after(0, self._show_database_change_notification)
+
+    def _show_database_change_notification(self):
+        """Show user notification about external database changes (Phase 1.2)"""
+        if not self.config.get('db_monitor_notify', True):
+            # Notifications disabled, just auto-refresh if enabled
+            if self.config.get('db_monitor_auto_refresh', True):
+                self.refresh_results()
+            return
+
+        response = messagebox.askyesno(
+            "Database Modified",
+            "The database has been modified by another process or computer.\n\n"
+            "Would you like to refresh the view to see the changes?\n\n"
+            "Note: Any unsaved filters will be reset.",
+            icon='warning'
+        )
+
+        if response:
+            self.refresh_results()
+            logger.info("Database refreshed after external modification")
 
     # ========================================================================
     # USER AUTHENTICATION & PERMISSIONS
@@ -2226,6 +2290,8 @@ class GCodeDatabaseGUI:
         if hasattr(self, 'safety_checker') and self.config.get('safety_checks_enabled', True):
             try:
                 self.safety_checker.record_write()
+                # Also update access time to prevent false positives from our own writes
+                self.safety_checker.record_access()
                 self.log_activity('database_write', details={'operation': operation_name})
             except Exception as e:
                 logger.warning(f"Failed to record database write: {e}")
@@ -4466,6 +4532,36 @@ class GCodeDatabaseGUI:
 
                     # Store scan results for later reference
                     result['scan_results'] = scan_results
+
+                    # Step 4.6: Auto-fix if enabled (Phase 1.4)
+                    if self.config.get('scan_auto_fix', False) and scan_results.get('warnings'):
+                        try:
+                            logger.info("Auto-fix enabled - attempting to fix issues...")
+
+                            # Read file content
+                            with open(source_path, 'r') as f:
+                                content = f.read()
+
+                            # Apply fixes
+                            fixed_content, fixes_applied = AutoFixer.apply_all_fixes(content, scan_results)
+
+                            if fixes_applied:
+                                # Save fixed version to temporary file
+                                temp_file = source_path + '.fixed.tmp'
+                                with open(temp_file, 'w') as f:
+                                    f.write(fixed_content)
+
+                                # Update source_path to use fixed version
+                                source_path = temp_file
+                                result['warnings'].append(f"Auto-fixed {len(fixes_applied)} issue(s): {', '.join(fixes_applied)}")
+                                logger.info(f"Applied {len(fixes_applied)} auto-fixes")
+
+                                # Re-parse fixed file
+                                parse_result = self.parser.parse_file(source_path)
+                        except Exception as e:
+                            logger.warning(f"Auto-fix failed: {e}")
+                            # Continue with original file
+
                 except Exception as e:
                     logger.warning(f"File scanning failed: {e}")
                     # Don't block import if scanning fails
@@ -4817,11 +4913,96 @@ class GCodeDatabaseGUI:
                  bg="#4CAF50", fg=self.fg_color, font=("Arial", 10),
                  width=15).pack(side=tk.RIGHT, padx=5)
 
+        # Show Auto-Fix button only if there are fixable issues
+        fixable_warnings = [w for w in scan_results.get('warnings', [])
+                           if w.get('type') in ['tool_home', 'validation']]
+        if fixable_warnings and self.config.get('auto_fix_tool_home', True):
+            tk.Button(button_frame, text="🔧 Auto-Fix & Import",
+                     command=lambda: self._auto_fix_and_import_from_scan(dialog, file_path, scan_results),
+                     bg="#E91E63", fg=self.fg_color, font=("Arial", 10, "bold"),
+                     width=18).pack(side=tk.RIGHT, padx=5)
+
     def _import_from_scan(self, dialog, file_path):
         """Import file from scan dialog"""
         dialog.destroy()
         # Trigger import workflow
         self.process_new_files_workflow()
+
+    def _auto_fix_and_import_from_scan(self, dialog, file_path, scan_results):
+        """Auto-fix issues in file and then import (Phase 1.4)"""
+        try:
+            # Check if file has fixable issues
+            fixable_warnings = [w for w in scan_results.get('warnings', [])
+                               if w.get('type') in ['tool_home', 'validation']]
+
+            if not fixable_warnings:
+                messagebox.showinfo("No Fixes Available",
+                                   "No auto-fixable issues found in this file.")
+                return
+
+            # Confirm with user
+            response = messagebox.askyesno(
+                "Auto-Fix Confirmation",
+                f"Found {len(fixable_warnings)} fixable issue(s):\n\n" +
+                "\n".join([f"• {w['message'][:60]}..." if len(w['message']) > 60
+                          else f"• {w['message']}" for w in fixable_warnings[:5]]) +
+                ("\n..." if len(fixable_warnings) > 5 else "") +
+                "\n\nApply fixes and import?",
+                icon='question'
+            )
+
+            if not response:
+                return
+
+            # Create backup if configured
+            if self.config.get('auto_fix_create_backup', True):
+                backup_path = self.create_auto_backup(f"auto_fix_before_import")
+                if backup_path:
+                    logger.info(f"Created backup before auto-fix: {backup_path}")
+
+            # Read file content
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+
+            # Apply fixes
+            fixed_content, fixes_applied = AutoFixer.apply_all_fixes(content, scan_results)
+
+            if fixes_applied:
+                # Write fixed content to temporary file
+                temp_file = file_path + '.autofixed.tmp'
+                with open(temp_file, 'w', encoding='utf-8') as f:
+                    f.write(fixed_content)
+
+                # Replace original with fixed version
+                import shutil
+                shutil.move(temp_file, file_path)
+
+                # Show success message
+                messagebox.showinfo(
+                    "Auto-Fix Applied",
+                    f"Successfully applied {len(fixes_applied)} fix(es):\n\n" +
+                    "\n".join([f"✓ {fix}" for fix in fixes_applied]) +
+                    "\n\nProceeding with import..."
+                )
+
+                # Log the fixes
+                self.log_activity('auto_fix', details={
+                    'file_path': file_path,
+                    'fixes': fixes_applied
+                })
+
+                # Close dialog and proceed with import
+                dialog.destroy()
+                self.process_new_files_workflow()
+            else:
+                messagebox.showwarning("No Fixes Applied",
+                                      "No fixes could be applied to this file.")
+
+        except Exception as e:
+            logger.error(f"Auto-fix failed: {e}")
+            messagebox.showerror("Auto-Fix Failed",
+                               f"Failed to apply automatic fixes:\n{str(e)}\n\n"
+                               f"You can still import the file without fixes.")
 
     def _update_internal_program_number(self, file_path, new_number):
         """
