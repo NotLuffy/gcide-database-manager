@@ -3211,25 +3211,39 @@ class ImprovedGCodeParser:
                     )
 
             # === CHECK 5: Missing decimal points ===
-            # Check X and Z coordinates for missing decimals (e.g., "X3" should be "X3.0")
+            # Check X and Z coordinates for missing decimals (e.g., "X3" should be "X3.0", "X10" should be "X10.0")
             # Only check on G00/G01 lines (movement commands)
-            # CRITICAL: Only flag single-digit values (X0-X9, Z0-Z9) without decimals
+            # SPECIAL CASE: X0 and Z0 are suggestions (common and unambiguous), others are critical errors
             if 'G00' in clean_line or 'G01' in clean_line or 'G0' in clean_line or 'G1' in clean_line:
-                # Check X coordinates - only single digits (0-9) without decimal
-                # Matches: X1, X0, X5 but NOT X10, X100, X1.0
-                x_matches = re.findall(r'X(-?\d)(?![.\d])', clean_line)
+                # Check X coordinates - any number of digits without decimal
+                # Matches: X0, X1, X10, X100 but NOT X1.0, X10.5
+                x_matches = re.findall(r'X(-?\d+)(?![.\d])', clean_line)
                 for x_val in x_matches:
-                    issues.append(
-                        f'Line {line_num}: X coordinate missing decimal point - "X{x_val}" should be "X{x_val}.0" - "{line.strip()}"'
-                    )
+                    # X0 is a suggestion (common practice, functionally identical)
+                    if x_val == '0' or x_val == '-0':
+                        suggestions.append(
+                            f'Line {line_num}: Best practice - add decimal to X0 (X0.0 is clearer, though functionally identical)'
+                        )
+                    else:
+                        # X1, X10, etc. are critical errors (ambiguous, could be typos)
+                        issues.append(
+                            f'Line {line_num}: X coordinate missing decimal point - "X{x_val}" should be "X{x_val}.0" - "{line.strip()}"'
+                        )
 
-                # Check Z coordinates - only single digits (0-9) without decimal
-                # Matches: Z1, Z0, Z5 but NOT Z10, Z100, Z1.0
-                z_matches = re.findall(r'Z(-?\d)(?![.\d])', clean_line)
+                # Check Z coordinates - any number of digits without decimal
+                # Matches: Z0, Z1, Z10, Z100 but NOT Z1.0, Z10.5
+                z_matches = re.findall(r'Z(-?\d+)(?![.\d])', clean_line)
                 for z_val in z_matches:
-                    issues.append(
-                        f'Line {line_num}: Z coordinate missing decimal point - "Z{z_val}" should be "Z{z_val}.0" - "{line.strip()}"'
-                    )
+                    # Z0 is a suggestion (common practice, functionally identical)
+                    if z_val == '0' or z_val == '-0':
+                        suggestions.append(
+                            f'Line {line_num}: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)'
+                        )
+                    else:
+                        # Z1, Z10, etc. are critical errors (ambiguous, could be typos)
+                        issues.append(
+                            f'Line {line_num}: Z coordinate missing decimal point - "Z{z_val}" should be "Z{z_val}.0" - "{line.strip()}"'
+                        )
 
             # Check feedrates for missing decimals (less critical, but good practice)
             # F008 should be F0.008
