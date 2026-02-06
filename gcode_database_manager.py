@@ -22297,6 +22297,11 @@ For more documentation, see project README files in the application directory.
             already_correct = 0
 
             for prog_num, old_path in programs:
+                # Skip if program number is None/NULL
+                if not prog_num:
+                    not_found += 1
+                    continue
+
                 # Build expected filename - handle various formats
                 base_num = prog_num.lower()
                 if not base_num.startswith('o'):
