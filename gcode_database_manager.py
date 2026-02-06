@@ -19,6 +19,21 @@ import queue
 # Import the improved parser
 from improved_gcode_parser import ImprovedGCodeParser, GCodeParseResult
 
+# Import Phase 1 modules
+from gcode_file_scanner import FileScanner
+from gcode_auto_fixer import AutoFixer
+from database_safety import DatabaseSafetyChecker
+try:
+    from database_watcher import DatabaseWatcher, WATCHDOG_AVAILABLE
+except ImportError:
+    WATCHDOG_AVAILABLE = False
+    DatabaseWatcher = None
+
+# Import enhanced modules (commented out - modules not yet implemented)
+# from modules.fuzzy_search import FuzzySearchManager
+# from modules.clipboard_manager import ClipboardManager
+# from modules.progress_tracker import GUIProgressTracker, NestedProgressTracker
+
 
 # ============================================================================
 # USER PERMISSIONS SYSTEM
@@ -400,6 +415,19 @@ class GCodeDatabaseGUI:
             # Initialize improved parser
             logger.debug("Initializing G-code parser...")
             self.parser = ImprovedGCodeParser()
+
+            # Initialize Phase 1 modules
+            logger.debug("Initializing Phase 1 safety features...")
+            self.file_scanner = FileScanner()
+            self.safety_checker = DatabaseSafetyChecker(self.db_path)
+            self.safety_checker.record_access()
+            logger.debug("Phase 1 modules initialized")
+
+            # Initialize enhanced modules (commented out - modules not yet implemented)
+            # logger.debug("Initializing enhanced modules...")
+            # self.fuzzy_search = FuzzySearchManager(threshold=70)
+            # self.clipboard = ClipboardManager()
+            # logger.debug("Enhanced modules initialized")
 
             # Configure ttk theme
             style = ttk.Style()
@@ -2139,6 +2167,69 @@ class GCodeDatabaseGUI:
         except Exception as e:
             logger.warning(f"Error logging activity: {e}")
 
+    def _check_database_safety_before_write(self, operation_name="operation"):
+        """
+        Check database safety before performing write operation (Phase 1 Safety Checker)
+
+        Returns:
+            tuple: (safe_to_proceed: bool, warning_level: str, message: str)
+        """
+        if not hasattr(self, 'safety_checker'):
+            return (True, 'none', '')
+
+        if not self.config.get('safety_checks_enabled', True):
+            return (True, 'none', '')
+
+        try:
+            # Check for conflicts
+            conflict_check = self.safety_checker.check_for_conflicts()
+            level = conflict_check['warning_level']
+
+            if level in ['none', 'low']:
+                return (True, level, conflict_check.get('message', ''))
+
+            elif level == 'medium':
+                # Show warning, allow user to proceed or cancel
+                response = messagebox.askyesno(
+                    "Database Safety Warning",
+                    f"{conflict_check.get('message', 'Database may have been modified')}\n\n"
+                    f"A backup will be created automatically.\n\n"
+                    f"Do you want to proceed with this operation?",
+                    icon='warning'
+                )
+                return (response, level, conflict_check.get('message', ''))
+
+            elif level == 'high':
+                # Strong warning with explicit confirmation
+                response = messagebox.askyesno(
+                    "⚠️ HIGH RISK: Database Conflict Detected",
+                    f"{conflict_check.get('message', 'Database conflict detected!')}\n\n"
+                    f"⚠️ WARNING: This operation may cause data loss!\n\n"
+                    f"Recommendations:\n"
+                    f"1. Create a manual backup first\n"
+                    f"2. Coordinate with other users\n"
+                    f"3. Consider canceling and investigating\n\n"
+                    f"Continue anyway? (NOT RECOMMENDED)",
+                    icon='error'
+                )
+                return (response, level, conflict_check.get('message', ''))
+
+            return (False, 'critical', 'Unknown error')
+
+        except Exception as e:
+            logger.error(f"Safety check failed: {e}")
+            # On error, allow operation to proceed (fail-safe)
+            return (True, 'none', '')
+
+    def _record_database_write(self, operation_name):
+        """Record successful database write (Phase 1 Safety Checker)"""
+        if hasattr(self, 'safety_checker') and self.config.get('safety_checks_enabled', True):
+            try:
+                self.safety_checker.record_write()
+                self.log_activity('database_write', details={'operation': operation_name})
+            except Exception as e:
+                logger.warning(f"Failed to record database write: {e}")
+
     def create_version(self, program_number, change_summary=None):
         """Create a new version of a program"""
         try:
@@ -2513,8 +2604,13 @@ class GCodeDatabaseGUI:
             logger.error(f"Error updating round size: {e}", exc_info=True)
             return False
 
-    def batch_detect_round_sizes(self, program_numbers=None):
-        """Detect and update round sizes for multiple programs"""
+    def batch_detect_round_sizes(self, program_numbers=None, show_progress=True):
+        """Detect and update round sizes for multiple programs
+
+        Args:
+            program_numbers: Optional list of specific program numbers to process
+            show_progress: If True, show GUI progress tracker
+        """
         try:
             conn = sqlite3.connect(self.db_path, timeout=30.0)
             cursor = conn.cursor()
@@ -2537,19 +2633,44 @@ class GCodeDatabaseGUI:
                 'manual_needed': 0
             }
 
-            for program_number, title in programs:
-                round_size, confidence, source = self.detect_round_size(program_number, title)
+            # Show progress tracker if requested (disabled - module not yet implemented)
+            progress = None
+            # if show_progress and len(programs) > 10:
+            #     from modules.progress_tracker import GUIProgressTracker
+            #     progress = GUIProgressTracker(self.root, "Detecting Round Sizes")
+            #     progress.configure(total=len(programs))
 
-                if round_size:
-                    if self.update_round_size_for_program(program_number, round_size,
-                                                         confidence, source):
-                        results['detected'] += 1
+            try:
+                for program_number, title in programs:
+                    # Check if cancelled
+                    if progress and progress.is_cancelled():
+                        break
+
+                    round_size, confidence, source = self.detect_round_size(program_number, title)
+
+                    if round_size:
+                        if self.update_round_size_for_program(program_number, round_size,
+                                                             confidence, source):
+                            results['detected'] += 1
+                        else:
+                            results['failed'] += 1
                     else:
-                        results['failed'] += 1
-                else:
-                    results['manual_needed'] += 1
+                        results['manual_needed'] += 1
 
-                results['processed'] += 1
+                    results['processed'] += 1
+
+                    # Update progress
+                    if progress:
+                        progress.update(1,
+                                      status=f"Processing {program_number}...",
+                                      stats={
+                                          'Detected': results['detected'],
+                                          'Manual': results['manual_needed'],
+                                          'Failed': results['failed']
+                                      })
+            finally:
+                if progress:
+                    progress.close()
 
             return results
         except sqlite3.Error as e:
@@ -4325,6 +4446,30 @@ class GCodeDatabaseGUI:
                 result['errors'].append(f"Parse error: {e}")
                 return result
 
+            # Step 4.5: Optional file scanning (Phase 1 feature)
+            if self.config.get('scan_on_import', True):
+                try:
+                    scan_results = self.file_scanner.scan_file_for_issues(source_path)
+
+                    # Add scan warnings to result object
+                    if scan_results.get('warnings'):
+                        for warning in scan_results['warnings']:
+                            result['warnings'].append(f"[{warning['category']}] {warning['message']}")
+
+                    # Critical errors might block import (if strict mode enabled)
+                    if self.config.get('scan_strict_mode', False) and scan_results.get('errors'):
+                        for error in scan_results['errors']:
+                            result['errors'].append(f"[CRITICAL] {error['message']}")
+                        # If we have critical errors in strict mode, stop here
+                        if result['errors']:
+                            return result
+
+                    # Store scan results for later reference
+                    result['scan_results'] = scan_results
+                except Exception as e:
+                    logger.warning(f"File scanning failed: {e}")
+                    # Don't block import if scanning fails
+
             # Step 5: Determine program number
             internal_number = self.extract_internal_program_number(source_path)
             filename_base = os.path.splitext(os.path.basename(source_path))[0].lower()
@@ -4450,6 +4595,13 @@ class GCodeDatabaseGUI:
             else:
                 result['file_path'] = source_path
 
+            # Step 6.5: Safety check before database write (Phase 1)
+            safe, level, msg = self._check_database_safety_before_write("import_file")
+            if not safe:
+                result['errors'].append(f"Operation cancelled by safety check: {msg}")
+                logger.info(f"Import cancelled by safety check: {msg}")
+                return result
+
             # Step 7: Update database
             logger.debug(f"Step 7: Updating database for {program_number}, file_path={result.get('file_path')}")
             conn = sqlite3.connect(self.db_path, timeout=30.0)
@@ -4539,6 +4691,9 @@ class GCodeDatabaseGUI:
             conn.commit()
             conn.close()
 
+            # Record successful database write (Phase 1)
+            self._record_database_write("import_file")
+
             # Step 8: Sync registry
             if result['original_number'] and result['new_number']:
                 self.sync_registry_for_operation('RENAME', result['original_number'], result['new_number'], result['file_path'])
@@ -4555,6 +4710,118 @@ class GCodeDatabaseGUI:
             import traceback
             traceback.print_exc()
             return result
+
+    def scan_file_before_import(self):
+        """Scan a G-code file and show results without importing (Phase 1 feature)"""
+        if not self.has_permission('add_files'):
+            messagebox.showerror("Permission Denied", "You don't have permission to scan files.")
+            return
+
+        file_path = filedialog.askopenfilename(
+            title="Select G-Code File to Scan",
+            filetypes=[("G-Code Files", "*.nc *.NC"), ("All Files", "*.*")],
+            initialdir=self.config.get('last_folder', '')
+        )
+
+        if not file_path:
+            return
+
+        try:
+            # Perform scan
+            scan_results = self.file_scanner.scan_file_for_issues(file_path)
+
+            # Show results dialog
+            self.show_scan_results_dialog(scan_results, file_path)
+
+        except Exception as e:
+            messagebox.showerror("Scan Error", f"Failed to scan file:\n{str(e)}")
+
+    def show_scan_results_dialog(self, scan_results, file_path):
+        """Show scan results in a dialog (Phase 1 feature)"""
+        dialog = tk.Toplevel(self.root)
+        dialog.title(f"Scan Results - {os.path.basename(file_path)}")
+        dialog.geometry("700x600")
+        dialog.configure(bg=self.bg_color)
+
+        # Header
+        header = tk.Frame(dialog, bg=self.bg_color)
+        header.pack(fill=tk.X, padx=10, pady=10)
+
+        file_label = tk.Label(header, text=f"File: {os.path.basename(file_path)}",
+                             bg=self.bg_color, fg=self.fg_color, font=("Arial", 11, "bold"))
+        file_label.pack(anchor='w')
+
+        # Summary
+        summary_frame = tk.Frame(dialog, bg=self.bg_color, relief=tk.RIDGE, borderwidth=2)
+        summary_frame.pack(fill=tk.X, padx=10, pady=5)
+
+        warnings_count = len(scan_results.get('warnings', []))
+        errors_count = len(scan_results.get('errors', []))
+
+        status_color = "#4CAF50" if errors_count == 0 and warnings_count == 0 else \
+                      "#FF9800" if errors_count == 0 else "#F44336"
+        status_text = "✓ No Issues" if errors_count == 0 and warnings_count == 0 else \
+                     f"⚠ {warnings_count} Warning(s)" if errors_count == 0 else \
+                     f"✗ {errors_count} Error(s), {warnings_count} Warning(s)"
+
+        tk.Label(summary_frame, text=status_text, bg=self.bg_color, fg=status_color,
+                font=("Arial", 10, "bold")).pack(pady=5)
+
+        # Program info
+        if scan_results.get('program_number'):
+            tk.Label(summary_frame, text=f"Program: {scan_results['program_number']}",
+                    bg=self.bg_color, fg=self.fg_color).pack()
+        if scan_results.get('round_size'):
+            tk.Label(summary_frame, text=f"Round Size: {scan_results['round_size']}",
+                    bg=self.bg_color, fg=self.fg_color).pack()
+
+        # Issues list
+        issues_frame = tk.Frame(dialog, bg=self.bg_color)
+        issues_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+
+        tk.Label(issues_frame, text="Issues Found:", bg=self.bg_color, fg=self.fg_color,
+                font=("Arial", 10, "bold")).pack(anchor='w')
+
+        # Scrolled text for issues
+        issues_text = scrolledtext.ScrolledText(issues_frame, height=20, width=80,
+                                                bg=self.input_bg, fg=self.fg_color,
+                                                font=("Consolas", 9))
+        issues_text.pack(fill=tk.BOTH, expand=True)
+
+        # Add errors
+        if errors_count > 0:
+            issues_text.insert(tk.END, "=== ERRORS ===\n", "error")
+            for error in scan_results['errors']:
+                issues_text.insert(tk.END, f"✗ [{error['category']}] {error['message']}\n\n")
+
+        # Add warnings
+        if warnings_count > 0:
+            issues_text.insert(tk.END, "=== WARNINGS ===\n", "warning")
+            for warning in scan_results['warnings']:
+                issues_text.insert(tk.END, f"⚠ [{warning['category']}] {warning['message']}\n\n")
+
+        if errors_count == 0 and warnings_count == 0:
+            issues_text.insert(tk.END, "No issues found. File looks good!\n")
+
+        issues_text.config(state=tk.DISABLED)
+
+        # Buttons
+        button_frame = tk.Frame(dialog, bg=self.bg_color)
+        button_frame.pack(fill=tk.X, padx=10, pady=10)
+
+        tk.Button(button_frame, text="Close", command=dialog.destroy,
+                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 10),
+                 width=15).pack(side=tk.RIGHT, padx=5)
+
+        tk.Button(button_frame, text="Import File", command=lambda: self._import_from_scan(dialog, file_path),
+                 bg="#4CAF50", fg=self.fg_color, font=("Arial", 10),
+                 width=15).pack(side=tk.RIGHT, padx=5)
+
+    def _import_from_scan(self, dialog, file_path):
+        """Import file from scan dialog"""
+        dialog.destroy()
+        # Trigger import workflow
+        self.process_new_files_workflow()
 
     def _update_internal_program_number(self, file_path, new_number):
         """
@@ -5484,7 +5751,29 @@ class GCodeDatabaseGUI:
             "last_folder": "",
             "material_list": ["6061-T6", "Steel", "Stainless", "Other"],
             "spacer_types": ["standard", "hub_centric", "steel_ring", "2pc_part1", "2pc_part2"],
-            "theme": "dark"
+            "theme": "dark",
+
+            # Phase 1: File Scanner settings
+            "scan_on_import": True,
+            "scan_strict_mode": False,
+            "scan_show_dialog": True,
+            "scan_auto_fix": False,
+
+            # Phase 1: Database Monitor settings
+            "db_monitor_enabled": False,
+            "db_monitor_auto_refresh": True,
+            "db_monitor_notify": True,
+
+            # Phase 1: Safety Checker settings
+            "safety_checks_enabled": True,
+            "safety_auto_backup": True,
+            "safety_strict_mode": False,
+            "safety_conflict_threshold": 300,
+
+            # Phase 1: Auto-Fixer settings
+            "auto_fix_tool_home": True,
+            "auto_fix_coolant": True,
+            "auto_fix_create_backup": True
         }
 
         if os.path.exists(self.config_file):
@@ -6087,6 +6376,11 @@ class GCodeDatabaseGUI:
                      bg="#4CAF50", fg=self.fg_color, font=("Arial", 9, "bold"),
                      width=14, height=2).pack(side=tk.LEFT, padx=3)
 
+            # Scan File - Phase 1 feature
+            tk.Button(files_group, text="🔍 Scan File", command=self.scan_file_before_import,
+                     bg="#9C27B0", fg=self.fg_color, font=("Arial", 9, "bold"),
+                     width=14, height=2).pack(side=tk.LEFT, padx=3)
+
         tk.Button(files_group, text="📁 Scan Folder", command=self.scan_folder,
                  bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
                  width=14, height=2).pack(side=tk.LEFT, padx=3)
@@ -6228,6 +6522,10 @@ class GCodeDatabaseGUI:
                      bg="#3F51B5", fg=self.fg_color, font=("Arial", 9, "bold"),
                      width=14, height=2).pack(side=tk.LEFT, padx=3)
 
+            tk.Button(workflow_group, text="🔧 Fix Tool Homes", command=self.correct_tool_home_positions,
+                     bg="#FF5722", fg=self.fg_color, font=("Arial", 9, "bold"),
+                     width=14, height=2).pack(side=tk.LEFT, padx=3)
+
         # Tab 6: Maintenance - only for admins
         if self.has_permission('clear_database'):
             tab_maint = tk.Frame(ribbon, bg=self.bg_color)
@@ -6286,6 +6584,15 @@ class GCodeDatabaseGUI:
                                    bg=self.button_bg, fg=self.fg_color,
                                    font=("Arial", 9, "bold"), width=3)
         btn_clear_title.pack(side=tk.LEFT, padx=2)
+
+        # Fuzzy search checkbox
+        self.fuzzy_search_enabled = tk.BooleanVar(value=False)
+        fuzzy_cb = tk.Checkbutton(row0, text="Fuzzy", variable=self.fuzzy_search_enabled,
+                                 command=self.refresh_results,
+                                 bg=self.bg_color, fg=self.fg_color,
+                                 selectcolor=self.input_bg, activebackground=self.bg_color,
+                                 font=("Arial", 9))
+        fuzzy_cb.pack(side=tk.LEFT, padx=5)
 
         tk.Label(row0, text="(Use + for multi-term search, e.g., \"lug + 1.25 + 74\". Press Enter to search)",
                 bg=self.bg_color, fg="#888888", font=("Arial", 8, "italic")).pack(side=tk.LEFT, padx=5)
@@ -10537,23 +10844,31 @@ class GCodeDatabaseGUI:
             query += " AND (is_managed = 0 OR is_managed IS NULL)"
         # 'all' mode shows everything (no additional filter)
 
-        # Title search filter - supports multiple terms with +
+        # Title search filter - supports multiple terms with + and fuzzy search
         if self.filter_title.get():
             search_text = self.filter_title.get().strip()
 
-            # Check if using + operator for multi-term search
-            if '+' in search_text:
-                # Split by + and strip whitespace from each term
-                search_terms = [term.strip() for term in search_text.split('+') if term.strip()]
-
-                # Each term must be present (AND logic)
-                for term in search_terms:
-                    query += " AND title LIKE ?"
-                    params.append(f"%{term}%")
+            # Check if fuzzy search is enabled
+            if hasattr(self, 'fuzzy_search_enabled') and self.fuzzy_search_enabled.get():
+                # Fuzzy search mode - we'll filter results after query
+                # For now, don't add title filter to SQL query
+                # We'll apply fuzzy matching to results later
+                pass
             else:
-                # Single term search
-                query += " AND title LIKE ?"
-                params.append(f"%{search_text}%")
+                # Standard exact search
+                # Check if using + operator for multi-term search
+                if '+' in search_text:
+                    # Split by + and strip whitespace from each term
+                    search_terms = [term.strip() for term in search_text.split('+') if term.strip()]
+
+                    # Each term must be present (AND logic)
+                    for term in search_terms:
+                        query += " AND title LIKE ?"
+                        params.append(f"%{term}%")
+                else:
+                    # Single term search
+                    query += " AND title LIKE ?"
+                    params.append(f"%{search_text}%")
 
         # Program number filter - supports comma-separated values
         if self.filter_program.get():
@@ -10703,6 +11018,29 @@ class GCodeDatabaseGUI:
         # Get dynamic column indices for tool_home fields
         tool_home_status_idx = get_col_idx('tool_home_status')
         tool_home_issues_idx = get_col_idx('tool_home_issues')
+
+        # Apply fuzzy search filter if enabled
+        if hasattr(self, 'fuzzy_search_enabled') and self.fuzzy_search_enabled.get() and self.filter_title.get():
+            search_text = self.filter_title.get().strip()
+            logger.debug(f"Applying fuzzy search for: {search_text}")
+
+            # Get program number and title column indices
+            prog_idx = get_col_idx('program_number', 0)
+            title_idx = get_col_idx('title', 1)
+
+            # Build list of (program_number, title) for fuzzy search
+            programs = [(r[prog_idx], r[title_idx]) for r in results if r[title_idx]]
+
+            # Perform fuzzy search (if module available)
+            if hasattr(self, 'fuzzy_search'):
+                fuzzy_matches = self.fuzzy_search.search_programs(search_text, programs, limit=len(programs))
+
+                # Create set of matching program numbers
+                matching_progs = {prog for prog, title, score in fuzzy_matches}
+
+                # Filter results to only include fuzzy matches
+                results = [r for r in results if r[prog_idx] in matching_progs]
+            logger.debug(f"Fuzzy search filtered to {len(results)} results")
 
         # Populate tree
         # Column indices (based on database schema):
@@ -11259,6 +11597,147 @@ class GCodeDatabaseGUI:
         except Exception as e:
             conn.close()
             messagebox.showerror("Error", f"Failed to refresh file:\n{str(e)}")
+
+    # ============================================================================
+    # CLIPBOARD OPERATIONS
+    # ============================================================================
+
+    def copy_program_number_to_clipboard(self):
+        """Copy selected program number to clipboard"""
+        selected = self.tree.selection()
+        if not selected:
+            return
+
+        program_number = self.tree.item(selected[0])['values'][0]
+        # Copy to clipboard (simple fallback without clipboard manager module)
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(str(program_number))
+            self.root.update()
+            logger.info(f"Copied program number to clipboard: {program_number}")
+            # Optional: Show brief status message
+            if hasattr(self, 'show_status_message'):
+                self.root.after(0, lambda: self.show_status_message(f"Copied: {program_number}"))
+        except Exception as e:
+            logger.error(f"Failed to copy to clipboard: {e}")
+
+    def copy_file_path_to_clipboard(self):
+        """Copy selected file path to clipboard"""
+        selected = self.tree.selection()
+        if not selected:
+            return
+
+        program_number = self.tree.item(selected[0])['values'][0]
+
+        # Get file path from database
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT file_path FROM programs WHERE program_number = ?", (program_number,))
+        result = cursor.fetchone()
+        conn.close()
+
+        if result and result[0]:
+            # Copy to clipboard (simple fallback)
+            try:
+                self.root.clipboard_clear()
+                self.root.clipboard_append(result[0])
+                self.root.update()
+                logger.info(f"Copied file path to clipboard: {result[0]}")
+                if hasattr(self, 'show_status_message'):
+                    self.root.after(0, lambda: self.show_status_message(f"Copied file path"))
+            except Exception as e:
+                logger.error(f"Failed to copy to clipboard: {e}")
+        else:
+            messagebox.showwarning("No Path", "No file path available for this program")
+
+    def copy_full_details_to_clipboard(self):
+        """Copy full program details to clipboard as formatted text"""
+        selected = self.tree.selection()
+        if not selected:
+            return
+
+        program_number = self.tree.item(selected[0])['values'][0]
+
+        # Get full details from database
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM programs WHERE program_number = ?", (program_number,))
+        result = cursor.fetchone()
+        column_names = [desc[0] for desc in cursor.description]
+        conn.close()
+
+        if result:
+            # Build dictionary of program data
+            program_data = {}
+            for idx, col_name in enumerate(column_names):
+                value = result[idx]
+                # Skip internal fields and format others nicely
+                if col_name not in ['id', 'validation_issues', 'bore_warnings', 'dimensional_issues', 'tool_home_issues', 'validation_warnings']:
+                    program_data[col_name] = value if value is not None else ""
+
+            # Copy to clipboard (simple fallback)
+            try:
+                # Format as text
+                details_text = f"Program: {program_number}\n"
+                for key, value in program_data.items():
+                    details_text += f"{key}: {value}\n"
+
+                self.root.clipboard_clear()
+                self.root.clipboard_append(details_text)
+                self.root.update()
+                logger.info(f"Copied full details to clipboard: {program_number}")
+                if hasattr(self, 'show_status_message'):
+                    self.root.after(0, lambda: self.show_status_message(f"Copied details for {program_number}"))
+            except Exception as e:
+                logger.error(f"Failed to copy to clipboard: {e}")
+
+    def copy_multiple_programs_to_clipboard(self):
+        """Copy multiple selected programs as TSV (Excel-compatible)"""
+        selected = self.tree.selection()
+        if not selected:
+            return
+
+        # Get visible columns from tree
+        columns = ["Program #", "Title", "Type", "Lathe", "OD", "Thick", "CB", "Status"]
+
+        # Build list of row data
+        rows = []
+        for item_id in selected:
+            values = self.tree.item(item_id)['values']
+            if values:
+                # Extract the columns we want (matching order from tree)
+                row_data = {
+                    "Program #": values[0] if len(values) > 0 else "",
+                    "Title": values[2] if len(values) > 2 else "",
+                    "Type": values[3] if len(values) > 3 else "",
+                    "Lathe": values[4] if len(values) > 4 else "",
+                    "OD": values[5] if len(values) > 5 else "",
+                    "Thick": values[6] if len(values) > 6 else "",
+                    "CB": values[7] if len(values) > 7 else "",
+                    "Status": values[14] if len(values) > 14 else "",
+                }
+                rows.append(row_data)
+
+        # Copy to clipboard as TSV (simple fallback)
+        try:
+            # Build TSV format
+            tsv_text = "\t".join(columns) + "\n"
+            for row in rows:
+                tsv_text += "\t".join(str(row.get(col, "")) for col in columns) + "\n"
+
+            self.root.clipboard_clear()
+            self.root.clipboard_append(tsv_text)
+            self.root.update()
+            logger.info(f"Copied {len(rows)} programs to clipboard as TSV")
+            if hasattr(self, 'show_status_message'):
+                self.root.after(0, lambda: self.show_status_message(f"Copied {len(rows)} programs"))
+        except Exception as e:
+            logger.error(f"Failed to copy to clipboard: {e}")
+
+    def show_status_message(self, message: str):
+        """Show a brief status message (placeholder - can enhance with statusbar)"""
+        # For now, just log it. Can add a status bar later if desired
+        logger.info(f"Status: {message}")
 
     def correct_tool_home_positions(self):
         """Correct incorrect tool home Z-positions in files with warnings"""
@@ -11903,11 +12382,21 @@ class GCodeDatabaseGUI:
 
         if messagebox.askyesno("Confirm Delete",
                               f"Delete program {program_number}?\n\nThis will only remove the database entry, not the file."):
+
+            # Safety check before delete (Phase 1)
+            safe, level, msg = self._check_database_safety_before_write("delete_entry")
+            if not safe:
+                logger.info(f"Delete entry cancelled by safety check: {msg}")
+                return
+
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             cursor.execute("DELETE FROM programs WHERE program_number = ?", (program_number,))
             conn.commit()
             conn.close()
+
+            # Record successful write (Phase 1)
+            self._record_database_write("delete_entry")
 
             self.refresh_results()
             messagebox.showinfo("Deleted", "Entry deleted successfully")
@@ -12917,6 +13406,13 @@ class GCodeDatabaseGUI:
         if not confirmed[0]:
             return
 
+        # Safety check before delete (Phase 1)
+        safe, level, msg = self._check_database_safety_before_write("delete_duplicates")
+        if not safe:
+            logger.info(f"Delete duplicates cancelled by safety check: {msg}")
+            messagebox.showinfo("Operation Cancelled", "Delete operation cancelled by safety check.")
+            return
+
         # Create database backup before deleting
         if not self.backup_database():
             messagebox.showerror("Backup Failed",
@@ -12973,6 +13469,9 @@ class GCodeDatabaseGUI:
             deleted_count = cursor.rowcount
             conn.commit()
             conn.close()
+
+            # Record successful write (Phase 1)
+            self._record_database_write("delete_duplicates")
 
             progress_text.insert(tk.END, f"{'='*60}\n")
             progress_text.insert(tk.END, f"✓ Successfully deleted {deleted_count} duplicate record(s)\n")
@@ -13574,7 +14073,13 @@ class GCodeDatabaseGUI:
         close_btn.pack(pady=10)
 
     def organize_files_by_od(self):
-        """Copy all database files to organized folder structure by OD"""
+        """Copy all database files to organized folder structure by OD
+
+        Includes:
+        - Current repository files
+        - Revised repository files
+        - Complete version history
+        """
         import shutil
 
         # Ask user for destination folder
@@ -13586,7 +14091,7 @@ class GCodeDatabaseGUI:
         # Show progress window
         progress_window = tk.Toplevel(self.root)
         progress_window.title("Organizing Files by OD...")
-        progress_window.geometry("600x400")
+        progress_window.geometry("700x500")
         progress_window.configure(bg=self.bg_color)
 
         progress_label = tk.Label(progress_window, text="Organizing files...",
@@ -13596,7 +14101,7 @@ class GCodeDatabaseGUI:
 
         progress_text = scrolledtext.ScrolledText(progress_window,
                                                  bg=self.input_bg, fg=self.fg_color,
-                                                 width=70, height=15)
+                                                 width=80, height=20)
         progress_text.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
 
         self.root.update()
@@ -13612,8 +14117,13 @@ class GCodeDatabaseGUI:
         all_files = cursor.fetchall()
         conn.close()
 
+        progress_text.insert(tk.END, f"=== Organize by OD - Full Export ===\n\n")
         progress_text.insert(tk.END, f"Found {len(all_files)} files in database.\n")
         progress_text.insert(tk.END, f"Destination: {dest_folder}\n\n")
+        progress_text.insert(tk.END, f"This will copy:\n")
+        progress_text.insert(tk.END, f"  • Current repository files (organized by OD)\n")
+        progress_text.insert(tk.END, f"  • Version history (all old versions)\n")
+        progress_text.insert(tk.END, f"  • Revised repository (edited files)\n\n")
         progress_text.see(tk.END)
         self.root.update()
 
@@ -13677,13 +14187,68 @@ class GCodeDatabaseGUI:
                 progress_text.see(tk.END)
                 errors += 1
 
-        # Show results
+        # Copy versions folder (complete version history)
+        progress_label.config(text="Copying version history...")
+        progress_text.insert(tk.END, f"\n{'='*60}\n")
+        progress_text.insert(tk.END, f"Copying version history...\n")
+        progress_text.see(tk.END)
+        self.root.update()
+
+        versions_copied = 0
+        if os.path.exists(self.versions_path):
+            versions_dest = os.path.join(dest_folder, "versions")
+            try:
+                shutil.copytree(self.versions_path, versions_dest)
+                # Count version files
+                for root, dirs, files in os.walk(versions_dest):
+                    versions_copied += len(files)
+                progress_text.insert(tk.END, f"✓ Copied {versions_copied} version files\n")
+            except Exception as e:
+                progress_text.insert(tk.END, f"⚠ Warning: Could not copy versions folder: {str(e)[:100]}\n")
+            progress_text.see(tk.END)
+            self.root.update()
+        else:
+            progress_text.insert(tk.END, f"No versions folder found.\n")
+
+        # Copy revised_repository folder
+        progress_label.config(text="Copying revised repository...")
+        progress_text.insert(tk.END, f"\nCopying revised repository...\n")
+        progress_text.see(tk.END)
+        self.root.update()
+
+        revised_copied = 0
+        if os.path.exists(self.revised_repository_path):
+            revised_dest = os.path.join(dest_folder, "revised_repository")
+            try:
+                os.makedirs(revised_dest, exist_ok=True)
+                for file in os.listdir(self.revised_repository_path):
+                    src = os.path.join(self.revised_repository_path, file)
+                    if os.path.isfile(src):
+                        shutil.copy2(src, os.path.join(revised_dest, file))
+                        revised_copied += 1
+                progress_text.insert(tk.END, f"✓ Copied {revised_copied} revised files\n")
+            except Exception as e:
+                progress_text.insert(tk.END, f"⚠ Warning: Could not copy revised_repository: {str(e)[:100]}\n")
+            progress_text.see(tk.END)
+            self.root.update()
+        else:
+            progress_text.insert(tk.END, f"No revised_repository folder found.\n")
+
+        # Show final results
         progress_label.config(text="Complete!")
         progress_text.insert(tk.END, f"\n{'='*60}\n")
-        progress_text.insert(tk.END, f"Total files: {len(all_files)}\n")
-        progress_text.insert(tk.END, f"Copied: {copied}\n")
-        progress_text.insert(tk.END, f"Skipped: {skipped}\n")
-        progress_text.insert(tk.END, f"Errors: {errors}\n")
+        progress_text.insert(tk.END, f"EXPORT COMPLETE\n")
+        progress_text.insert(tk.END, f"{'='*60}\n\n")
+        progress_text.insert(tk.END, f"Repository files:\n")
+        progress_text.insert(tk.END, f"  Total in database: {len(all_files)}\n")
+        progress_text.insert(tk.END, f"  Copied: {copied}\n")
+        progress_text.insert(tk.END, f"  Skipped: {skipped}\n")
+        progress_text.insert(tk.END, f"  Errors: {errors}\n\n")
+        progress_text.insert(tk.END, f"Version history: {versions_copied} files\n")
+        progress_text.insert(tk.END, f"Revised repository: {revised_copied} files\n\n")
+        progress_text.insert(tk.END, f"Total files exported: {copied + versions_copied + revised_copied}\n\n")
+        progress_text.insert(tk.END, f"Organized by OD in folders:\n")
+        progress_text.insert(tk.END, f"  {dest_folder}\n")
         progress_text.see(tk.END)
 
         close_btn = tk.Button(progress_window, text="Close",
@@ -14276,8 +14841,18 @@ class GCodeDatabaseGUI:
 
             menu.add_command(label="View Details", command=self.view_details)
 
+            # Clipboard operations
+            menu.add_separator()
+            menu.add_command(label="📋 Copy Program #", command=self.copy_program_number_to_clipboard)
+            menu.add_command(label="📋 Copy File Path", command=self.copy_file_path_to_clipboard)
+            menu.add_command(label="📋 Copy Full Details", command=self.copy_full_details_to_clipboard)
+            if selected_count := len(self.tree.selection()):
+                if selected_count > 1:
+                    menu.add_command(label=f"📋 Copy {selected_count} Programs as TSV", command=self.copy_multiple_programs_to_clipboard)
+
             # Compare Files - show if multiple files are selected
-            selected_count = len(self.tree.selection())
+            if not selected_count:
+                selected_count = len(self.tree.selection())
             if selected_count >= 2:
                 menu.add_command(label=f"🔄 Compare {selected_count} Files", command=self.compare_files)
 
@@ -16475,7 +17050,7 @@ For more documentation, see project README files in the application directory.
             conn.close()
 
             # 3. Copy repository files maintaining structure
-            status_label.config(text="Copying files...")
+            status_label.config(text="Copying repository files...")
             details_label.config(text=f"Total files: {len(file_paths)}")
             progress_window.update()
 
@@ -16512,25 +17087,78 @@ For more documentation, see project README files in the application directory.
                     details_label.config(text=f"Copied: {files_copied} | Missing: {files_missing} | Total: {len(file_paths)}")
                     progress_window.update()
 
-            # 4. Create backup info file
+            # 4. Copy versions folder (entire folder with all version history)
+            if os.path.exists(self.versions_path):
+                status_label.config(text="Backing up version history...")
+                progress_window.update()
+
+                versions_backup = os.path.join(backup_folder, "versions")
+                try:
+                    shutil.copytree(self.versions_path, versions_backup)
+                    # Count files in versions
+                    version_files = sum([len(files) for r, d, files in os.walk(versions_backup)])
+                    details_label.config(text=f"Backed up {version_files} version files")
+                except Exception as e:
+                    details_label.config(text=f"Warning: Could not backup versions folder: {e}")
+                progress_window.update()
+
+            # 5. Copy revised_repository folder if it exists
+            if os.path.exists(self.revised_repository_path):
+                status_label.config(text="Backing up revised repository...")
+                progress_window.update()
+
+                revised_backup = os.path.join(backup_folder, "revised_repository")
+                try:
+                    shutil.copytree(self.revised_repository_path, revised_backup)
+                    # Count files in revised
+                    revised_files = len([f for f in os.listdir(revised_backup) if os.path.isfile(os.path.join(revised_backup, f))])
+                    details_label.config(text=f"Backed up {revised_files} revised files")
+                except Exception as e:
+                    details_label.config(text=f"Warning: Could not backup revised_repository: {e}")
+                progress_window.update()
+
+            # 6. Create backup info file
             status_label.config(text="Creating backup info...")
             progress_window.update()
+
+            # Count version and revised files
+            version_count = 0
+            if os.path.exists(os.path.join(backup_folder, "versions")):
+                version_count = sum([len(files) for r, d, files in os.walk(os.path.join(backup_folder, "versions"))])
+
+            revised_count = 0
+            if os.path.exists(os.path.join(backup_folder, "revised_repository")):
+                revised_count = len([f for f in os.listdir(os.path.join(backup_folder, "revised_repository"))
+                                    if os.path.isfile(os.path.join(os.path.join(backup_folder, "revised_repository"), f))])
 
             info_path = os.path.join(backup_folder, "BACKUP_INFO.txt")
             with open(info_path, 'w') as f:
                 f.write(f"GCode Database Full Backup\n")
                 f.write(f"="*50 + "\n\n")
                 f.write(f"Created: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"Created by: {self.current_username}\n\n")
                 f.write(f"Database records: {len(file_paths)}\n")
-                f.write(f"Files copied: {files_copied}\n")
-                f.write(f"Files missing: {files_missing}\n\n")
+                f.write(f"Repository files copied: {files_copied}\n")
+                f.write(f"Repository files missing: {files_missing}\n")
+                f.write(f"Version history files: {version_count}\n")
+                f.write(f"Revised repository files: {revised_count}\n\n")
                 f.write(f"Contents:\n")
-                f.write(f"  - gcode_database.db (database file)\n")
-                f.write(f"  - repository/ (all .nc files)\n\n")
+                f.write(f"  - gcode_database.db (database file with all records)\n")
+                f.write(f"  - repository/ (current active .nc files)\n")
+                f.write(f"  - revised_repository/ (edited/revised .nc files)\n")
+                f.write(f"  - versions/ (complete version history for all programs)\n\n")
+                f.write(f"Total files backed up: {files_copied + version_count + revised_count}\n\n")
                 f.write(f"To Restore:\n")
                 f.write(f"  1. Copy gcode_database.db to your program folder\n")
                 f.write(f"  2. Copy repository/ contents to your repository location\n")
-                f.write(f"  3. Update file paths in database if repository location changed\n")
+                f.write(f"  3. Copy revised_repository/ to maintain edited files\n")
+                f.write(f"  4. Copy versions/ to restore complete version history\n")
+                f.write(f"  5. Update file paths in database if repository location changed\n\n")
+                f.write(f"IMPORTANT: This backup includes ALL files:\n")
+                f.write(f"  • Current repository files\n")
+                f.write(f"  • All version history (originals before edits)\n")
+                f.write(f"  • Revised/edited files\n")
+                f.write(f"  • Complete database with metadata\n")
 
             progress_bar.stop()
             progress_window.destroy()
@@ -16539,12 +17167,17 @@ For more documentation, see project README files in the application directory.
             messagebox.showinfo("Full Backup Complete",
                 f"Full backup created successfully!\n\n"
                 f"Location: {backup_folder}\n\n"
-                f"Database: Backed up ✓\n"
-                f"Files copied: {files_copied}\n"
+                f"✓ Database: Backed up\n"
+                f"✓ Repository files: {files_copied}\n"
+                f"✓ Version history: {version_count} files\n"
+                f"✓ Revised repository: {revised_count} files\n"
                 f"Files missing: {files_missing}\n\n"
+                f"Total backed up: {files_copied + version_count + revised_count} files\n\n"
                 f"Backup includes:\n"
-                f"  • Database file\n"
-                f"  • All repository .nc files\n"
+                f"  • Database with all records\n"
+                f"  • Current repository files\n"
+                f"  • Complete version history\n"
+                f"  • Revised/edited files\n"
                 f"  • Backup info file")
 
         except Exception as e:
