@@ -1,0 +1,83 @@
+================================================================================
+MANUFACTURING PROCESS PATTERN ANALYSIS REPORT
+Generated: 2026-02-08 14:55:15
+================================================================================
+
+PART SIZE DISTRIBUTION
+--------------------------------------------------------------------------------
+
+Outer Diameter Categories:
+  Extra Large (>10"): 41 parts
+    Avg Thickness: 1.662"
+    Avg Hub Height: 0.952"
+  Large (8-10"): 70 parts
+    Avg Thickness: 1.796"
+    Avg Hub Height: 0.550"
+  Medium (6-8"): 266 parts
+    Avg Thickness: 1.392"
+    Avg Hub Height: 0.208"
+  Small (≤6"): 122 parts
+    Avg Thickness: 1.355"
+    Avg Hub Height: 0.277"
+
+Thickness Categories:
+  Extra Thick (>3.0"): 21 parts (Avg OD: 8.048")
+  Standard (0.5-1.5"): 319 parts (Avg OD: 7.303")
+  Thick (1.5-3.0"): 133 parts (Avg OD: 7.746")
+  Thin (≤0.5"): 26 parts (Avg OD: 7.115")
+
+Hub Height Categories:
+  Large Hub (>1.0"): 30 parts
+    Avg OD: 11.050", Avg Thickness: 1.775"
+  Medium Hub (0.5-1.0"): 21 parts
+    Avg OD: 10.048", Avg Thickness: 1.724"
+  No Hub (<0.3"): 248 parts
+    Avg OD: 6.909", Avg Thickness: 1.462"
+  Small Hub (0.3-0.5"): 200 parts
+    Avg OD: 7.289", Avg Thickness: 1.388"
+
+MOST COMMON OPERATION SEQUENCES (Top 20)
+--------------------------------------------------------------------------------
+1. (170 programs) DRILL → BORE → TURN → TURN → CHAMFER
+2. (166 programs) DRILL → BORE → TURN → TURN
+3. (78 programs) DRILL → BORE → TURN → TURN → BORE
+4. (59 programs) TURN → DRILL → BORE → TURN → CHAMFER
+5. (11 programs) DRILL → DRILL → BORE → TURN → TURN
+6. (7 programs) DRILL → BORE → TURN → TURN → DRILL → CHAMFER
+7. (3 programs) FACE → TURN → DRILL → BORE → CHAMFER → FACE → TURN → FACE → CHAMFER
+8. (2 programs) DRILL → BORE → TURN → TURN → DRILL → BORE
+9. (1 programs) --- SIDE 1 --- → DRILL → BORE → TURN → TURN
+10. (1 programs) DRILL → BORE → TURN → TURN → CHAMFER → CHAMFER
+11. (1 programs) TURN → BORE
+
+MOST COMMON TOOL SEQUENCES (Top 20)
+--------------------------------------------------------------------------------
+1. (426 programs) T101 → T121 → T303 → T121
+2. (62 programs) T303 → T101 → T121 → T303 → T121
+3. (9 programs) T101 → T121 → T303 → T101 → T121
+4. (1 programs) T909 → T121
+5. (1 programs) T505 → T525 → T303 → T525
+
+SPECIAL FEATURES DETECTED
+--------------------------------------------------------------------------------
+  Chamfer: 251 programs
+  Stepped: 14 programs
+
+SIDE 1 vs SIDE 2 OPERATION PATTERNS
+--------------------------------------------------------------------------------
+
+KEY MANUFACTURING INSIGHTS
+--------------------------------------------------------------------------------
+• Most Common Tool Sequence: T101 → T121 → T303 → T121
+  Used in 426 programs
+
+• Most Common Operation Sequence: DRILL → BORE → TURN → TURN → CHAMFER
+  Used in 170 programs
+
+• Special Feature Prevalence:
+  - Chamfer: 50.3% of programs
+  - Stepped: 2.8% of programs
+
+================================================================================
+END OF REPORT
+================================================================================

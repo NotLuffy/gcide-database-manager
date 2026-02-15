@@ -1,263 +1,394 @@
-# Database Backup & Restore System
+# Backup System - Complete Guide
 
 ## Overview
 
-The G-Code Database Manager includes a comprehensive backup and restore system that automatically saves database snapshots in your program folder.
+Your G-code Database Manager now includes **complete backup protection** for all your files, including originals, edits, and version history.
 
-## Backup Location
+---
 
-All backups are stored in:
+## Folder Structure
+
+### Main Folders
+
 ```
-File organizer/database_backups/
-```
-
-## Features
-
-### 1. Manual Backup (💾 Backup Now)
-
-**Location:** Backup tab in ribbon
-
-**What it does:**
-- Creates a timestamped backup of your current database
-- Filename format: `gcode_db_backup_YYYY-MM-DD_HH-MM-SS.db`
-- Stores in `database_backups` folder
-- No limit on number of backups (you can keep as many as you want)
-
-**Use this when:**
-- Before making major changes to the database
-- Before batch operations (rename, delete, etc.)
-- After completing successful work you want to save
-- Before rescanning with new parser updates
-
-**Example:**
-```
-gcode_db_backup_2025-12-05_14-30-45.db
+File organizer/
+├── repository/              ← Current active files
+├── revised_repository/      ← Edited/revised files
+├── versions/                ← Version history (originals)
+│   ├── o13002/
+│   │   ├── v1.0.nc         ← Original version
+│   │   ├── v2.0.nc         ← After first edit
+│   │   └── v3.0.nc         ← After second edit
+│   ├── o61045/
+│   │   └── v1.0.nc
+│   └── ...
+├── backups/                 ← Database backups
+├── deleted/                 ← Deleted files archive
+└── gcode_database.db        ← Main database
 ```
 
-### 2. Automatic Backups
+---
 
-The system automatically creates backups before:
-- **Rescan Database operations** - Protects against parser issues
-- **Duplicate deletion** - Safety before removing files
-- **Restore operations** - Saves current state as `before_restore_TIMESTAMP.db`
+## How Version History Works
 
-### 3. Restore from Backup (📂 Restore Backup)
+### When You Edit a File
 
-**Location:** Backup tab in ribbon
+1. **Before editing** → Original is saved to `versions/o13002/v1.0.nc`
+2. **You edit** → File is modified in place
+3. **Save new version** → Copy saved to `versions/o13002/v2.0.nc`
+4. **Repository file** → Always contains current/latest version
 
-**What it does:**
-- Opens file browser to select a backup file
-- Creates safety backup of current database first (`before_restore_TIMESTAMP.db`)
-- Replaces current database with selected backup
-- Requires application restart to load restored data
+### Example Timeline
 
-**Safety Features:**
-- ⚠️ **Warning dialog** before restore
-- **Automatic backup** of current state before restoration
-- Cannot restore while database is being modified
+| Action | Repository | Versions Folder | Revised Repository |
+|--------|-----------|----------------|-------------------|
+| Initial import | `o13002.nc` (v1) | - | - |
+| First edit | `o13002.nc` (v2) | `v1.0.nc` | - |
+| Second edit | `o13002.nc` (v3) | `v1.0.nc`, `v2.0.nc` | - |
+| Major revision | `o13002.nc` (v3) | `v1.0.nc`, `v2.0.nc` | `o13002.nc` (copy) |
+
+### Why This Matters
+
+✅ **You never lose originals** - First version is always in `versions/`
+✅ **Complete history** - Every edit is tracked
+✅ **Easy rollback** - Can restore any previous version
+✅ **Safe to edit** - Original is backed up automatically
+
+---
+
+## Backup Operations
+
+### 1. Full Backup (Recommended)
+
+**What it backs up:**
+- ✅ Database (all records and metadata)
+- ✅ Repository folder (current files)
+- ✅ **Versions folder (ALL version history)** ← NEW!
+- ✅ **Revised repository (edited files)** ← NEW!
+
+**How to use:**
+1. File → Backup/Restore → Create Full Backup
+2. Choose destination folder
+3. Wait for backup to complete
+
+**Result:**
+```
+GCode_Full_Backup_2026-02-03_14-30-00/
+├── gcode_database.db
+├── repository/
+│   ├── o13002.nc
+│   ├── o61045.nc
+│   └── ...
+├── versions/                    ← Complete history!
+│   ├── o13002/
+│   │   ├── v1.0.nc
+│   │   └── v2.0.nc
+│   └── ...
+├── revised_repository/          ← All edits!
+│   ├── o13002.nc
+│   └── ...
+└── BACKUP_INFO.txt
+```
+
+---
+
+### 2. Organize by OD (Export)
+
+**What it exports:**
+- ✅ All programs organized by outer diameter
+- ✅ **Versions folder (complete history)** ← NEW!
+- ✅ **Revised repository (edited files)** ← NEW!
+
+**How to use:**
+1. File → Export → Organize Files by OD
+2. Choose destination folder
+3. Wait for export to complete
+
+**Result:**
+```
+Organized_Export/
+├── 5.75 Round/
+│   ├── o50000.nc
+│   ├── o50001.nc
+│   └── ...
+├── 6.00 Round/
+│   ├── o61045.nc
+│   └── ...
+├── 13.00 Round/
+│   ├── o13002.nc
+│   └── ...
+├── versions/                    ← Complete history!
+│   ├── o13002/
+│   │   └── v1.0.nc
+│   └── ...
+└── revised_repository/          ← All edits!
+    ├── o13002.nc
+    └── ...
+```
+
+---
+
+## What's New (February 2026)
+
+### ✅ Changes Made
+
+#### Full Backup Now Includes:
+1. **Version History** - All old versions are backed up
+   - Previously: ❌ Not included
+   - Now: ✅ Complete `versions/` folder backed up
+
+2. **Revised Repository** - All edited files are backed up
+   - Previously: ❌ Not included
+   - Now: ✅ Complete `revised_repository/` folder backed up
+
+3. **Better Info File** - Shows exactly what was backed up
+   - File counts for all folders
+   - Clear restore instructions
+   - Total files backed up
+
+#### Organize by OD Now Includes:
+1. **Version History** - All old versions are exported
+   - Previously: ❌ Only current files
+   - Now: ✅ Includes `versions/` folder
+
+2. **Revised Repository** - All edited files are exported
+   - Previously: ❌ Not included
+   - Now: ✅ Includes `revised_repository/` folder
+
+3. **Better Progress Display** - Shows what's being copied
+   - Current repository files
+   - Version history count
+   - Revised repository count
+   - Total files exported
+
+---
+
+## Why This Is Important
+
+### Before (Old System)
+```
+Full Backup:
+├── Database ✓
+└── Current files ✓
+
+Missing:
+├── Version history ✗ (originals lost!)
+└── Revised files ✗ (edits lost!)
+```
+
+**Problem:** If you restored a backup, you'd lose:
+- ❌ All original versions
+- ❌ All edit history
+- ❌ All revised files
+
+### After (New System)
+```
+Full Backup:
+├── Database ✓
+├── Current files ✓
+├── Version history ✓ (all originals!)
+└── Revised files ✓ (all edits!)
+```
+
+**Solution:** When you restore, you get:
+- ✅ Everything
+- ✅ Complete history
+- ✅ No data loss
+
+---
+
+## Usage Examples
+
+### Example 1: Complete Backup Before Major Changes
+
+**Scenario:** You're about to make major edits to 50 programs.
 
 **Steps:**
-1. Click "📂 Restore Backup"
-2. Select backup file from `database_backups` folder
-3. Confirm restoration (read warning carefully!)
-4. Current database backed up automatically
-5. Selected backup replaces current database
-6. Restart application to load restored data
+1. File → Backup/Restore → Create Full Backup
+2. Choose backup location (e.g., external drive)
+3. Make your edits
+4. If something goes wrong, restore from backup
 
-### 4. View Backups (📋 View Backups)
+**What you get:**
+- Full database state
+- All current files
+- **All original versions** (can compare before/after)
+- **All previous edits** (complete history)
 
-**Location:** Backup tab in ribbon
+---
 
-**What it does:**
-- Shows all available backups in a table
-- Displays for each backup:
-  - Filename
-  - Record count (number of programs)
-  - Date created
-  - File size (MB)
-- Allows direct restore or delete from the list
+### Example 2: Export for External Use
 
-**Features:**
-- **Refresh** - Update backup list
-- **Restore** - Restore selected backup
-- **Delete** - Remove selected backup file
-- Sorted by date (newest first)
+**Scenario:** Customer needs all files organized by size, including history.
 
-## Backup Storage Strategy
+**Steps:**
+1. File → Export → Organize Files by OD
+2. Choose destination folder
+3. Send to customer
 
-### What's Backed Up
+**What customer gets:**
+- Files organized by OD (easy to find)
+- **Version history** (can see evolution of programs)
+- **Revised files** (can see all edits made)
+- Complete package with context
 
-The database file contains:
-- All program records (O-numbers, titles, dimensions)
-- File paths and metadata
-- Validation status and issues
-- Duplicate tracking information
-- Version history
-- Program registry
-- User notes and modifications
+---
 
-### What's NOT Backed Up
+### Example 3: Restore After System Failure
 
-- The actual .nc G-code files (only references to them)
-- Repository folder structure
-- Application settings (config.json)
-- Machine Learning models
+**Scenario:** Computer crashed, need to restore everything.
 
-## Recommended Backup Workflow
+**Steps:**
+1. Install fresh copy of G-code Database Manager
+2. Copy backup folder contents:
+   - `gcode_database.db` → Program folder
+   - `repository/` → Program folder
+   - `versions/` → Program folder ✨
+   - `revised_repository/` → Program folder ✨
+3. Launch application
+4. Everything restored with complete history!
 
-### Daily Use
-1. **Start of day:** Note current state (optional manual backup)
-2. **Before major changes:** Create manual backup
-3. **After successful work:** Create named backup for the milestone
-
-### Before Risky Operations
-- Before: **Rescan Database** (automatic)
-- Before: **Delete Duplicates** (automatic)
-- Before: **Batch Rename** (manual recommended)
-- Before: **Fix Program Numbers** (manual recommended)
-
-### Weekly Maintenance
-- Review old backups in "View Backups"
-- Keep important milestone backups
-- Delete unnecessary intermediate backups
-
-## Backup File Naming
-
-### Manual Backups
-```
-gcode_db_backup_2025-12-05_14-30-45.db
-```
-- Format: `gcode_db_backup_YYYY-MM-DD_HH-MM-SS.db`
-- Easy to identify by date/time
-
-### Automatic Backups
-```
-before_restore_2025-12-05_14-35-20.db
-before_load_20251205_143000.db
-```
-- Prefix indicates operation type
-- Timestamp for tracking
-
-## Restoring Data
-
-### Quick Restore (Recent Backup)
-1. Go to **Backup** tab
-2. Click **View Backups**
-3. Select desired backup
-4. Click **Restore**
-5. Confirm warning
-6. Restart application
-
-### Restore from File Browser
-1. Go to **Backup** tab
-2. Click **Restore Backup**
-3. Navigate to backup file (or select from another location)
-4. Confirm warning
-5. Restart application
-
-### Manual Restore (Advanced)
-1. Close application completely
-2. Navigate to `File organizer` folder
-3. Rename current `gcode_database.db` to `gcode_database.db.old` (safety)
-4. Copy backup file to `gcode_database.db`
-5. Restart application
+---
 
 ## Backup Best Practices
 
-### DO:
-✅ Create backup before major changes
-✅ Keep backups of known-good states
-✅ Label important backups clearly (rename file)
-✅ Test restore occasionally to verify backups work
-✅ Keep backups of milestone achievements
+### 1. Regular Backups
+- **Daily:** If actively editing files
+- **Weekly:** During normal operation
+- **Before major changes:** Always!
 
-### DON'T:
-❌ Delete all backups (keep at least a few recent ones)
-❌ Restore without reading the warning
-❌ Modify backup files manually
-❌ Store backups in the repository folder (keep in `database_backups`)
+### 2. Backup Locations
+- ✅ External drive (USB, external HDD)
+- ✅ Network drive
+- ✅ Cloud storage (Google Drive, Dropbox)
+- ❌ Same drive as program (not safe)
 
-## Storage Management
+### 3. What to Back Up
 
-### Disk Space
-- Each backup is ~5-50 MB depending on database size
-- 10 backups ≈ 50-500 MB
-- Monitor disk space if keeping many backups
+**Minimum (Quick):**
+- Database only → File → Backup/Restore → Database Backup
 
-### Cleanup
-The system does NOT automatically delete old backups. You control retention:
-- Use "View Backups" to see all backups
-- Delete old/unnecessary backups manually
-- Keep important milestone backups long-term
+**Recommended (Complete):**
+- Everything → File → Backup/Restore → Create Full Backup
 
-## Recovery Scenarios
+**Best Practice:**
+1. Weekly full backup to external drive
+2. Daily database backup to network drive
+3. Monthly full backup to cloud storage
 
-### Scenario 1: "I deleted files by mistake"
-1. Immediately stop work
-2. Restore most recent backup before deletion
-3. Lost data = changes after backup was created
+---
 
-### Scenario 2: "Parser update broke everything"
-1. Restore backup from before rescan
-2. Report parser issue
-3. Wait for fix, then rescan again
+## Verification
 
-### Scenario 3: "I want to test changes safely"
-1. Create manual backup first
-2. Make experimental changes
-3. If successful: keep changes
-4. If failed: restore backup
+### After Backup, Check:
 
-### Scenario 4: "Application won't start"
-1. Close application
-2. Manually restore backup (see Manual Restore above)
-3. Restart application
+1. **Backup folder exists** and has timestamp
+2. **BACKUP_INFO.txt** shows correct counts
+3. **File sizes** look reasonable:
+   - Database: ~50-200 MB
+   - Repository: Varies by file count
+   - Versions: Can be large (multiple copies)
+   - Revised: Small (only edited files)
 
-## Technical Details
+### Expected File Counts
 
-### Backup Format
-- Standard SQLite database file (.db)
-- Can be opened with any SQLite viewer
-- Fully portable (can copy to another computer)
+Example for 500 programs:
+```
+Repository files: 500 (current versions)
+Version history: 800 files (500 originals + 300 edits)
+Revised repository: 50 files (programs that were edited)
+Total: 1,350 files
+```
 
-### Backup Process
-1. Copy entire database file
-2. Preserve file timestamps
-3. Store in dedicated backup folder
-4. No compression (for easy recovery)
+---
 
-### Restore Process
-1. Create safety backup of current state
-2. Replace current database with backup file
-3. Preserve backup file (not deleted after restore)
+## Restore Instructions
 
-## Integration with Other Features
+### From Full Backup
 
-### Works With:
-- **Repository System** - Backs up file references
-- **Version History** - Backs up all versions
-- **Program Registry** - Backs up registry data
-- **Duplicate Tracking** - Backs up duplicate groups
+1. **Locate backup folder:**
+   ```
+   GCode_Full_Backup_2026-02-03_14-30-00/
+   ```
 
-### Compatible With:
-- **Database Profiles** (separate feature for switching between databases)
-- **Export Repository** (exports files, not database)
-- **Manual database edits** (via Edit Entry)
+2. **Close application** if running
 
-## Support
+3. **Copy files:**
+   ```
+   Copy gcode_database.db → l:\My Drive\Home\File organizer\
+   Copy repository\* → l:\My Drive\Home\File organizer\repository\
+   Copy versions\* → l:\My Drive\Home\File organizer\versions\
+   Copy revised_repository\* → l:\My Drive\Home\File organizer\revised_repository\
+   ```
 
-If you need to:
-- **Recover from corruption:** Use most recent backup
-- **Share database:** Copy backup file to another computer
-- **Archive work:** Keep backup file in safe location
-- **Compare states:** Open two backups in SQLite viewer
+4. **Launch application** - Everything restored!
+
+---
+
+## Troubleshooting
+
+### Q: Backup takes a long time
+**A:** Normal if you have many versions. The versions folder can be large.
+
+### Q: Can I delete old version files?
+**A:** Yes, but consider:
+- Keep v1.0 (original) always
+- Keep recent versions (last 3-5)
+- Archive old versions to external drive
+
+### Q: How much space do I need?
+**A:** Rough estimate:
+- Current files: X MB
+- Versions: 2-3× current files (if edited multiple times)
+- Backups: 3-4× current files
+- **Total: 6-10× your current repository size**
+
+### Q: Backup says "files missing"
+**A:** Some database records point to deleted files. Normal. Check:
+- Most files copied successfully?
+- Critical programs are there?
+- If yes, you're fine!
+
+---
 
 ## Summary
 
-The backup system is **already implemented** and ready to use:
-- **Backup location:** `File organizer/database_backups/`
-- **Access:** Backup tab in ribbon
-- **Features:** Manual backup, automatic backup, restore, view/manage
-- **Safety:** Always creates backup before restore
+### ✅ What You Now Have
 
-**You're already protected!** Just use the Backup tab when needed.
+1. **Complete Protection**
+   - Every file backed up
+   - Every version saved
+   - Every edit preserved
+
+2. **Easy Recovery**
+   - One backup has everything
+   - Simple restore process
+   - No data loss
+
+3. **Better Exports**
+   - Organize by OD includes history
+   - Customers get complete context
+   - Can trace evolution of programs
+
+### 🎯 Bottom Line
+
+**Your backup system is now bulletproof!**
+
+When you do a full backup or organize by OD export, you get:
+- ✅ Current files
+- ✅ **ALL originals (versions/)**
+- ✅ **ALL edits (revised_repository/)**
+- ✅ Complete database
+- ✅ Peace of mind
+
+---
+
+**Next Steps:**
+1. Create a full backup now to test the new system
+2. Verify the backup includes versions/ and revised_repository/
+3. Set up a regular backup schedule
+4. Store backups in multiple locations
+
+---
+
+**Questions?** Check the BACKUP_INFO.txt file in any backup for details about what was included.

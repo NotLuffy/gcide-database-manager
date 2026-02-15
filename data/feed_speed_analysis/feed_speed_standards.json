@@ -1,0 +1,240 @@
+{
+  "by_operation": {
+    "FACE/BORE": {
+      "feed_rate": {
+        "recommended": 0.008,
+        "mode": 0.008,
+        "median": 0.008,
+        "min": 0.004,
+        "max": 0.02,
+        "common_values": [
+          [
+            0.008,
+            16334
+          ],
+          [
+            0.004,
+            3450
+          ],
+          [
+            0.009,
+            487
+          ]
+        ]
+      },
+      "spindle_speed": {
+        "recommended": 1800,
+        "mode": 1800,
+        "median": 1550.0,
+        "min": 1000,
+        "max": 2600,
+        "common_values": [
+          [
+            1800,
+            4122
+          ],
+          [
+            1250,
+            3472
+          ],
+          [
+            1550,
+            3151
+          ]
+        ]
+      },
+      "sample_count": 21038
+    },
+    "BORE": {
+      "feed_rate": {
+        "recommended": 0.02,
+        "mode": 0.02,
+        "median": 0.012,
+        "min": 0.0,
+        "max": 0.031,
+        "common_values": [
+          [
+            0.02,
+            72226
+          ],
+          [
+            0.008,
+            35296
+          ],
+          [
+            0.01,
+            33973
+          ]
+        ]
+      },
+      "spindle_speed": {
+        "recommended": 1450,
+        "mode": 1450,
+        "median": 1450.0,
+        "min": 800,
+        "max": 2600,
+        "common_values": [
+          [
+            1450,
+            74560
+          ],
+          [
+            950,
+            21074
+          ],
+          [
+            1500,
+            18064
+          ]
+        ]
+      },
+      "sample_count": 152644
+    },
+    "THREAD": {
+      "feed_rate": {
+        "recommended": 0.015,
+        "mode": 0.015,
+        "median": 0.013,
+        "min": 0.002,
+        "max": 80.0,
+        "common_values": [
+          [
+            0.015,
+            51673
+          ],
+          [
+            0.013,
+            39070
+          ],
+          [
+            0.02,
+            22596
+          ]
+        ]
+      },
+      "spindle_speed": {
+        "recommended": 1600,
+        "mode": 1600,
+        "median": 1600,
+        "min": 800,
+        "max": 2750,
+        "common_values": [
+          [
+            1600,
+            67412
+          ],
+          [
+            2000,
+            28421
+          ],
+          [
+            1200,
+            27576
+          ]
+        ]
+      },
+      "sample_count": 190765
+    },
+    "DRILL": {
+      "feed_rate": {
+        "recommended": 0.008,
+        "mode": 0.008,
+        "median": 0.008,
+        "min": 0.003,
+        "max": 0.011,
+        "common_values": [
+          [
+            0.008,
+            409
+          ],
+          [
+            0.004,
+            162
+          ],
+          [
+            0.01,
+            10
+          ]
+        ]
+      },
+      "spindle_speed": {
+        "recommended": 1250,
+        "mode": 1250,
+        "median": 1600.0,
+        "min": 1250,
+        "max": 2600,
+        "common_values": [
+          [
+            1250,
+            179
+          ],
+          [
+            1600,
+            134
+          ],
+          [
+            1800,
+            108
+          ]
+        ]
+      },
+      "sample_count": 596
+    },
+    "FACE": {
+      "feed_rate": {
+        "recommended": 0.015,
+        "mode": 0.015,
+        "median": 0.015,
+        "min": 0.01,
+        "max": 0.015,
+        "common_values": [
+          [
+            0.015,
+            75
+          ],
+          [
+            0.011,
+            6
+          ],
+          [
+            0.01,
+            6
+          ]
+        ]
+      },
+      "spindle_speed": {
+        "recommended": 1500,
+        "mode": 1500,
+        "median": 1700,
+        "min": 1000,
+        "max": 2000,
+        "common_values": [
+          [
+            1500,
+            39
+          ],
+          [
+            1800,
+            33
+          ],
+          [
+            2000,
+            9
+          ]
+        ]
+      },
+      "sample_count": 87
+    }
+  },
+  "by_round_size": {},
+  "by_thickness": {},
+  "metadata": {
+    "total_samples": 365130,
+    "conservative_approach": "When values are close, lower (safer) value is recommended",
+    "confidence_levels": {
+      "HIGH": "1000+ samples",
+      "MEDIUM": "100-999 samples",
+      "LOW": "<100 samples"
+    }
+  }
+}

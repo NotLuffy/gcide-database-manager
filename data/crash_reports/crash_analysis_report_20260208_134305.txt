@@ -1,0 +1,141 @@
+================================================================================
+G-CODE BATCH CRASH ANALYSIS REPORT
+Generated: 2026-02-08 13:43:05
+================================================================================
+
+SUMMARY STATISTICS
+--------------------------------------------------------------------------------
+Total Files Analyzed: 500
+Successfully Parsed: 499
+Failed to Parse: 1
+Files with Critical Issues: 27 (5.4%)
+Files with Warnings: 7 (1.4%)
+Files with Bore Warnings: 2 (0.4%)
+Files with Dimensional Issues: 18 (3.6%)
+
+CRASH PATTERN BREAKDOWN
+--------------------------------------------------------------------------------
+  other_critical: 27 occurrences
+
+WARNING PATTERN BREAKDOWN
+--------------------------------------------------------------------------------
+  other_warnings: 7 occurrences
+
+DIMENSION STATISTICS
+--------------------------------------------------------------------------------
+Outer Diameters (inches):
+  Min: 5.750, Max: 13.000, Avg: 7.232
+Thicknesses (inches):
+  Min: 0.394, Max: 4.250, Avg: 1.447
+Hub Heights (inches):
+  Min: 0.200, Max: 2.250, Avg: 0.556
+
+TOOL USAGE ANALYSIS
+--------------------------------------------------------------------------------
+  T303: 500 programs
+  T101: 499 programs
+  T121: 499 programs
+  T525: 1 programs
+
+CRITICAL ISSUES DETAIL (Top 20)
+--------------------------------------------------------------------------------
+1. Program: o58116
+   Dimensions: OD=5.75, Thick=0.7874015748031497, Hub=0.46
+   Issue: OB TOO SMALL: Spec=64.7mm, G-code=63.5mm (-1.20mm) - CRITICAL ERROR
+
+2. Program: o70321
+   Dimensions: OD=7.0, Thick=0.55, Hub=0.45
+   Issue: CB TOO SMALL: Spec=70.3mm, G-code=67.7mm (-2.64mm) - CRITICAL ERROR
+
+3. Program: o80453
+   Dimensions: OD=8.0, Thick=1.1574074074074074, Hub=None
+   Issue: THICKNESS ERROR: Spec=1.16", Calculated from drill=4.40" (+3.243") - CRITICAL ERROR
+
+4. Program: o62955
+   Dimensions: OD=6.25, Thick=1.25, Hub=None
+   Issue: CB TOO LARGE: Spec=60.0mm, G-code=60.6mm (+0.60mm) - CRITICAL ERROR
+
+5. Program: o58181
+   Dimensions: OD=5.75, Thick=0.75, Hub=0.5
+   Issue: OB TOO SMALL: Spec=73.0mm, G-code=67.3mm (-5.69mm) - CRITICAL ERROR
+
+6. Program: o70023
+   Dimensions: OD=7.0, Thick=2.0, Hub=0.5
+   Issue: CB TOO SMALL: Spec=78.1mm, G-code=73.7mm (-4.44mm) - CRITICAL ERROR
+
+7. Program: o75311
+   Dimensions: OD=7.0, Thick=1.5, Hub=0.5
+   Issue: OD MISMATCH: Spec=7.00", G-code=7.46" (+0.460") - G-CODE ERROR
+
+8. Program: o70183
+   Dimensions: OD=7.0, Thick=0.55, Hub=0.45
+   Issue: CB TOO SMALL: Spec=77.8mm, G-code=75.3mm (-2.54mm) - CRITICAL ERROR
+
+9. Program: o62899
+   Dimensions: OD=6.25, Thick=0.75, Hub=0.2
+   Issue: THICKNESS ERROR: Spec=0.75", Calculated from drill=0.55" (-0.200") - CRITICAL ERROR
+
+10. Program: o81099
+   Dimensions: OD=8.0, Thick=3.75, Hub=0.5
+   Issue: CB TOO LARGE: Spec=124.0mm, G-code=125.2mm (+1.17mm) - CRITICAL ERROR
+
+11. Program: o70084
+   Dimensions: OD=7.0, Thick=1.25, Hub=0.25
+   Issue: THICKNESS ERROR: Spec=1.25", Calculated from drill=2.25" (+1.000") - CRITICAL ERROR
+
+12. Program: o73704
+   Dimensions: OD=7.0, Thick=4.25, Hub=None
+   Issue: THICKNESS ERROR: Spec=4.25", Calculated from drill=2.05" (-2.200") - CRITICAL ERROR
+
+13. Program: o61033
+   Dimensions: OD=6.0, Thick=0.5905511811023623, Hub=0.45
+   Issue: CB TOO SMALL: Spec=74.1mm, G-code=72.6mm (-1.54mm) - CRITICAL ERROR
+
+14. Program: o10339
+   Dimensions: OD=10.25, Thick=0.5, Hub=None
+   Issue: CB TOO SMALL: Spec=170.1mm, G-code=149.5mm (-20.65mm) - CRITICAL ERROR
+
+15. Program: o75073
+   Dimensions: OD=7.5, Thick=2.0, Hub=None
+   Issue: CB TOO SMALL: Spec=74.4mm, G-code=74.0mm (-0.40mm) - CRITICAL ERROR
+
+16. Program: o61196
+   Dimensions: OD=6.0, Thick=0.75, Hub=0.5
+   Issue: CB TOO LARGE: Spec=66.9mm, G-code=70.4mm (+3.50mm) - CRITICAL ERROR
+
+17. Program: o58100
+   Dimensions: OD=5.75, Thick=3.4, Hub=0.5
+   Issue: THICKNESS ERROR: Title=3.40"+0.50"hub=3.90"total, Drilled=2.85"total (thickness=2.35") (-1.050") - CRITICAL ERROR
+
+18. Program: o80408
+   Dimensions: OD=8.0, Thick=1.75, Hub=0.5
+   Issue: OB TOO LARGE: Spec=124.1mm, G-code=124.9mm) - CRITICAL ERROR
+
+19. Program: o70241
+   Dimensions: OD=7.0, Thick=0.5905511811023623, Hub=0.41
+   Issue: CB TOO SMALL: Spec=95.1mm, G-code=91.4mm (-3.66mm) - CRITICAL ERROR
+
+20. Program: o13006
+   Dimensions: OD=13.0, Thick=0.5, Hub=None
+   Issue: THICKNESS ERROR: Spec=0.50", Calculated from drill=0.65" (+0.150") - CRITICAL ERROR
+
+... and 7 more critical issues
+
+RECOMMENDATIONS
+--------------------------------------------------------------------------------
+POTENTIAL NEW CRASH PATTERNS TO INVESTIGATE:
+
+1. THICKNESS ERROR: Spec=0.75", Calculated from drill=0.55" (-0.200") - CRITICAL ERROR
+2. CB TOO SMALL: Spec=77.8mm, G-code=73.7mm (-4.14mm) - CRITICAL ERROR
+3. OB TOO SMALL: Spec=73.0mm, G-code=67.3mm (-5.69mm) - CRITICAL ERROR
+4. CB TOO LARGE: Spec=66.9mm, G-code=70.4mm (+3.50mm) - CRITICAL ERROR
+5. CB TOO SMALL: Spec=77.8mm, G-code=75.3mm (-2.54mm) - CRITICAL ERROR
+6. CB TOO LARGE: Spec=124.0mm, G-code=125.2mm (+1.17mm) - CRITICAL ERROR
+7. CB TOO SMALL: Spec=116.7mm, G-code=77.9mm (-38.80mm) - CRITICAL ERROR
+8. THICKNESS ERROR: Title=3.40"+0.50"hub=3.90"total, Drilled=2.85"total (thickness=2.35") (-1.050") - C
+9. CB TOO SMALL: Spec=74.1mm, G-code=72.6mm (-1.54mm) - CRITICAL ERROR
+10. THICKNESS ERROR: Spec=1.25", Calculated from drill=2.25" (+1.000") - CRITICAL ERROR
+
+================================================================================
+END OF REPORT
+================================================================================

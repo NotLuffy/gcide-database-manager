@@ -1,0 +1,167 @@
+G00 RAPID INTO NEGATIVE Z - FILES LIST
+======================================================================
+
+o08012
+  Line 98: CRASH RISK - G00 rapid to Z-0.400. Must use G01 (feed) when going deeper. Change to: G01 Z-0.400 F[feedrate]
+  L:/My Drive/Home/File organizer/repository\o08012.nc
+
+o09902
+  Line 111: CRASH RISK - G00 rapid to Z-0.350. Must use G01 (feed) when going deeper. Change to: G01 Z-0.350 F[feedrate]
+  L:/My Drive/Home/File organizer/repository\o09902.nc
+
+o09905
+  Line 97: CRASH RISK - G00 rapid to Z-0.400. Must use G01 (feed) when going deeper. Change to: G01 Z-0.400 F[feedrate]
+  L:/My Drive/Home/File organizer/repository\o09905.nc
+
+o09906
+  Line 95: CRASH RISK - G00 rapid to Z-0.400. Must use G01 (feed) when going deeper. Change to: G01 Z-0.400 F[feedrate]
+  L:/My Drive/Home/File organizer/repository\o09906.nc
+
+o38540
+  Line 85: CRASH RISK - G00 rapid to Z-0.400. Must use G01 (feed) when going deeper. Change to: G01 Z-0.400 F[feedrate]
+  L:/My Drive/Home/File organizer/repository\o38540.nc
+
+o40022
+  Line 94: CRASH RISK - G00 rapid to Z-0.400. Must use G01 (feed) when going deeper. Change to: G01 Z-0.400 F[feedrate]
+  L:/My Drive/Home/File organizer/repository\o40022.nc
+
+o58109
+  Line 102: CRASH RISK - G00 rapid to Z-0.090. Must use G01 (feed) when going deeper. Change to: G01 Z-0.090 F[feedrate]
+  L:/My Drive/Home/File organizer/repository\o58109.nc
+
+o58140
+  Line 104: CRASH RISK - G00 rapid to Z-0.090. Must use G01 (feed) when going deeper. Change to: G01 Z-0.090 F[feedrate]
+  L:/My Drive/Home/File organizer/repository\o58140.nc
+
+o58202
+  Line 99: CRASH RISK - G00 rapid to Z-0.050. Must use G01 (feed) when going deeper. Change to: G01 Z-0.050 F[feedrate]
+  L:/My Drive/Home/File organizer/repository\o58202.nc
+
+o58538
+  Line 98: CRASH RISK - G00 rapid to Z-0.090. Must use G01 (feed) when going deeper. Change to: G01 Z-0.090 F[feedrate]
+  L:/My Drive/Home/File organizer/repository\o58538.nc
+
+o58547
+  Line 98: CRASH RISK - G00 rapid to Z-0.090. Must use G01 (feed) when going deeper. Change to: G01 Z-0.090 F[feedrate]
+  L:/My Drive/Home/File organizer/repository\o58547.nc
+
+o58572
+  Line 101: CRASH RISK - G00 rapid to Z-0.090. Must use G01 (feed) when going deeper. Change to: G01 Z-0.090 F[feedrate]
+  L:/My Drive/Home/File organizer/repository\o58572.nc
+
+o58676
+  Line 98: CRASH RISK - G00 rapid to Z-0.090. Must use G01 (feed) when going deeper. Change to: G01 Z-0.090 F[feedrate]
+  L:/My Drive/Home/File organizer/repository\o58676.nc
+
+o58677
+  Line 98: CRASH RISK - G00 rapid to Z-0.090. Must use G01 (feed) when going deeper. Change to: G01 Z-0.090 F[feedrate]
+  L:/My Drive/Home/File organizer/repository\o58677.nc
+
+o60199
+  Line 26: CRASH RISK - G00 rapid to Z-0.550. Must use G01 (feed) when going deeper. Change to: G01 Z-0.550 F[feedrate]
+  L:/My Drive/Home/File organizer/repository\o60199.nc
+
+o61007
+  Line 107: CRASH RISK - G00 rapid to Z-0.090. Must use G01 (feed) when going deeper. Change to: G01 Z-0.090 F[feedrate]
+  L:/My Drive/Home/File organizer/repository\o61007.nc
+
+o65697
+  Line 111: CRASH RISK - G00 rapid to Z-0.090. Must use G01 (feed) when going deeper. Change to: G01 Z-0.090 F[feedrate]
+  L:/My Drive/Home/File organizer/repository\o65697.nc
+
+o75292
+  Line 85: CRASH RISK - G00 rapid to Z-0.400. Must use G01 (feed) when going deeper. Change to: G01 Z-0.400 F[feedrate]
+  L:/My Drive/Home/File organizer/repository\o75292.nc
+
+o80016
+  Line 98: CRASH RISK - G00 rapid to Z-0.400. Must use G01 (feed) when going deeper. Change to: G01 Z-0.400 F[feedrate]
+  L:/My Drive/Home/File organizer/repository\o80016.nc
+
+o80019
+  Line 94: CRASH RISK - G00 rapid to Z-0.400. Must use G01 (feed) when going deeper. Change to: G01 Z-0.400 F[feedrate]
+  L:/My Drive/Home/File organizer/repository\o80019.nc
+
+o80021
+  Line 98: CRASH RISK - G00 rapid to Z-0.400. Must use G01 (feed) when going deeper. Change to: G01 Z-0.400 F[feedrate]
+  L:/My Drive/Home/File organizer/repository\o80021.nc
+
+o80022
+  Line 105: CRASH RISK - G00 rapid to Z-0.400. Must use G01 (feed) when going deeper. Change to: G01 Z-0.400 F[feedrate]
+  L:/My Drive/Home/File organizer/repository\o80022.nc
+
+o80023
+  Line 97: CRASH RISK - G00 rapid to Z-0.400. Must use G01 (feed) when going deeper. Change to: G01 Z-0.400 F[feedrate]
+  L:/My Drive/Home/File organizer/repository\o80023.nc
+
+o80025
+  Line 95: CRASH RISK - G00 rapid to Z-0.400. Must use G01 (feed) when going deeper. Change to: G01 Z-0.400 F[feedrate]
+  L:/My Drive/Home/File organizer/repository\o80025.nc
+
+o80027
+  Line 96: CRASH RISK - G00 rapid to Z-0.400. Must use G01 (feed) when going deeper. Change to: G01 Z-0.400 F[feedrate]
+  L:/My Drive/Home/File organizer/repository\o80027.nc
+
+o80035
+  Line 97: CRASH RISK - G00 rapid to Z-0.400. Must use G01 (feed) when going deeper. Change to: G01 Z-0.400 F[feedrate]
+  L:/My Drive/Home/File organizer/repository\o80035.nc
+
+o80040
+  Line 15: CRASH RISK - G00 rapid to Z-0.100. Must use G01 (feed) when going deeper. Change to: G01 Z-0.100 F[feedrate]
+  L:/My Drive/Home/File organizer/repository\o80040.nc
+
+o80063
+  Line 96: CRASH RISK - G00 rapid to Z-0.400. Must use G01 (feed) when going deeper. Change to: G01 Z-0.400 F[feedrate]
+  L:/My Drive/Home/File organizer/repository\o80063.nc
+
+o80067
+  Line 96: CRASH RISK - G00 rapid to Z-0.400. Must use G01 (feed) when going deeper. Change to: G01 Z-0.400 F[feedrate]
+  L:/My Drive/Home/File organizer/repository\o80067.nc
+
+o80069
+  Line 98: CRASH RISK - G00 rapid to Z-0.400. Must use G01 (feed) when going deeper. Change to: G01 Z-0.400 F[feedrate]
+  L:/My Drive/Home/File organizer/repository\o80069.nc
+
+o80070
+  Line 99: CRASH RISK - G00 rapid to Z-0.400. Must use G01 (feed) when going deeper. Change to: G01 Z-0.400 F[feedrate]
+  L:/My Drive/Home/File organizer/repository\o80070.nc
+
+o80071
+  Line 93: CRASH RISK - G00 rapid to Z-0.400. Must use G01 (feed) when going deeper. Change to: G01 Z-0.400 F[feedrate]
+  L:/My Drive/Home/File organizer/repository\o80071.nc
+
+o80117
+  Line 99: CRASH RISK - G00 rapid to Z-0.400. Must use G01 (feed) when going deeper. Change to: G01 Z-0.400 F[feedrate]
+  L:/My Drive/Home/File organizer/repository\o80117.nc
+
+o80255
+  Line 100: CRASH RISK - G00 rapid to Z-0.400. Must use G01 (feed) when going deeper. Change to: G01 Z-0.400 F[feedrate]
+  L:/My Drive/Home/File organizer/repository\o80255.nc
+
+o80281
+  Line 94: CRASH RISK - G00 rapid to Z-0.400. Must use G01 (feed) when going deeper. Change to: G01 Z-0.400 F[feedrate]
+  L:/My Drive/Home/File organizer/repository\o80281.nc
+
+o80809
+  Line 97: CRASH RISK - G00 rapid to Z-0.400. Must use G01 (feed) when going deeper. Change to: G01 Z-0.400 F[feedrate]
+  L:/My Drive/Home/File organizer/repository\o80809.nc
+
+o81048
+  Line 94: CRASH RISK - G00 rapid to Z-0.400. Must use G01 (feed) when going deeper. Change to: G01 Z-0.400 F[feedrate]
+  L:/My Drive/Home/File organizer/repository\o81048.nc
+
+o85125
+  Line 99: CRASH RISK - G00 rapid to Z-0.400. Must use G01 (feed) when going deeper. Change to: G01 Z-0.400 F[feedrate]
+  L:/My Drive/Home/File organizer/repository\o85125.nc
+
+o88777
+  Line 97: CRASH RISK - G00 rapid to Z-0.400. Must use G01 (feed) when going deeper. Change to: G01 Z-0.400 F[feedrate]
+  L:/My Drive/Home/File organizer/repository\o88777.nc
+
+o89000
+  Line 85: CRASH RISK - G00 rapid to Z-0.800. Must use G01 (feed) when going deeper. Change to: G01 Z-0.800 F[feedrate]
+  L:/My Drive/Home/File organizer/repository\o89000.nc
+
+o92126
+  Line 101: CRASH RISK - G00 rapid to Z-0.400. Must use G01 (feed) when going deeper. Change to: G01 Z-0.400 F[feedrate]
+  L:/My Drive/Home/File organizer/repository\o92126.nc
+

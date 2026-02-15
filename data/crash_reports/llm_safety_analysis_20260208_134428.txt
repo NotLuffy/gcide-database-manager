@@ -1,0 +1,499 @@
+================================================================================
+LLM-POWERED G-CODE SAFETY ANALYSIS REPORT
+Generated: 2026-02-08 13:44:28
+================================================================================
+
+SUMMARY
+--------------------------------------------------------------------------------
+Files Analyzed: 50
+Critical Issues: 368
+Warnings: 143
+Suggestions: 0
+
+ISSUE TYPE BREAKDOWN
+--------------------------------------------------------------------------------
+  G53_UNSAFE_Z: 250 occurrences
+  RAPID_WITH_SPINDLE: 143 occurrences
+  JAW_CLEARANCE: 118 occurrences
+
+CRITICAL ISSUES DETAIL
+--------------------------------------------------------------------------------
+Program: o75709
+  Line 11: G53 tool home with Z=-13.00" (unsafe!)
+  Line 23: Tool may hit chuck jaws at Z=-0.55" (limit: -0.45")
+  Line 24: Tool may hit chuck jaws at Z=-0.55" (limit: -0.45")
+  Line 30: G53 tool home with Z=-13.00" (unsafe!)
+  Line 64: G53 tool home with Z=-13.00" (unsafe!)
+  Line 91: Tool may hit chuck jaws at Z=-0.55" (limit: -0.45")
+  Line 99: G53 tool home with Z=-13.00" (unsafe!)
+  Line 115: G53 tool home with Z=-13.00" (unsafe!)
+
+Program: o73075
+  Line 9: G53 tool home with Z=-13.00" (unsafe!)
+  Line 40: G53 tool home with Z=-13.00" (unsafe!)
+  Line 66: G53 tool home with Z=-13.00" (unsafe!)
+  Line 91: G53 tool home with Z=-13.00" (unsafe!)
+  Line 107: G53 tool home with Z=-13.00" (unsafe!)
+
+Program: o63000
+  Line 12: G53 tool home with Z=-13.00" (unsafe!)
+  Line 43: G53 tool home with Z=-13.00" (unsafe!)
+  Line 63: G53 tool home with Z=-14.00" (unsafe!)
+  Line 89: G53 tool home with Z=-13.00" (unsafe!)
+  Line 104: G53 tool home with Z=-13.00" (unsafe!)
+
+Program: o86071
+  Line 6: G53 tool home with Z=-13.00" (unsafe!)
+  Line 54: G53 tool home with Z=-13.00" (unsafe!)
+  Line 72: Tool may hit chuck jaws at Z=-0.80" (limit: -0.70")
+  Line 73: Tool may hit chuck jaws at Z=-0.80" (limit: -0.70")
+  Line 76: G53 tool home with Z=-13.00" (unsafe!)
+  Line 112: Tool may hit chuck jaws at Z=-0.80" (limit: -0.70")
+  Line 121: G53 tool home with Z=-13.00" (unsafe!)
+  Line 133: G53 tool home with Z=-13.00" (unsafe!)
+
+Program: o86017
+  Line 11: G53 tool home with Z=-13.00" (unsafe!)
+  Line 66: G53 tool home with Z=-13.00" (unsafe!)
+  Line 84: Tool may hit chuck jaws at Z=-1.50" (limit: -1.45")
+  Line 85: Tool may hit chuck jaws at Z=-1.50" (limit: -1.45")
+  Line 88: G53 tool home with Z=-13.00" (unsafe!)
+  Line 129: G53 tool home with Z=-13.00" (unsafe!)
+  Line 141: G53 tool home with Z=-13.00" (unsafe!)
+
+Program: o58108
+  Line 8: G53 tool home with Z=-13.00" (unsafe!)
+  Line 31: G53 tool home with Z=-13.00" (unsafe!)
+  Line 44: Tool may hit chuck jaws at Z=-0.80" (limit: -0.49")
+  Line 45: Tool may hit chuck jaws at Z=-0.80" (limit: -0.49")
+  Line 56: G53 tool home with Z=-13.00" (unsafe!)
+  Line 81: Tool may hit chuck jaws at Z=-0.65" (limit: -0.49")
+  Line 82: Tool may hit chuck jaws at Z=-0.65" (limit: -0.49")
+  Line 83: Tool may hit chuck jaws at Z=-0.55" (limit: -0.49")
+  Line 84: Tool may hit chuck jaws at Z=-0.55" (limit: -0.49")
+  Line 85: Tool may hit chuck jaws at Z=-0.50" (limit: -0.49")
+  Line 86: Tool may hit chuck jaws at Z=-0.50" (limit: -0.49")
+  Line 93: G53 tool home with Z=-13.00" (unsafe!)
+  Line 108: G53 tool home with Z=-13.00" (unsafe!)
+
+Program: o60034
+  Line 8: G53 tool home with Z=-13.00" (unsafe!)
+  Line 33: G53 tool home with Z=-13.00" (unsafe!)
+  Line 58: G53 tool home with Z=-13.00" (unsafe!)
+  Line 83: G53 tool home with Z=-13.00" (unsafe!)
+  Line 98: G53 tool home with Z=-13.00" (unsafe!)
+
+Program: o61017
+  Line 8: G53 tool home with Z=-13.00" (unsafe!)
+  Line 34: G53 tool home with Z=-13.00" (unsafe!)
+  Line 47: Tool may hit chuck jaws at Z=-1.75" (limit: -1.45")
+  Line 48: Tool may hit chuck jaws at Z=-1.75" (limit: -1.45")
+  Line 59: G53 tool home with Z=-13.00" (unsafe!)
+  Line 88: G53 tool home with Z=-13.00" (unsafe!)
+  Line 104: G53 tool home with Z=-13.00" (unsafe!)
+
+Program: o57407
+  Line 8: G53 tool home with Z=-13.00" (unsafe!)
+  Line 33: G53 tool home with Z=-13.00" (unsafe!)
+  Line 53: G53 tool home with Z=-13.00" (unsafe!)
+  Line 77: G53 tool home with Z=-13.00" (unsafe!)
+  Line 89: G53 tool home with Z=-13.00" (unsafe!)
+
+Program: o58569
+  Line 8: G53 tool home with Z=-11.00" (unsafe!)
+  Line 38: G53 tool home with Z=-11.00" (unsafe!)
+  Line 51: Tool may hit chuck jaws at Z=-2.50" (limit: -2.45")
+  Line 52: Tool may hit chuck jaws at Z=-2.50" (limit: -2.45")
+  Line 63: G53 tool home with Z=-11.00" (unsafe!)
+  Line 98: G53 tool home with Z=-11.00" (unsafe!)
+  Line 112: G53 tool home with Z=-11.00" (unsafe!)
+
+Program: o57406
+  Line 8: G53 tool home with Z=-13.00" (unsafe!)
+  Line 34: G53 tool home with Z=-13.00" (unsafe!)
+  Line 55: G53 tool home with Z=-13.00" (unsafe!)
+  Line 79: G53 tool home with Z=-13.00" (unsafe!)
+  Line 92: G53 tool home with Z=-13.00" (unsafe!)
+
+Program: o13922
+  Line 12: G53 tool home with Z=-10.00" (unsafe!)
+  Line 75: G53 tool home with Z=-10.00" (unsafe!)
+  Line 87: Tool may hit chuck jaws at Z=-1.10" (limit: -0.70")
+  Line 93: G53 tool home with Z=-10.00" (unsafe!)
+  Line 136: Tool may hit chuck jaws at Z=-0.80" (limit: -0.70")
+  Line 137: Tool may hit chuck jaws at Z=-0.80" (limit: -0.70")
+  Line 138: Tool may hit chuck jaws at Z=-0.80" (limit: -0.70")
+  Line 139: Tool may hit chuck jaws at Z=-1.00" (limit: -0.70")
+  Line 140: Tool may hit chuck jaws at Z=-1.00" (limit: -0.70")
+  Line 141: Tool may hit chuck jaws at Z=-1.00" (limit: -0.70")
+  Line 142: Tool may hit chuck jaws at Z=-1.10" (limit: -0.70")
+  Line 143: Tool may hit chuck jaws at Z=-1.10" (limit: -0.70")
+  Line 144: Tool may hit chuck jaws at Z=-1.10" (limit: -0.70")
+  Line 145: Tool may hit chuck jaws at Z=-1.30" (limit: -0.70")
+  Line 146: Tool may hit chuck jaws at Z=-1.30" (limit: -0.70")
+  Line 147: Tool may hit chuck jaws at Z=-1.30" (limit: -0.70")
+  Line 148: Tool may hit chuck jaws at Z=-1.45" (limit: -0.70")
+  Line 149: Tool may hit chuck jaws at Z=-1.35" (limit: -0.70")
+  Line 150: Tool may hit chuck jaws at Z=-1.35" (limit: -0.70")
+  Line 156: G53 tool home with Z=-10.00" (unsafe!)
+  Line 170: G53 tool home with Z=-10.00" (unsafe!)
+
+Program: o73324
+  Line 10: G53 tool home with Z=-13.00" (unsafe!)
+  Line 32: G53 tool home with Z=-13.00" (unsafe!)
+  Line 66: G53 tool home with Z=-13.00" (unsafe!)
+  Line 103: G53 tool home with Z=-13.00" (unsafe!)
+  Line 116: G53 tool home with Z=-13.00" (unsafe!)
+
+Program: o70066
+  Line 14: G53 tool home with Z=-13.00" (unsafe!)
+  Line 42: G53 tool home with Z=-13.00" (unsafe!)
+  Line 67: G53 tool home with Z=-13.00" (unsafe!)
+  Line 92: G53 tool home with Z=-13.00" (unsafe!)
+  Line 108: G53 tool home with Z=-13.00" (unsafe!)
+
+Program: o70263
+  Line 12: G53 tool home with Z=-13.00" (unsafe!)
+  Line 27: Tool may hit chuck jaws at Z=-0.55" (limit: -0.45")
+  Line 28: Tool may hit chuck jaws at Z=-0.55" (limit: -0.45")
+  Line 34: G53 tool home with Z=-13.00" (unsafe!)
+  Line 66: G53 tool home with Z=-13.00" (unsafe!)
+  Line 93: Tool may hit chuck jaws at Z=-0.55" (limit: -0.45")
+  Line 94: Tool may hit chuck jaws at Z=-0.55" (limit: -0.45")
+  Line 103: G53 tool home with Z=-13.00" (unsafe!)
+  Line 117: G53 tool home with Z=-13.00" (unsafe!)
+
+Program: o62857
+  Line 17: G53 tool home with Z=-13.00" (unsafe!)
+  Line 32: Tool may hit chuck jaws at Z=-0.55" (limit: -0.45")
+  Line 33: Tool may hit chuck jaws at Z=-0.55" (limit: -0.45")
+  Line 39: G53 tool home with Z=-13.00" (unsafe!)
+  Line 73: G53 tool home with Z=-13.00" (unsafe!)
+  Line 100: Tool may hit chuck jaws at Z=-0.55" (limit: -0.45")
+  Line 101: Tool may hit chuck jaws at Z=-0.55" (limit: -0.45")
+  Line 110: G53 tool home with Z=-13.00" (unsafe!)
+  Line 126: G53 tool home with Z=-13.00" (unsafe!)
+
+Program: o62873
+  Line 7: G53 tool home with Z=-13.00" (unsafe!)
+  Line 34: G53 tool home with Z=-13.00" (unsafe!)
+  Line 54: G53 tool home with Z=-13.00" (unsafe!)
+  Line 79: G53 tool home with Z=-13.00" (unsafe!)
+  Line 92: G53 tool home with Z=-13.00" (unsafe!)
+
+Program: o58178
+  Line 8: G53 tool home with Z=-13.00" (unsafe!)
+  Line 31: G53 tool home with Z=-13.00" (unsafe!)
+  Line 44: Tool may hit chuck jaws at Z=-1.25" (limit: -1.20")
+  Line 45: Tool may hit chuck jaws at Z=-1.25" (limit: -1.20")
+  Line 56: G53 tool home with Z=-13.00" (unsafe!)
+  Line 85: G53 tool home with Z=-13.00" (unsafe!)
+  Line 99: G53 tool home with Z=-13.00" (unsafe!)
+
+Program: o80294
+  Line 6: G53 tool home with Z=-11.00" (unsafe!)
+  Line 62: G53 tool home with Z=-11.00" (unsafe!)
+  Line 80: Tool may hit chuck jaws at Z=-3.75" (limit: -3.70")
+  Line 81: Tool may hit chuck jaws at Z=-3.75" (limit: -3.70")
+  Line 84: G53 tool home with Z=-11.00" (unsafe!)
+  Line 131: G53 tool home with Z=-11.00" (unsafe!)
+  Line 177: G53 tool home with Z=-11.00" (unsafe!)
+
+Program: o58603
+  Line 9: G53 tool home with Z=-13.00" (unsafe!)
+  Line 39: G53 tool home with Z=-13.00" (unsafe!)
+  Line 52: Tool may hit chuck jaws at Z=-0.40" (limit: -0.09")
+  Line 53: Tool may hit chuck jaws at Z=-0.40" (limit: -0.09")
+  Line 64: G53 tool home with Z=-13.00" (unsafe!)
+  Line 80: Tool may hit chuck jaws at Z=-0.20" (limit: -0.09")
+  Line 81: Tool may hit chuck jaws at Z=-0.20" (limit: -0.09")
+  Line 82: Tool may hit chuck jaws at Z=-0.20" (limit: -0.09")
+  Line 83: Tool may hit chuck jaws at Z=-0.40" (limit: -0.09")
+  Line 84: Tool may hit chuck jaws at Z=-0.40" (limit: -0.09")
+  Line 85: Tool may hit chuck jaws at Z=-0.40" (limit: -0.09")
+  Line 86: Tool may hit chuck jaws at Z=-0.55" (limit: -0.09")
+  Line 87: Tool may hit chuck jaws at Z=-0.50" (limit: -0.09")
+  Line 88: Tool may hit chuck jaws at Z=-0.50" (limit: -0.09")
+  Line 89: Tool may hit chuck jaws at Z=-0.40" (limit: -0.09")
+  Line 90: Tool may hit chuck jaws at Z=-0.14" (limit: -0.09")
+  Line 96: G53 tool home with Z=-13.00" (unsafe!)
+  Line 110: G53 tool home with Z=-13.00" (unsafe!)
+
+Program: o58144
+  Line 9: G53 tool home with Z=-13.00" (unsafe!)
+  Line 34: G53 tool home with Z=-13.00" (unsafe!)
+  Line 71: G53 tool home with Z=-13.00" (unsafe!)
+  Line 103: G53 tool home with Z=-13.00" (unsafe!)
+  Line 116: G53 tool home with Z=-13.00" (unsafe!)
+
+Program: o65673
+  Line 8: G53 tool home with Z=-13.00" (unsafe!)
+  Line 34: G53 tool home with Z=-13.00" (unsafe!)
+  Line 56: G53 tool home with Z=-13.00" (unsafe!)
+  Line 82: G53 tool home with Z=-13.00" (unsafe!)
+  Line 95: G53 tool home with Z=-13.00" (unsafe!)
+
+Program: o13639
+  Line 11: G53 tool home with Z=-10.00" (unsafe!)
+  Line 106: G53 tool home with Z=-10.00" (unsafe!)
+  Line 118: Tool may hit chuck jaws at Z=-1.00" (limit: -0.95")
+  Line 124: G53 tool home with Z=-10.00" (unsafe!)
+  Line 172: G53 tool home with Z=-10.00" (unsafe!)
+  Line 186: G53 tool home with Z=-10.00" (unsafe!)
+
+Program: o70128
+  Line 10: G53 tool home with Z=-13.00" (unsafe!)
+  Line 25: Tool may hit chuck jaws at Z=-0.80" (limit: -0.70")
+  Line 26: Tool may hit chuck jaws at Z=-0.80" (limit: -0.70")
+  Line 32: G53 tool home with Z=-13.00" (unsafe!)
+  Line 63: G53 tool home with Z=-13.00" (unsafe!)
+  Line 90: Tool may hit chuck jaws at Z=-0.80" (limit: -0.70")
+  Line 91: Tool may hit chuck jaws at Z=-0.80" (limit: -0.70")
+  Line 100: G53 tool home with Z=-13.00" (unsafe!)
+  Line 113: G53 tool home with Z=-13.00" (unsafe!)
+
+Program: o73639
+  Line 9: G53 tool home with Z=-13.00" (unsafe!)
+  Line 34: G53 tool home with Z=-13.00" (unsafe!)
+  Line 81: G53 tool home with Z=-13.00" (unsafe!)
+  Line 113: G53 tool home with Z=-13.00" (unsafe!)
+  Line 124: G53 tool home with Z=-13.00" (unsafe!)
+
+Program: o62927
+  Line 12: G53 tool home with Z=-13.00" (unsafe!)
+  Line 47: G53 tool home with Z=-13.00" (unsafe!)
+  Line 63: G53 tool home with Z=-13.00" (unsafe!)
+  Line 89: G53 tool home with Z=-13.00" (unsafe!)
+  Line 104: G53 tool home with Z=-13.00" (unsafe!)
+
+Program: o60307
+  Line 8: G53 tool home with Z=-13.00" (unsafe!)
+  Line 40: G53 tool home with Z=-13.00" (unsafe!)
+  Line 62: G53 tool home with Z=-13.00" (unsafe!)
+  Line 87: G53 tool home with Z=-13.00" (unsafe!)
+  Line 101: G53 tool home with Z=-13.00" (unsafe!)
+
+Program: o70121
+  Line 10: G53 tool home with Z=-13.00" (unsafe!)
+  Line 32: G53 tool home with Z=-13.00" (unsafe!)
+  Line 80: G53 tool home with Z=-13.00" (unsafe!)
+  Line 117: G53 tool home with Z=-13.00" (unsafe!)
+  Line 130: G53 tool home with Z=-13.00" (unsafe!)
+
+Program: o70064
+  Line 7: G53 tool home with Z=-13.00" (unsafe!)
+  Line 37: G53 tool home with Z=-13.00" (unsafe!)
+  Line 50: Tool may hit chuck jaws at Z=-1.25" (limit: -1.20")
+  Line 51: Tool may hit chuck jaws at Z=-1.25" (limit: -1.20")
+  Line 62: G53 tool home with Z=-13.00" (unsafe!)
+  Line 93: G53 tool home with Z=-13.00" (unsafe!)
+  Line 109: G53 tool home with Z=-13.00" (unsafe!)
+
+Program: o57486
+  Line 8: G53 tool home with Z=-13.00" (unsafe!)
+  Line 32: G53 tool home with Z=-13.00" (unsafe!)
+  Line 53: G53 tool home with Z=-13.00" (unsafe!)
+  Line 78: G53 tool home with Z=-13.00" (unsafe!)
+  Line 92: G53 tool home with Z=-13.00" (unsafe!)
+
+Program: o58377
+  Line 8: G53 tool home with Z=-13.00" (unsafe!)
+  Line 30: G53 tool home with Z=-13.00" (unsafe!)
+  Line 43: Tool may hit chuck jaws at Z=-0.50" (limit: -0.09")
+  Line 44: Tool may hit chuck jaws at Z=-0.50" (limit: -0.09")
+  Line 55: G53 tool home with Z=-13.00" (unsafe!)
+  Line 71: Tool may hit chuck jaws at Z=-0.15" (limit: -0.09")
+  Line 72: Tool may hit chuck jaws at Z=-0.15" (limit: -0.09")
+  Line 73: Tool may hit chuck jaws at Z=-0.15" (limit: -0.09")
+  Line 74: Tool may hit chuck jaws at Z=-0.30" (limit: -0.09")
+  Line 75: Tool may hit chuck jaws at Z=-0.30" (limit: -0.09")
+  Line 76: Tool may hit chuck jaws at Z=-0.30" (limit: -0.09")
+  Line 77: Tool may hit chuck jaws at Z=-0.38" (limit: -0.09")
+  Line 78: Tool may hit chuck jaws at Z=-0.37" (limit: -0.09")
+  Line 79: Tool may hit chuck jaws at Z=-0.35" (limit: -0.09")
+  Line 80: Tool may hit chuck jaws at Z=-0.35" (limit: -0.09")
+  Line 81: Tool may hit chuck jaws at Z=-0.14" (limit: -0.09")
+  Line 87: G53 tool home with Z=-13.00" (unsafe!)
+  Line 103: G53 tool home with Z=-13.00" (unsafe!)
+
+Program: o75675
+  Line 10: G53 tool home with Z=-13.00" (unsafe!)
+  Line 46: G53 tool home with Z=-13.00" (unsafe!)
+  Line 71: G53 tool home with Z=-13.00" (unsafe!)
+  Line 96: G53 tool home with Z=-13.00" (unsafe!)
+  Line 112: G53 tool home with Z=-13.00" (unsafe!)
+
+Program: o80433
+  Line 10: G53 tool home with Z=-13.00" (unsafe!)
+  Line 32: G53 tool home with Z=-13.00" (unsafe!)
+  Line 72: G53 tool home with Z=-13.00" (unsafe!)
+  Line 99: G53 tool home with Z=-13.00" (unsafe!)
+  Line 110: G53 tool home with Z=-13.00" (unsafe!)
+
+Program: o10267
+  Line 6: G53 tool home with Z=-13.00" (unsafe!)
+  Line 58: G53 tool home with Z=-13.00" (unsafe!)
+  Line 76: Tool may hit chuck jaws at Z=-2.10" (limit: -1.70")
+  Line 77: Tool may hit chuck jaws at Z=-2.10" (limit: -1.70")
+  Line 80: G53 tool home with Z=-13.00" (unsafe!)
+  Line 132: G53 tool home with Z=-13.00" (unsafe!)
+  Line 149: G53 tool home with Z=-13.00" (unsafe!)
+
+Program: o60124
+  Line 7: G53 tool home with Z=-13.00" (unsafe!)
+  Line 32: G53 tool home with Z=-13.00" (unsafe!)
+  Line 57: G53 tool home with Z=-13.00" (unsafe!)
+  Line 82: G53 tool home with Z=-13.00" (unsafe!)
+  Line 97: G53 tool home with Z=-13.00" (unsafe!)
+
+Program: o65882
+  Line 8: G53 tool home with Z=-13.00" (unsafe!)
+  Line 35: G53 tool home with Z=-13.00" (unsafe!)
+  Line 57: G53 tool home with Z=-13.00" (unsafe!)
+  Line 83: G53 tool home with Z=-13.00" (unsafe!)
+  Line 97: G53 tool home with Z=-13.00" (unsafe!)
+
+Program: o58280
+  Line 8: G53 tool home with Z=-13.00" (unsafe!)
+  Line 33: G53 tool home with Z=-13.00" (unsafe!)
+  Line 46: Tool may hit chuck jaws at Z=-0.80" (limit: -0.70")
+  Line 47: Tool may hit chuck jaws at Z=-0.80" (limit: -0.70")
+  Line 58: G53 tool home with Z=-13.00" (unsafe!)
+  Line 80: Tool may hit chuck jaws at Z=-0.80" (limit: -0.70")
+  Line 81: Tool may hit chuck jaws at Z=-0.80" (limit: -0.70")
+  Line 92: G53 tool home with Z=-13.00" (unsafe!)
+  Line 108: G53 tool home with Z=-13.00" (unsafe!)
+
+Program: o73477
+  Line 10: G53 tool home with Z=-13.00" (unsafe!)
+  Line 35: G53 tool home with Z=-13.00" (unsafe!)
+  Line 98: G53 tool home with Z=-13.00" (unsafe!)
+  Line 130: G53 tool home with Z=-13.00" (unsafe!)
+  Line 142: G53 tool home with Z=-13.00" (unsafe!)
+
+Program: o57505
+  Line 8: G53 tool home with Z=-13.00" (unsafe!)
+  Line 33: G53 tool home with Z=-13.00" (unsafe!)
+  Line 54: G53 tool home with Z=-13.00" (unsafe!)
+  Line 78: G53 tool home with Z=-13.00" (unsafe!)
+  Line 91: G53 tool home with Z=-13.00" (unsafe!)
+
+Program: o58439
+  Line 8: G53 tool home with Z=-13.00" (unsafe!)
+  Line 33: G53 tool home with Z=-13.00" (unsafe!)
+  Line 46: Tool may hit chuck jaws at Z=-0.70" (limit: -0.45")
+  Line 47: Tool may hit chuck jaws at Z=-0.70" (limit: -0.45")
+  Line 58: G53 tool home with Z=-13.00" (unsafe!)
+  Line 79: Tool may hit chuck jaws at Z=-0.70" (limit: -0.45")
+  Line 80: Tool may hit chuck jaws at Z=-0.55" (limit: -0.45")
+  Line 81: Tool may hit chuck jaws at Z=-0.50" (limit: -0.45")
+  Line 82: Tool may hit chuck jaws at Z=-0.50" (limit: -0.45")
+  Line 89: G53 tool home with Z=-13.00" (unsafe!)
+  Line 105: G53 tool home with Z=-13.00" (unsafe!)
+
+Program: o58215
+  Line 8: G53 tool home with Z=-13.00" (unsafe!)
+  Line 31: G53 tool home with Z=-13.00" (unsafe!)
+  Line 43: Tool may hit chuck jaws at Z=-0.60" (limit: -0.29")
+  Line 44: Tool may hit chuck jaws at Z=-0.60" (limit: -0.29")
+  Line 55: G53 tool home with Z=-13.00" (unsafe!)
+  Line 77: Tool may hit chuck jaws at Z=-0.40" (limit: -0.29")
+  Line 78: Tool may hit chuck jaws at Z=-0.40" (limit: -0.29")
+  Line 79: Tool may hit chuck jaws at Z=-0.40" (limit: -0.29")
+  Line 80: Tool may hit chuck jaws at Z=-0.55" (limit: -0.29")
+  Line 81: Tool may hit chuck jaws at Z=-0.55" (limit: -0.29")
+  Line 82: Tool may hit chuck jaws at Z=-0.50" (limit: -0.29")
+  Line 83: Tool may hit chuck jaws at Z=-0.50" (limit: -0.29")
+  Line 90: G53 tool home with Z=-13.00" (unsafe!)
+  Line 106: G53 tool home with Z=-13.00" (unsafe!)
+
+Program: o65885
+  Line 9: G53 tool home with Z=-13.00" (unsafe!)
+  Line 37: G53 tool home with Z=-13.00" (unsafe!)
+  Line 63: G53 tool home with Z=-13.00" (unsafe!)
+  Line 89: G53 tool home with Z=-13.00" (unsafe!)
+  Line 105: G53 tool home with Z=-13.00" (unsafe!)
+
+Program: o96100
+  Line 6: G53 tool home with Z=-13.00" (unsafe!)
+  Line 54: G53 tool home with Z=-13.00" (unsafe!)
+  Line 72: Tool may hit chuck jaws at Z=-1.10" (limit: -0.70")
+  Line 73: Tool may hit chuck jaws at Z=-1.10" (limit: -0.70")
+  Line 76: G53 tool home with Z=-13.00" (unsafe!)
+  Line 114: Tool may hit chuck jaws at Z=-0.80" (limit: -0.70")
+  Line 115: Tool may hit chuck jaws at Z=-0.80" (limit: -0.70")
+  Line 116: Tool may hit chuck jaws at Z=-0.80" (limit: -0.70")
+  Line 117: Tool may hit chuck jaws at Z=-0.95" (limit: -0.70")
+  Line 118: Tool may hit chuck jaws at Z=-0.95" (limit: -0.70")
+  Line 119: Tool may hit chuck jaws at Z=-0.95" (limit: -0.70")
+  Line 120: Tool may hit chuck jaws at Z=-1.10" (limit: -0.70")
+  Line 121: Tool may hit chuck jaws at Z=-1.00" (limit: -0.70")
+  Line 122: Tool may hit chuck jaws at Z=-1.00" (limit: -0.70")
+  Line 128: G53 tool home with Z=-13.00" (unsafe!)
+  Line 145: G53 tool home with Z=-13.00" (unsafe!)
+
+Program: o73479
+  Line 10: G53 tool home with Z=-13.00" (unsafe!)
+  Line 35: G53 tool home with Z=-13.00" (unsafe!)
+  Line 60: G53 tool home with Z=-13.00" (unsafe!)
+  Line 85: G53 tool home with Z=-13.00" (unsafe!)
+  Line 101: G53 tool home with Z=-13.00" (unsafe!)
+
+Program: o57549
+  Line 7: G53 tool home with Z=-13.00" (unsafe!)
+  Line 35: G53 tool home with Z=-13.00" (unsafe!)
+  Line 61: G53 tool home with Z=-13.00" (unsafe!)
+  Line 86: G53 tool home with Z=-13.00" (unsafe!)
+  Line 99: G53 tool home with Z=-13.00" (unsafe!)
+
+Program: o58260
+  Line 8: G53 tool home with Z=-13.00" (unsafe!)
+  Line 33: G53 tool home with Z=-13.00" (unsafe!)
+  Line 46: Tool may hit chuck jaws at Z=-0.80" (limit: -0.70")
+  Line 47: Tool may hit chuck jaws at Z=-0.80" (limit: -0.70")
+  Line 54: G53 tool home with Z=-13.00" (unsafe!)
+  Line 75: Tool may hit chuck jaws at Z=-0.80" (limit: -0.70")
+  Line 85: G53 tool home with Z=-13.00" (unsafe!)
+  Line 99: G53 tool home with Z=-13.00" (unsafe!)
+
+Program: o65817
+  Line 6: G53 tool home with Z=-13.00" (unsafe!)
+  Line 33: G53 tool home with Z=-13.00" (unsafe!)
+  Line 55: G53 tool home with Z=-13.00" (unsafe!)
+  Line 82: G53 tool home with Z=-13.00" (unsafe!)
+  Line 94: G53 tool home with Z=-13.00" (unsafe!)
+
+Program: o57387
+  Line 6: G53 tool home with Z=-13.00" (unsafe!)
+  Line 30: G53 tool home with Z=-13.00" (unsafe!)
+  Line 52: G53 tool home with Z=-13.00" (unsafe!)
+  Line 77: G53 tool home with Z=-13.00" (unsafe!)
+  Line 89: G53 tool home with Z=-13.00" (unsafe!)
+
+Program: o58681
+  Line 8: G53 tool home with Z=-13.00" (unsafe!)
+  Line 30: G53 tool home with Z=-13.00" (unsafe!)
+  Line 43: Tool may hit chuck jaws at Z=-1.00" (limit: -0.95")
+  Line 44: Tool may hit chuck jaws at Z=-1.00" (limit: -0.95")
+  Line 55: G53 tool home with Z=-13.00" (unsafe!)
+  Line 90: G53 tool home with Z=-13.00" (unsafe!)
+  Line 102: G53 tool home with Z=-13.00" (unsafe!)
+
+Program: o57462
+  Line 8: G53 tool home with Z=-13.00" (unsafe!)
+  Line 35: G53 tool home with Z=-13.00" (unsafe!)
+  Line 56: G53 tool home with Z=-13.00" (unsafe!)
+  Line 81: G53 tool home with Z=-13.00" (unsafe!)
+  Line 95: G53 tool home with Z=-13.00" (unsafe!)
+
+RECOMMENDATIONS
+--------------------------------------------------------------------------------
+⚠ ISSUES DETECTED IN FILES THAT PASS VALIDATION
+
+Some files that pass automated validation have potential safety
+issues detected by LLM analysis. Consider enhancing validation
+rules to catch these patterns.
+
+================================================================================
+END OF REPORT
+================================================================================

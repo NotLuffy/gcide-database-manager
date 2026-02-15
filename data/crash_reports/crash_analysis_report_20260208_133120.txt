@@ -1,0 +1,108 @@
+================================================================================
+G-CODE BATCH CRASH ANALYSIS REPORT
+Generated: 2026-02-08 13:31:20
+================================================================================
+
+SUMMARY STATISTICS
+--------------------------------------------------------------------------------
+Total Files Analyzed: 250
+Successfully Parsed: 250
+Failed to Parse: 0
+Files with Critical Issues: 12 (4.8%)
+Files with Warnings: 1 (0.4%)
+Files with Bore Warnings: 1 (0.4%)
+Files with Dimensional Issues: 9 (3.6%)
+
+CRASH PATTERN BREAKDOWN
+--------------------------------------------------------------------------------
+  other_critical: 12 occurrences
+
+WARNING PATTERN BREAKDOWN
+--------------------------------------------------------------------------------
+  other_warnings: 1 occurrences
+
+DIMENSION STATISTICS
+--------------------------------------------------------------------------------
+Outer Diameters (inches):
+  Min: 5.750, Max: 13.000, Avg: 7.433
+Thicknesses (inches):
+  Min: 0.394, Max: 4.000, Avg: 1.465
+Hub Heights (inches):
+  Min: 0.200, Max: 2.000, Avg: 0.621
+
+TOOL USAGE ANALYSIS
+--------------------------------------------------------------------------------
+  T303: 250 programs
+  T101: 249 programs
+  T121: 249 programs
+  T505: 1 programs
+  T525: 1 programs
+
+CRITICAL ISSUES DETAIL (Top 20)
+--------------------------------------------------------------------------------
+1. Program: o80291
+   Dimensions: OD=8.0, Thick=4.0, Hub=1.5
+   Issue: THICKNESS ERROR: Title=4.00"+1.50"hub=5.50"total, Drilled=4.50"total (thickness=3.00") (-1.000") - CRITICAL ERROR
+
+2. Program: o80408
+   Dimensions: OD=8.0, Thick=1.75, Hub=0.5
+   Issue: OB TOO LARGE: Spec=124.1mm, G-code=124.9mm) - CRITICAL ERROR
+
+3. Program: o73598
+   Dimensions: OD=7.0, Thick=1.0, Hub=0.49
+   Issue: CB TOO SMALL: Spec=70.3mm, G-code=66.0mm (-4.26mm) - CRITICAL ERROR
+
+4. Program: o70023
+   Dimensions: OD=7.0, Thick=2.0, Hub=0.5
+   Issue: CB TOO SMALL: Spec=78.1mm, G-code=73.7mm (-4.44mm) - CRITICAL ERROR
+
+5. Program: o70025
+   Dimensions: OD=7.0, Thick=1.5, Hub=0.5
+   Issue: CB TOO SMALL: Spec=77.8mm, G-code=75.6mm (-2.24mm) - CRITICAL ERROR
+
+6. Program: o58633
+   Dimensions: OD=5.75, Thick=0.5905511811023623, Hub=0.5
+   Issue: CB TOO SMALL: Spec=77.6mm, G-code=73.7mm (-3.94mm) - CRITICAL ERROR
+
+7. Program: o58211
+   Dimensions: OD=5.75, Thick=0.6692913385826772, Hub=0.58
+   Issue: CB TOO SMALL: Spec=54.1mm, G-code=53.7mm (-0.40mm) - CRITICAL ERROR
+
+8. Program: o61047
+   Dimensions: OD=6.25, Thick=1.25, Hub=0.5
+   Issue: OD MISMATCH: Spec=6.25", G-code=6.00" (-0.250") - G-CODE ERROR
+
+9. Program: o63807
+   Dimensions: OD=6.25, Thick=0.75, Hub=0.5
+   Issue: CB TOO SMALL: Spec=70.5mm, G-code=66.0mm (-4.46mm) - CRITICAL ERROR
+
+10. Program: o88001
+   Dimensions: OD=8.5, Thick=3.0, Hub=None
+   Issue: OD MISMATCH: Spec=8.50", G-code=7.96" (-0.535") - G-CODE ERROR
+
+11. Program: o61458
+   Dimensions: OD=6.0, Thick=0.5, Hub=0.5
+   Issue: OB TOO SMALL: Spec=73.1mm, G-code=71.9mm (-1.22mm) - CRITICAL ERROR
+
+12. Program: o85185
+   Dimensions: OD=8.5, Thick=2.5, Hub=None
+   Issue: CB TOO SMALL: Spec=126.2mm, G-code=124.1mm (-2.05mm) - CRITICAL ERROR
+
+RECOMMENDATIONS
+--------------------------------------------------------------------------------
+POTENTIAL NEW CRASH PATTERNS TO INVESTIGATE:
+
+1. CB TOO SMALL: Spec=126.2mm, G-code=124.1mm (-2.05mm) - CRITICAL ERROR
+2. THICKNESS ERROR: Title=4.00"+1.50"hub=5.50"total, Drilled=4.50"total (thickness=3.00") (-1.000") - C
+3. CB TOO SMALL: Spec=70.3mm, G-code=66.0mm (-4.26mm) - CRITICAL ERROR
+4. CB TOO SMALL: Spec=78.1mm, G-code=73.7mm (-4.44mm) - CRITICAL ERROR
+5. CB TOO SMALL: Spec=77.6mm, G-code=73.7mm (-3.94mm) - CRITICAL ERROR
+6. OB TOO LARGE: Spec=124.1mm, G-code=124.9mm) - CRITICAL ERROR
+7. CB TOO SMALL: Spec=77.8mm, G-code=75.6mm (-2.24mm) - CRITICAL ERROR
+8. CB TOO SMALL: Spec=70.5mm, G-code=66.0mm (-4.46mm) - CRITICAL ERROR
+9. OD MISMATCH: Spec=8.50", G-code=7.96" (-0.535") - G-CODE ERROR
+10. CB TOO SMALL: Spec=54.1mm, G-code=53.7mm (-0.40mm) - CRITICAL ERROR
+
+================================================================================
+END OF REPORT
+================================================================================

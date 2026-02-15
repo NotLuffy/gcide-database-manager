@@ -1,0 +1,184 @@
+================================================================================
+TWO-PIECE PART PATTERN ANALYSIS REPORT
+Generated: 2026-02-08 15:34:12
+================================================================================
+
+OPERATION FREQUENCY (Which operations are standard vs optional)
+--------------------------------------------------------------------------------
+  BORE: 1000/1000 (100.0%) - STANDARD
+  TURN: 999/1000 (99.9%) - STANDARD
+  DRILL: 998/1000 (99.8%) - STANDARD
+  CHAMFER: 467/1000 (46.7%) - OPTIONAL
+  FACE: 1/1000 (0.1%) - OPTIONAL
+
+HUB PARTS ANALYSIS
+--------------------------------------------------------------------------------
+Total Hub Parts: 545
+
+Hub Height Statistics:
+  Min: 0.200", Max: 2.000", Avg: 0.577"
+  Most Common: 0.25" hub (standard)
+
+Operations on Hub Parts:
+  BORE: 100.0%
+  TURN: 100.0%
+  DRILL: 99.8%
+  CHAMFER: 57.1%
+
+COUNTERBORE PARTS ANALYSIS
+--------------------------------------------------------------------------------
+Total Counterbore Parts: 0
+
+TWO-PIECE PART MATCHES (Hub + Counterbore)
+--------------------------------------------------------------------------------
+Total Matching Pairs Found: 0
+
+PARTS GROUPED BY OD (Potential Two-Piece Sets)
+--------------------------------------------------------------------------------
+OD Groups with Multiple Parts: 12
+
+OD 5.75": 163 parts
+  - o57281: Thickness=1.75"
+    Operations: BORE, DRILL, TURN
+  - o58327: Thickness=1.25", Hub=0.50"
+    Operations: BORE, DRILL, TURN
+  - o58133: Thickness=1.25", Hub=0.50"
+    Operations: BORE, DRILL, TURN
+  - o50001: Thickness=0.67"
+    Operations: BORE, DRILL, TURN
+  - o58346: Thickness=1.75", Hub=0.50"
+    Operations: BORE, DRILL, TURN
+  ... and 158 more parts
+
+OD 6.00": 116 parts
+  - o61031: Thickness=1.00", Hub=0.50"
+    Operations: BORE, DRILL, TURN
+  - o60102: Thickness=0.75"
+    Operations: BORE, DRILL, TURN
+  - o60354: Thickness=2.00", Hub=0.50"
+    Operations: BORE, DRILL, TURN
+  - o60199: Thickness=0.39"
+    Operations: BORE, DRILL, TURN
+  - o60250: Thickness=0.39"
+    Operations: BORE, DRILL, TURN
+  ... and 111 more parts
+
+OD 6.25": 106 parts
+  - o62187: Thickness=1.38"
+    Operations: CHAMFER, BORE, DRILL, TURN
+  - o62687: Thickness=1.00"
+    Operations: CHAMFER, BORE, DRILL, TURN
+  - o63723: Thickness=1.50", Hub=0.50"
+    Operations: CHAMFER, BORE, DRILL, TURN
+  - o62643: Thickness=0.75"
+    Operations: CHAMFER, BORE, DRILL, TURN
+  - o62983: Thickness=0.55", Hub=0.20"
+    Operations: CHAMFER, BORE, DRILL, TURN
+  ... and 101 more parts
+
+OD 6.50": 49 parts
+  - o65864: Thickness=2.00"
+    Operations: BORE, DRILL, TURN
+  - o65749: Thickness=1.50"
+    Operations: BORE, DRILL, TURN
+  - o65025: Thickness=1.00", Hub=0.50"
+    Operations: CHAMFER, BORE, DRILL, TURN
+  - o65846: Thickness=4.00"
+    Operations: BORE, DRILL, TURN
+  - o65770: Thickness=0.75"
+    Operations: BORE, DRILL, TURN
+  ... and 44 more parts
+
+OD 7.00": 204 parts
+  - o70044: Thickness=2.00", Hub=0.50"
+    Operations: BORE, DRILL, TURN
+  - o70146: Thickness=0.75", Hub=0.25"
+    Operations: CHAMFER, BORE, DRILL, TURN
+  - o70316: Thickness=0.75", Hub=0.22"
+    Operations: CHAMFER, BORE, DRILL, TURN
+  - o73519: Thickness=1.25"
+    Operations: CHAMFER, BORE, DRILL, TURN
+  - o73214: Thickness=0.75"
+    Operations: BORE, DRILL, TURN
+  ... and 199 more parts
+
+OD 7.50": 60 parts
+  - o75718: Thickness=2.25"
+    Operations: BORE, DRILL, TURN
+  - o75863: Thickness=2.50"
+    Operations: BORE, DRILL, TURN
+  - o75639: Thickness=2.00"
+    Operations: BORE, DRILL, TURN
+  - o75709: Thickness=0.75", Hub=0.22"
+    Operations: CHAMFER, BORE, DRILL, TURN
+  - o75303: Thickness=1.50"
+    Operations: BORE, DRILL, TURN
+  ... and 55 more parts
+
+OD 8.00": 94 parts
+  - o80564: Thickness=0.75"
+    Operations: CHAMFER, BORE, DRILL, TURN
+  - o80384: Thickness=2.00"
+    Operations: CHAMFER, BORE, DRILL, TURN
+  - o81119: Thickness=3.50", Hub=0.50"
+    Operations: CHAMFER, BORE, DRILL, TURN
+  - o80339: Thickness=1.50"
+    Operations: CHAMFER, BORE, DRILL, TURN
+  - o80074: Thickness=1.00"
+    Operations: CHAMFER, BORE, DRILL, TURN
+  ... and 89 more parts
+
+OD 8.50": 38 parts
+  - o85257: Thickness=3.50"
+    Operations: CHAMFER, BORE, DRILL, TURN
+  - o85160: Thickness=2.00", Hub=0.50"
+    Operations: CHAMFER, BORE, DRILL, TURN
+  - o85336: Thickness=1.00", Hub=0.50"
+    Operations: CHAMFER, BORE, DRILL, TURN
+  - o86056: Thickness=1.25", Hub=0.50"
+    Operations: CHAMFER, BORE, DRILL, TURN
+  - o86032: Thickness=1.50", Hub=0.50"
+    Operations: CHAMFER, BORE, DRILL, TURN
+  ... and 33 more parts
+
+OD 9.50": 88 parts
+  - o96041: Thickness=2.50"
+    Operations: CHAMFER, BORE, DRILL, TURN
+  - o95323: Thickness=1.75", Hub=0.75"
+    Operations: CHAMFER, BORE, DRILL, TURN
+  - o96456: Thickness=2.00", Hub=0.50"
+    Operations: CHAMFER, BORE, DRILL, TURN
+  - o96075: Thickness=0.50", Hub=0.50"
+    Operations: CHAMFER, BORE, DRILL, TURN
+  - o95353: Thickness=0.39"
+    Operations: CHAMFER, BORE, DRILL, TURN
+  ... and 83 more parts
+
+OD 10.25": 21 parts
+  - o10280: Thickness=4.00", Hub=0.50"
+    Operations: BORE, DRILL, TURN
+  - o10276: Thickness=1.00", Hub=1.25"
+    Operations: CHAMFER, BORE, DRILL, TURN
+  - o10516: Thickness=2.00", Hub=1.00"
+    Operations: CHAMFER, BORE, DRILL, TURN
+  - o10342: Thickness=2.00", Hub=2.00"
+    Operations: CHAMFER, BORE, DRILL, TURN
+  - o10323: Thickness=1.75", Hub=1.00"
+    Operations: CHAMFER, BORE, DRILL, TURN
+  ... and 16 more parts
+
+KEY MANUFACTURING INSIGHTS
+--------------------------------------------------------------------------------
+• Standard Operations (>90% of parts):
+  - DRILL: 99.8% (always required)
+  - BORE: 100.0% (always required)
+  - TURN: 99.9% (always required)
+
+• Common Operations (50-90% of parts):
+
+• Optional Operations (<50% of parts):
+  - COUNTERBORE: 0.0% (for two-piece assemblies)
+
+================================================================================
+END OF REPORT
+================================================================================

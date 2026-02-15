@@ -1,0 +1,291 @@
+================================================================================
+MODAL G-CODE CRASH PATTERN DETECTION REPORT
+================================================================================
+
+SUMMARY
+--------------------------------------------------------------------------------
+Total Files Analyzed: 1000
+Files with Modal Crashes: 921
+Total Modal Crash Instances: 921
+G154/G00 Run-ons Found: 176
+
+PATTERN DETECTED
+--------------------------------------------------------------------------------
+Modal G-code crash occurs when:
+1. G00 (rapid) is set on a line
+2. Next line has negative Z movement WITHOUT explicit G01
+3. Modal state inherits G00, causing rapid into part (CRASH)
+
+Example:
+  Line 98: G154 P24G00 X2.5 Z0.1  <- Sets G00 mode
+  Line 99: Z-0.09 F0.008           <- Inherits G00 (CRASH!)
+
+Correct version:
+  Line 98: G154 P24G00 X2.5 Z0.1  <- Sets G00 mode
+  Line 99: G01 Z-0.09 F0.008      <- Explicit G01 (SAFE)
+
+MODAL CRASH INSTANCES FOUND
+--------------------------------------------------------------------------------
+1. o5749 (Line 62)
+   Code: G00 Z-0.05
+   Z Value: -0.05
+   Issue: G00 modal state inherited, rapid into part (work coordinates)
+
+2. o65737 (Line 12)
+   Code: G81 Z-0.65 F0.008
+   Z Value: -0.65
+   Issue: G00 modal state inherited, rapid into part (work coordinates)
+
+3. o73064 (Line 16)
+   Code: G81 Z-1.15 R0.2 F0.008
+   Z Value: -1.15
+   Issue: G00 modal state inherited, rapid into part (work coordinates)
+
+4. o80039 (Line 15)
+   Code: G83 Z-3.15 Q0.8 R0.2 F0.008
+   Z Value: -3.15
+   Issue: G00 modal state inherited, rapid into part (work coordinates)
+
+5. o73180 (Line 13)
+   Code: G83 Z-2.15Q0.8 R0.2 F0.008
+   Z Value: -2.15
+   Issue: G00 modal state inherited, rapid into part (work coordinates)
+
+6. o85024 (Line 20)
+   Code: G81 Z-1.4 R0.2 F0.008
+   Z Value: -1.4
+   Issue: G00 modal state inherited, rapid into part (work coordinates)
+
+7. o73922 (Line 60)
+   Code: G00 X7. Z-0.05 F0.006
+   Z Value: -0.05
+   Issue: G00 modal state inherited, rapid into part (work coordinates)
+
+8. o13612 (Line 21)
+   Code: G83 Z-4.15 R0.2 Q1. F0.004
+   Z Value: -4.15
+   Issue: G00 modal state inherited, rapid into part (work coordinates)
+
+9. o57103 (Line 54)
+   Code: G00 Z-0.05
+   Z Value: -0.05
+   Issue: G00 modal state inherited, rapid into part (work coordinates)
+
+10. o75834 (Line 44)
+   Code: G00 Z-0.05
+   Z Value: -0.05
+   Issue: G00 modal state inherited, rapid into part (work coordinates)
+
+11. o70008 (Line 12)
+   Code: G83 Z-2.15 Q0.8 R0.2 F0.008
+   Z Value: -2.15
+   Issue: G00 modal state inherited, rapid into part (work coordinates)
+
+12. o62894 (Line 51)
+   Code: G00 Z-0.05
+   Z Value: -0.05
+   Issue: G00 modal state inherited, rapid into part (work coordinates)
+
+13. o65882 (Line 50)
+   Code: G00 Z-0.05
+   Z Value: -0.05
+   Issue: G00 modal state inherited, rapid into part (work coordinates)
+
+14. o96464 (Line 13)
+   Code: G83 Z-2.9R0.2 Q1.1 F0.004
+   Z Value: -2.9
+   Issue: G00 modal state inherited, rapid into part (work coordinates)
+
+15. o61165 (Line 14)
+   Code: G83 Z-2.4 Q1.1 F0.008
+   Z Value: -2.4
+   Issue: G00 modal state inherited, rapid into part (work coordinates)
+
+16. o62225 (Line 53)
+   Code: G00 Z-0.05
+   Z Value: -0.05
+   Issue: G00 modal state inherited, rapid into part (work coordinates)
+
+17. o61038 (Line 13)
+   Code: G81 R0.3 Z-1.9 F0.008
+   Z Value: -1.9
+   Issue: G00 modal state inherited, rapid into part (work coordinates)
+
+18. o62812 (Line 15)
+   Code: G83 Z-2.4Q1.1 F0.008
+   Z Value: -2.4
+   Issue: G00 modal state inherited, rapid into part (work coordinates)
+
+19. o10205 (Line 40)
+   Code: G83 Z-2.15R0.2 Q1. F0.008
+   Z Value: -2.15
+   Issue: G00 modal state inherited, rapid into part (work coordinates)
+
+20. o60299 (Line 16)
+   Code: G83 Z-2.9 R0.2 Q0.8 F0.008
+   Z Value: -2.9
+   Issue: G00 modal state inherited, rapid into part (work coordinates)
+
+21. o73215 (Line 50)
+   Code: G00 Z-0.05
+   Z Value: -0.05
+   Issue: G00 modal state inherited, rapid into part (work coordinates)
+
+22. o74010 (Line 72)
+   Code: G00 Z-0.05
+   Z Value: -0.05
+   Issue: G00 modal state inherited, rapid into part (work coordinates)
+
+23. o85026 (Line 19)
+   Code: G83 Z-1.15R0.2 Q1.05 F0.008
+   Z Value: -1.15
+   Issue: G00 modal state inherited, rapid into part (work coordinates)
+
+24. o61308 (Line 46)
+   Code: G00 Z-0.05
+   Z Value: -0.05
+   Issue: G00 modal state inherited, rapid into part (work coordinates)
+
+25. o65690 (Line 50)
+   Code: G00 Z-0.05
+   Z Value: -0.05
+   Issue: G00 modal state inherited, rapid into part (work coordinates)
+
+26. o75677 (Line 15)
+   Code: G83 Z-3.15 Q1.1 F0.004
+   Z Value: -3.15
+   Issue: G00 modal state inherited, rapid into part (work coordinates)
+
+27. o57213 (Line 51)
+   Code: G00 Z-0.05
+   Z Value: -0.05
+   Issue: G00 modal state inherited, rapid into part (work coordinates)
+
+28. o60076 (Line 49)
+   Code: G00 Z-0.05
+   Z Value: -0.05
+   Issue: G00 modal state inherited, rapid into part (work coordinates)
+
+29. o57543 (Line 12)
+   Code: G83 Z-2.65 Q1.1 F0.004 (DRILL DEPTH)
+   Z Value: -2.65
+   Issue: G00 modal state inherited, rapid into part (work coordinates)
+
+30. o62934 (Line 59)
+   Code: G00 Z-0.05
+   Z Value: -0.05
+   Issue: G00 modal state inherited, rapid into part (work coordinates)
+
+31. o13025 (Line 20)
+   Code: G81 Z-3.65 R0.2 F0.008
+   Z Value: -3.65
+   Issue: G00 modal state inherited, rapid into part (work coordinates)
+
+32. o73737 (Line 46)
+   Code: G81 Z-0.9R0.2 F0.008
+   Z Value: -0.9
+   Issue: G00 modal state inherited, rapid into part (work coordinates)
+
+33. o10339 (Line 40)
+   Code: G83 Z-0.65 R0.2 Q1. F0.008
+   Z Value: -0.65
+   Issue: G00 modal state inherited, rapid into part (work coordinates)
+
+34. o85242 (Line 21)
+   Code: G81 Z-3.65R0.2 F0.004
+   Z Value: -3.65
+   Issue: G00 modal state inherited, rapid into part (work coordinates)
+
+35. o60216 (Line 15)
+   Code: G83 Z-1.9 R0.2 Q1.0 F0.008
+   Z Value: -1.9
+   Issue: G00 modal state inherited, rapid into part (work coordinates)
+
+36. o96059 (Line 16)
+   Code: G83 Z-2.65Q0.9 R0.2 F0.008
+   Z Value: -2.65
+   Issue: G00 modal state inherited, rapid into part (work coordinates)
+
+37. o62960 (Line 63)
+   Code: G00 Z-0.05
+   Z Value: -0.05
+   Issue: G00 modal state inherited, rapid into part (work coordinates)
+
+38. o65866 (Line 51)
+   Code: G00 Z-0.05
+   Z Value: -0.05
+   Issue: G00 modal state inherited, rapid into part (work coordinates)
+
+39. o63841 (Line 13)
+   Code: G83 Z-2.9 R0.2 Q1.1 F0.004
+   Z Value: -2.9
+   Issue: G00 modal state inherited, rapid into part (work coordinates)
+
+40. o73803 (Line 47)
+   Code: G81 Z-1.9 R0.2 F0.008
+   Z Value: -1.9
+   Issue: G00 modal state inherited, rapid into part (work coordinates)
+
+41. o61330 (Line 13)
+   Code: G83 R0.2 Q0.8 Z-1.9F0.008
+   Z Value: -1.9
+   Issue: G00 modal state inherited, rapid into part (work coordinates)
+
+42. o73758 (Line 14)
+   Code: G83 Z-3.15 Q1.1 F0.004
+   Z Value: -3.15
+   Issue: G00 modal state inherited, rapid into part (work coordinates)
+
+43. o80317 (Line 15)
+   Code: G83 Z-2.65 R0.2 Q1. F0.008
+   Z Value: -2.65
+   Issue: G00 modal state inherited, rapid into part (work coordinates)
+
+44. o80513 (Line 24)
+   Code: G81 Z-1.9R0.2 F0.005
+   Z Value: -1.9
+   Issue: G00 modal state inherited, rapid into part (work coordinates)
+
+45. o57305 (Line 51)
+   Code: G00 Z-0.05
+   Z Value: -0.05
+   Issue: G00 modal state inherited, rapid into part (work coordinates)
+
+46. o85210 (Line 21)
+   Code: G81 Z-1.15 R0.2 F0.008
+   Z Value: -1.15
+   Issue: G00 modal state inherited, rapid into part (work coordinates)
+
+47. o63933 (Line 13)
+   Code: G83 Z-1.4R0.2 Q0.9 F0.008
+   Z Value: -1.4
+   Issue: G00 modal state inherited, rapid into part (work coordinates)
+
+48. o95239 (Line 13)
+   Code: G81 Z-2.65 R0.2 F0.008
+   Z Value: -2.65
+   Issue: G00 modal state inherited, rapid into part (work coordinates)
+
+49. o58662 (Line 14)
+   Code: G81 Z-1.4R0.2 F0.009
+   Z Value: -1.4
+   Issue: G00 modal state inherited, rapid into part (work coordinates)
+
+50. o10321 (Line 15)
+   Code: G83 Z-3.9R0.2 Q1. F0.004
+   Z Value: -3.9
+   Issue: G00 modal state inherited, rapid into part (work coordinates)
+
+... and 871 more instances
+
+RECOMMENDATIONS
+--------------------------------------------------------------------------------
+1. Add modal G-code state tracking to crash_prevention_validator.py
+2. Track current G-code (G00/G01/G02/G03) across lines
+3. Warn if negative Z move occurs while in G00 mode
+4. Suggest fix: Add explicit G01 before negative Z move
+5. Parse G154 P##G00 patterns (handle run-on commands)
+
+================================================================================
+END OF REPORT
+================================================================================

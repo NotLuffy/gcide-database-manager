@@ -96,11 +96,72 @@ class RepositoryManager:
             counter += 1
 
         try:
+            # Calculate file hash and size before moving
+            import hashlib
+            with open(str(old_file_path), 'rb') as f:
+                file_content = f.read()
+                file_hash = hashlib.sha256(file_content).hexdigest()
+                file_size = len(file_content)
+
+            # Extract dimensions from file before moving
+            try:
+                from improved_gcode_parser import ImprovedGCodeParser
+                parser = ImprovedGCodeParser()
+                # Parse from content to avoid file path issues after move
+                with open(str(old_file_path), 'r', encoding='utf-8', errors='ignore') as f:
+                    parse_result = parser.parse_content(f.read())
+                dimensions = {
+                    'outer_diameter': parse_result.outer_diameter,
+                    'thickness': parse_result.thickness,
+                    'center_bore': parse_result.center_bore
+                }
+            except Exception as e:
+                print(f"[Archive] Warning: Could not extract dimensions: {e}")
+                dimensions = {
+                    'outer_diameter': None,
+                    'thickness': None,
+                    'center_bore': None
+                }
+
             # Move file to archive
             shutil.move(str(old_file_path), str(archive_file_path))
 
             # Log to database
             self._log_archive(program_number, str(old_file_path), str(archive_file_path), reason)
+
+            # Store metadata in archive_metadata table
+            try:
+                from archive_metadata_manager import ArchiveMetadataManager
+                metadata_manager = ArchiveMetadataManager(self.db_path, str(self.archive_path))
+
+                # Get current username if available
+                current_username = 'system'  # Default to system
+                try:
+                    # Try to get from environment or database
+                    import getpass
+                    current_username = getpass.getuser()
+                except:
+                    pass
+
+                metadata = {
+                    'date_archived': datetime.now().isoformat(),
+                    'archived_by': current_username,
+                    'archive_reason': reason,
+                    'change_summary': f'Archived due to {reason}',
+                    'file_size': file_size,
+                    'file_hash': file_hash,
+                    'metadata_source': 'full',
+                    'metadata_confidence': 100,
+                    'outer_diameter': dimensions.get('outer_diameter'),
+                    'thickness': dimensions.get('thickness'),
+                    'center_bore': dimensions.get('center_bore')
+                }
+
+                metadata_manager.add_metadata(program_number, version, str(archive_file_path), metadata)
+                print(f"[Archive] Metadata captured for {program_number} v{version}")
+
+            except Exception as e:
+                print(f"[Archive] Warning: Could not store metadata: {e}")
 
             print(f"[Archive] {old_file_path.name} → {archive_file_path.relative_to(self.archive_path)}")
             return str(archive_file_path)
@@ -112,7 +173,9 @@ class RepositoryManager:
     def _log_archive(self, program_number, old_path, archive_path, reason):
         """Log archive operation to database activity_log"""
         try:
-            conn = sqlite3.connect(self.db_path)
+            # Use timeout and WAL mode to avoid locking issues
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
+            conn.execute("PRAGMA journal_mode=WAL")
             cursor = conn.cursor()
 
             cursor.execute("""

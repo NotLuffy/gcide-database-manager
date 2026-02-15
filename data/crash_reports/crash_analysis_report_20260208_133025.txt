@@ -1,0 +1,49 @@
+================================================================================
+G-CODE BATCH CRASH ANALYSIS REPORT
+Generated: 2026-02-08 13:30:25
+================================================================================
+
+SUMMARY STATISTICS
+--------------------------------------------------------------------------------
+Total Files Analyzed: 250
+Successfully Parsed: 250
+Failed to Parse: 250
+Files with Critical Issues: 0 (0.0%)
+Files with Warnings: 0 (0.0%)
+Files with Bore Warnings: 0 (0.0%)
+Files with Dimensional Issues: 0 (0.0%)
+
+CRASH PATTERN BREAKDOWN
+--------------------------------------------------------------------------------
+  No crash patterns detected
+
+WARNING PATTERN BREAKDOWN
+--------------------------------------------------------------------------------
+  No warning patterns detected
+
+DIMENSION STATISTICS
+--------------------------------------------------------------------------------
+Outer Diameters (inches):
+  Min: 5.750, Max: 13.000, Avg: 7.390
+Thicknesses (inches):
+  Min: 0.394, Max: 4.250, Avg: 1.524
+Hub Heights (inches):
+  Min: 0.200, Max: 3.000, Avg: 0.638
+
+TOOL USAGE ANALYSIS
+--------------------------------------------------------------------------------
+  T101: 249 programs
+  T121: 249 programs
+  T303: 249 programs
+
+CRITICAL ISSUES DETAIL (Top 20)
+--------------------------------------------------------------------------------
+RECOMMENDATIONS
+--------------------------------------------------------------------------------
+POTENTIAL NEW CRASH PATTERNS TO INVESTIGATE:
+
+  No unclassified patterns detected - current detection appears comprehensive
+
+================================================================================
+END OF REPORT
+================================================================================

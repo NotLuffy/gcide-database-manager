@@ -1,0 +1,126 @@
+================================================================================
+MANUFACTURING PROCESS PATTERN ANALYSIS REPORT
+Generated: 2026-02-08 14:57:50
+================================================================================
+
+PART SIZE DISTRIBUTION
+--------------------------------------------------------------------------------
+
+Outer Diameter Categories:
+  Extra Large (>10"): 94 parts
+    Avg Thickness: 1.752"
+    Avg Hub Height: 0.841"
+  Large (8-10"): 111 parts
+    Avg Thickness: 1.821"
+    Avg Hub Height: 0.441"
+  Medium (6-8"): 507 parts
+    Avg Thickness: 1.438"
+    Avg Hub Height: 0.199"
+  Small (≤6"): 288 parts
+    Avg Thickness: 1.367"
+    Avg Hub Height: 0.274"
+
+Thickness Categories:
+  Extra Thick (>3.0"): 46 parts (Avg OD: 8.342")
+  Standard (0.5-1.5"): 610 parts (Avg OD: 7.215")
+  Thick (1.5-3.0"): 290 parts (Avg OD: 7.775")
+  Thin (≤0.5"): 54 parts (Avg OD: 7.023")
+
+Hub Height Categories:
+  Large Hub (>1.0"): 46 parts
+    Avg OD: 11.408", Avg Thickness: 1.761"
+  Medium Hub (0.5-1.0"): 38 parts
+    Avg OD: 10.283", Avg Thickness: 1.948"
+  No Hub (<0.3"): 521 parts
+    Avg OD: 7.018", Avg Thickness: 1.487"
+  Small Hub (0.3-0.5"): 395 parts
+    Avg OD: 7.207", Avg Thickness: 1.418"
+
+MOST COMMON OPERATION SEQUENCES (Top 20)
+--------------------------------------------------------------------------------
+1. (338 programs) DRILL → BORE → TURN → TURN
+2. (315 programs) DRILL → BORE → TURN → TURN → CHAMFER
+3. (163 programs) DRILL → BORE → TURN → TURN → BORE
+4. (136 programs) TURN → DRILL → BORE → TURN → CHAMFER
+5. (24 programs) DRILL → DRILL → BORE → TURN → TURN
+6. (14 programs) DRILL → BORE → TURN → TURN → DRILL → CHAMFER
+7. (3 programs) DRILL → BORE → TURN → TURN → DRILL → BORE
+8. (2 programs) DRILL → BORE → CHAMFER
+9. (1 programs) FACE → TURN → DRILL → BORE → CHAMFER → FACE → TURN → FACE → CHAMFER
+10. (1 programs) TURN → DRILL → BORE → CHAMFER
+11. (1 programs) DRILL → BORE → TURN
+12. (1 programs) --- SIDE 1 --- → TURN → DRILL → BORE → TURN → CHAMFER
+13. (1 programs) TURN → DRILL → BORE → TURN
+
+MOST COMMON TOOL SEQUENCES (Top 20)
+--------------------------------------------------------------------------------
+1. (833 programs) T101 → T121 → T303 → T121
+2. (139 programs) T303 → T101 → T121 → T303 → T121
+3. (17 programs) T101 → T121 → T303 → T101 → T121
+4. (4 programs) T505 → T525 → T303 → T525
+5. (4 programs) T101 → T121 → T303
+6. (2 programs) T101 → T121
+7. (1 programs) T303 → T101 → T121 → T303
+
+SPECIAL FEATURES DETECTED
+--------------------------------------------------------------------------------
+  Chamfer: 488 programs
+  Stepped: 25 programs
+
+SIDE 1 vs SIDE 2 OPERATION PATTERNS
+--------------------------------------------------------------------------------
+
+FEED & SPEED PATTERNS BY OPERATION
+--------------------------------------------------------------------------------
+
+BORE:
+  Feed Rates: Min=0.000, Max=0.020, Avg=0.017 IPR
+  Samples: 3874
+
+DRILL:
+  Feed Rates: Min=0.006, Max=0.020, Avg=0.013 IPR
+  Samples: 2914
+
+FACE:
+  Feed Rates: Min=0.008, Max=0.008, Avg=0.008 IPR
+  Samples: 1
+
+TURN:
+  Feed Rates: Min=0.002, Max=0.020, Avg=0.012 IPR
+  Samples: 9458
+
+RING PARTS DETECTED (Large Bore/OD Ratio)
+--------------------------------------------------------------------------------
+Total Ring Parts: 11
+
+Examples:
+1. o75302: OD=7.500", CB=4.331", Ratio=57.74% - Thick-walled ring
+2. o57275: OD=5.750", CB=3.083", Ratio=53.61% - Thick-walled ring
+3. o60233: OD=6.000", CB=3.083", Ratio=51.38% - Thick-walled ring
+4. o57213: OD=5.750", CB=3.035", Ratio=52.79% - Thick-walled ring
+5. o57218: OD=5.750", CB=3.083", Ratio=53.61% - Thick-walled ring
+6. o57584: OD=5.750", CB=3.307", Ratio=57.51% - Thick-walled ring
+7. o75248: OD=7.500", CB=4.331", Ratio=57.74% - Thick-walled ring
+8. o57555: OD=5.750", CB=3.307", Ratio=57.51% - Thick-walled ring
+9. o75250: OD=7.500", CB=4.173", Ratio=55.64% - Thick-walled ring
+10. o73845: OD=7.000", CB=4.252", Ratio=60.74% - Thick-walled ring
+... and 1 more ring parts
+
+AVERAGE SPINDLE SPEEDS BY TOOL
+--------------------------------------------------------------------------------
+
+KEY MANUFACTURING INSIGHTS
+--------------------------------------------------------------------------------
+• Most Common Tool Sequence: T101 → T121 → T303 → T121
+  Used in 833 programs
+
+• Most Common Operation Sequence: DRILL → BORE → TURN → TURN
+  Used in 338 programs
+
+• Special Feature Prevalence:
+  - Chamfer: 48.8% of programs
+  - Stepped: 2.5% of programs
+
+================================================================================
+END OF REPORT
+================================================================================

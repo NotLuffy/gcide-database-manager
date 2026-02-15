@@ -1,0 +1,116 @@
+================================================================================
+MANUFACTURING PROCESS PATTERN ANALYSIS REPORT
+Generated: 2026-02-08 14:56:49
+================================================================================
+
+PART SIZE DISTRIBUTION
+--------------------------------------------------------------------------------
+
+Outer Diameter Categories:
+  Extra Large (>10"): 39 parts
+    Avg Thickness: 1.500"
+    Avg Hub Height: 0.812"
+  Large (8-10"): 61 parts
+    Avg Thickness: 1.645"
+    Avg Hub Height: 0.406"
+  Medium (6-8"): 249 parts
+    Avg Thickness: 1.501"
+    Avg Hub Height: 0.207"
+  Small (≤6"): 151 parts
+    Avg Thickness: 1.267"
+    Avg Hub Height: 0.268"
+
+Thickness Categories:
+  Extra Thick (>3.0"): 18 parts (Avg OD: 7.375")
+  Standard (0.5-1.5"): 312 parts (Avg OD: 7.185")
+  Thick (1.5-3.0"): 137 parts (Avg OD: 7.766")
+  Thin (≤0.5"): 33 parts (Avg OD: 6.992")
+
+Hub Height Categories:
+  Large Hub (>1.0"): 21 parts
+    Avg OD: 11.226", Avg Thickness: 1.667"
+  Medium Hub (0.5-1.0"): 15 parts
+    Avg OD: 9.667", Avg Thickness: 1.663"
+  No Hub (<0.3"): 263 parts
+    Avg OD: 7.014", Avg Thickness: 1.470"
+  Small Hub (0.3-0.5"): 201 parts
+    Avg OD: 7.183", Avg Thickness: 1.380"
+
+MOST COMMON OPERATION SEQUENCES (Top 20)
+--------------------------------------------------------------------------------
+1. (174 programs) DRILL → BORE → TURN → TURN
+2. (164 programs) DRILL → BORE → TURN → TURN → CHAMFER
+3. (76 programs) DRILL → BORE → TURN → TURN → BORE
+4. (61 programs) TURN → DRILL → BORE → TURN → CHAMFER
+5. (13 programs) DRILL → DRILL → BORE → TURN → TURN
+6. (7 programs) DRILL → BORE → TURN → TURN → DRILL → CHAMFER
+7. (2 programs) DRILL → BORE → CHAMFER
+8. (1 programs) TURN → BORE
+9. (1 programs) DRILL → BORE → TURN → TURN → DRILL → BORE
+10. (1 programs) DRILL → BORE → TURN → TURN → DRILL
+
+MOST COMMON TOOL SEQUENCES (Top 20)
+--------------------------------------------------------------------------------
+1. (423 programs) T101 → T121 → T303 → T121
+2. (61 programs) T303 → T101 → T121 → T303 → T121
+3. (9 programs) T101 → T121 → T303 → T101 → T121
+4. (2 programs) T505 → T525 → T303 → T525
+5. (2 programs) T101 → T121
+6. (2 programs) T101 → T121 → T303
+7. (1 programs) T909 → T121
+
+SPECIAL FEATURES DETECTED
+--------------------------------------------------------------------------------
+  Chamfer: 245 programs
+  Stepped: 11 programs
+
+SIDE 1 vs SIDE 2 OPERATION PATTERNS
+--------------------------------------------------------------------------------
+
+FEED & SPEED PATTERNS BY OPERATION
+--------------------------------------------------------------------------------
+
+BORE:
+  Feed Rates: Min=0.003, Max=0.020, Avg=0.016 IPR
+  Samples: 1724
+
+DRILL:
+  Feed Rates: Min=0.004, Max=0.030, Avg=0.013 IPR
+  Samples: 1406
+
+TURN:
+  Feed Rates: Min=0.002, Max=0.020, Avg=0.012 IPR
+  Samples: 4672
+
+RING PARTS DETECTED (Large Bore/OD Ratio)
+--------------------------------------------------------------------------------
+Total Ring Parts: 8
+
+Examples:
+1. o73109: OD=7.000", CB=4.331", Ratio=61.87% - Thick-walled ring
+2. o75302: OD=7.500", CB=4.331", Ratio=57.74% - Thick-walled ring
+3. o57173: OD=5.750", CB=3.071", Ratio=53.41% - Thick-walled ring
+4. o57275: OD=5.750", CB=3.083", Ratio=53.61% - Thick-walled ring
+5. o60233: OD=6.000", CB=3.083", Ratio=51.38% - Thick-walled ring
+6. o5749: OD=5.750", CB=3.087", Ratio=53.68% - Thick-walled ring
+7. o57338: OD=5.750", CB=3.087", Ratio=53.68% - Thick-walled ring
+8. o57194: OD=5.750", CB=3.071", Ratio=53.41% - Thick-walled ring
+
+AVERAGE SPINDLE SPEEDS BY TOOL
+--------------------------------------------------------------------------------
+
+KEY MANUFACTURING INSIGHTS
+--------------------------------------------------------------------------------
+• Most Common Tool Sequence: T101 → T121 → T303 → T121
+  Used in 423 programs
+
+• Most Common Operation Sequence: DRILL → BORE → TURN → TURN
+  Used in 174 programs
+
+• Special Feature Prevalence:
+  - Chamfer: 49.0% of programs
+  - Stepped: 2.2% of programs
+
+================================================================================
+END OF REPORT
+================================================================================

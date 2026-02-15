@@ -1,0 +1,32 @@
+GCode Database Full Backup
+==================================================
+
+Created: 2026-02-10 06:25:56
+Created by: admin
+
+Database records: 7011
+Repository files copied: 7009
+Repository files missing: 2
+Version history files: 1
+Revised repository files: 0
+
+Contents:
+  - gcode_database.db (database file with all records)
+  - repository/ (current active .nc files)
+  - revised_repository/ (edited/revised .nc files)
+  - versions/ (complete version history for all programs)
+
+Total files backed up: 7010
+
+To Restore:
+  1. Copy gcode_database.db to your program folder
+  2. Copy repository/ contents to your repository location
+  3. Copy revised_repository/ to maintain edited files
+  4. Copy versions/ to restore complete version history
+  5. Update file paths in database if repository location changed
+
+IMPORTANT: This backup includes ALL files:
+  • Current repository files
+  • All version history (originals before edits)
+  • Revised/edited files
+  • Complete database with metadata

@@ -1,0 +1,147 @@
+================================================================================
+COMPREHENSIVE G-CODE CRASH ANALYSIS REPORT
+COMPLETE DATABASE SCAN - 100% COVERAGE
+Generated: 2026-02-08 14:46:02
+================================================================================
+
+SUMMARY STATISTICS
+--------------------------------------------------------------------------------
+Total Files Analyzed: 6978
+Successfully Parsed: 6977
+Failed to Parse: 1
+Files with Critical Issues: 369 (5.3%)
+Files with Warnings: 100 (1.4%)
+Files with Bore Warnings: 23 (0.3%)
+Files with Dimensional Issues: 270 (3.9%)
+
+CRASH PATTERN BREAKDOWN
+--------------------------------------------------------------------------------
+  other_critical: 386 occurrences
+
+WARNING PATTERN BREAKDOWN
+--------------------------------------------------------------------------------
+  other_warnings: 100 occurrences
+
+DIMENSION STATISTICS
+--------------------------------------------------------------------------------
+Outer Diameters (inches):
+  Min: 3.000, Max: 13.000, Avg: 7.387
+Thicknesses (inches):
+  Min: 0.250, Max: 6.500, Avg: 1.505
+Hub Heights (inches):
+  Min: 0.150, Max: 3.000, Avg: 0.590
+
+TOOL USAGE ANALYSIS
+--------------------------------------------------------------------------------
+  T303: 6949 programs
+  T121: 6939 programs
+  T101: 6934 programs
+  T525: 18 programs
+  T505: 17 programs
+  T909: 4 programs
+
+CRITICAL ISSUES DETAIL (Top 20)
+--------------------------------------------------------------------------------
+1. Program: o00820
+   Dimensions: OD=8.0, Thick=1.0, Hub=0.33
+   Issue: THICKNESS ERROR: Title=1.00"+0.33"hub=1.33"total, Drilled=1.85"total (thickness=1.52") (+0.520") - CRITICAL ERROR
+
+2. Program: o00901
+   Dimensions: OD=9.5, Thick=1.25, Hub=None
+   Issue: THICKNESS ERROR: Spec=1.25", Calculated from drill=2.15" (+0.900") - CRITICAL ERROR
+
+3. Program: o00902
+   Dimensions: OD=9.5, Thick=0.375, Hub=None
+   Issue: THICKNESS ERROR: Spec=0.38", Calculated from drill=0.60" (+0.225") - CRITICAL ERROR
+
+4. Program: o07013
+   Dimensions: OD=7.0, Thick=0.75, Hub=0.5
+   Issue: THICKNESS ERROR: Spec=0.75", Calculated from drill=1.00" (+0.250") - CRITICAL ERROR
+
+5. Program: o08501
+   Dimensions: OD=8.5, Thick=1.5, Hub=0.5
+   Issue: THICKNESS ERROR: Title=1.50"+0.50"hub=2.00"total, Drilled=1.45"total (thickness=0.95") (-0.550") - CRITICAL ERROR
+
+6. Program: o09501
+   Dimensions: OD=5.25, Thick=1.0, Hub=0.75
+   Issue: OD MISMATCH: Spec=5.25", G-code=9.45" (+4.200") - G-CODE ERROR
+
+7. Program: o09902
+   Dimensions: OD=9.5, Thick=1.5, Hub=0.5
+   Issue: OB TOO LARGE: Spec=161.0mm, G-code=161.8mm) - CRITICAL ERROR
+
+8. Program: o09904
+   Dimensions: OD=9.5, Thick=4.0, Hub=0.5
+   Issue: THICKNESS ERROR: Title=4.00"+0.50"hub=4.50"total, Drilled=3.85"total (thickness=3.35") (-0.650") - CRITICAL ERROR
+
+9. Program: o09920
+   Dimensions: OD=9.5, Thick=2.0, Hub=None
+   Issue: THICKNESS ERROR: Spec=2.00", Calculated from drill=3.00" (+1.000") - CRITICAL ERROR
+
+10. Program: o10218
+   Dimensions: OD=10.25, Thick=0.5, Hub=None
+   Issue: CB TOO SMALL: Spec=170.1mm, G-code=149.5mm (-20.65mm) - CRITICAL ERROR
+
+11. Program: o10339
+   Dimensions: OD=10.25, Thick=0.5, Hub=None
+   Issue: CB TOO SMALL: Spec=170.1mm, G-code=149.5mm (-20.65mm) - CRITICAL ERROR
+
+12. Program: o13006
+   Dimensions: OD=13.0, Thick=0.5, Hub=None
+   Issue: THICKNESS ERROR: Spec=0.50", Calculated from drill=0.65" (+0.150") - CRITICAL ERROR
+
+13. Program: o13009
+   Dimensions: OD=13.0, Thick=2.0, Hub=0.5
+   Issue: CB TOO SMALL: Spec=220.0mm, G-code=177.8mm (-42.20mm) - CRITICAL ERROR
+
+14. Program: o13009
+   Dimensions: OD=13.0, Thick=2.0, Hub=0.5
+   Issue: THICKNESS ERROR: Title=2.00"+0.50"hub=2.50"total, Drilled=1.50"total (thickness=1.00") (-1.000") - CRITICAL ERROR
+
+15. Program: o13018
+   Dimensions: OD=13.0, Thick=5.0, Hub=None
+   Issue: THICKNESS ERROR: Spec=5.00", Calculated from drill=3.95" (-1.050") - CRITICAL ERROR
+
+16. Program: o13032
+   Dimensions: OD=13.0, Thick=2.75, Hub=2.0
+   Issue: THICKNESS ERROR: Title=2.75"+2.00"hub=4.75"total, Drilled=3.85"total (thickness=1.85") (-0.900") - CRITICAL ERROR
+
+17. Program: o13055
+   Dimensions: OD=9.5, Thick=1.5, Hub=0.5
+   Issue: OD MISMATCH: Spec=9.50", G-code=12.90" (+3.405") - G-CODE ERROR
+
+18. Program: o13079
+   Dimensions: OD=13.0, Thick=5.0, Hub=None
+   Issue: THICKNESS ERROR: Spec=5.00", Calculated from drill=3.95" (-1.050") - CRITICAL ERROR
+
+19. Program: o13262
+   Dimensions: OD=13.0, Thick=1.0, Hub=1.5
+   Issue: Line 200: X coordinate missing decimal point - "X-6" should be "X-6.0" - "G00 G53 X-6 Z-10."
+
+20. Program: o13627
+   Dimensions: OD=9.5, Thick=1.5, Hub=0.5
+   Issue: OD MISMATCH: Spec=9.50", G-code=12.90" (+3.405") - G-CODE ERROR
+
+... and 366 more critical issues
+
+RECOMMENDATIONS
+--------------------------------------------------------------------------------
+• REVIEW: High number of bore warnings
+  May indicate need for bore depth validation refinement
+
+POTENTIAL NEW CRASH PATTERNS TO INVESTIGATE:
+
+1. THICKNESS ERROR: Spec=5.00", Calculated from drill=3.95" (-1.050") - CRITICAL ERROR
+2. THICKNESS ERROR: Title=1.25"+0.50"hub=1.75"total, Drilled=1.35"total (thickness=0.85") (-0.400") - C
+3. CB TOO LARGE: Spec=2.8mm, G-code=53.3mm (+50.57mm) - CRITICAL ERROR
+4. CB TOO LARGE: Spec=110.0mm, G-code=111.8mm (+1.76mm) - CRITICAL ERROR
+5. THICKNESS ERROR: Title=0.39"+0.50"hub=0.89"total, Drilled=0.65"total (thickness=0.15") (-0.244") - C
+6. THICKNESS ERROR: Title=4.00"+0.50"hub=4.50"total, Drilled=3.55"total (thickness=3.05") (-0.950") - C
+7. THICKNESS ERROR: Title=1.75"+0.50"hub=2.25"total, Drilled=2.00"total (thickness=1.50") (-0.250") - C
+8. CB TOO SMALL: Spec=74.0mm, G-code=63.5mm (-10.50mm) - CRITICAL ERROR
+9. THICKNESS ERROR: Title=2.36"+0.50"hub=2.86"total, Drilled=1.68"total (thickness=1.18") (-1.182") - C
+10. CB TOO LARGE: Spec=71.3mm, G-code=72.6mm (+1.23mm) - CRITICAL ERROR
+
+================================================================================
+END OF REPORT
+================================================================================
