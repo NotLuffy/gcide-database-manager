@@ -42,3 +42,4 @@ test_*.py
 temp_scripts/*.py
 temp_scripts/*.zip
 temp_scripts/*.xlsx
+data/feed_speed_analysis/feed_speed_analysis.json
