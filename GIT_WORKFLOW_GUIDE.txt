@@ -1,0 +1,315 @@
+================================================================================
+                    GIT WORKFLOW GUIDE - MULTI-COMPUTER SETUP
+================================================================================
+
+This guide shows you how to work on this project from multiple computers using
+Git and GitHub for version control.
+
+================================================================================
+                            INITIAL SETUP (ONE-TIME)
+================================================================================
+
+STEP 1: CREATE GITHUB REPOSITORY
+---------------------------------
+1. Go to: https://github.com/new
+2. Repository name: gcode-database-manager (or your choice)
+3. Set to PRIVATE (important - this is proprietary work)
+4. Do NOT check "Initialize with README" (you already have files)
+5. Click "Create repository"
+6. Copy the repository URL (looks like: https://github.com/YOUR-USERNAME/gcode-database-manager.git)
+
+
+STEP 2: CONNECT LOCAL REPOSITORY TO GITHUB
+-------------------------------------------
+Open Git Bash or Terminal in this folder and run:
+
+    cd "C:/Users/John Wayne/Documents/File organizer"
+
+    git remote add origin https://github.com/YOUR-USERNAME/gcode-database-manager.git
+
+    git push -u origin main
+
+(Replace YOUR-USERNAME with your actual GitHub username)
+
+You'll be asked for GitHub credentials - enter your username and password
+(or use a Personal Access Token if you have 2FA enabled).
+
+
+STEP 3: SETUP ON SECOND COMPUTER
+---------------------------------
+On your other computer, open Git Bash or Terminal and run:
+
+    cd C:/Users/YourName/Documents
+
+    git clone https://github.com/YOUR-USERNAME/gcode-database-manager.git
+
+    cd gcode-database-manager
+
+Now you have a copy of the project on Computer B!
+
+
+================================================================================
+                            DAILY WORKFLOW - COMPUTER A
+================================================================================
+
+MORNING - STARTING WORK:
+------------------------
+1. Open Git Bash or Terminal
+2. Navigate to project folder:
+
+   cd "C:/Users/John Wayne/Documents/File organizer"
+
+3. Get latest changes from GitHub:
+
+   git pull
+
+4. Open VSCode and start working!
+
+
+END OF DAY - SAVING WORK:
+-------------------------
+1. In Git Bash or Terminal (in the project folder):
+
+   git status
+
+   (This shows what files you changed - optional but helpful)
+
+2. Stage your changes:
+
+   git add .
+
+   (The dot means "add all changed files")
+
+3. Commit your changes:
+
+   git commit -m "Brief description of what you did today"
+
+   Examples:
+   - git commit -m "Added counterbore depth validation"
+   - git commit -m "Fixed Unicode errors in rescan function"
+   - git commit -m "Updated database schema"
+
+4. Push to GitHub:
+
+   git push
+
+
+================================================================================
+                            DAILY WORKFLOW - COMPUTER B
+================================================================================
+
+STARTING WORK:
+--------------
+1. Open Git Bash or Terminal
+2. Navigate to project folder:
+
+   cd "C:/Users/YourName/Documents/gcode-database-manager"
+
+3. Get latest changes from Computer A:
+
+   git pull
+
+4. Open VSCode and start working!
+
+
+END OF DAY - SAVING WORK:
+-------------------------
+1. Stage, commit, and push (same as Computer A):
+
+   git add .
+   git commit -m "Description of work done on Computer B"
+   git push
+
+
+================================================================================
+                        HANDLING THE DATABASE FILE
+================================================================================
+
+The database file (gcode_database.db) is too large for GitHub. You have 3 options:
+
+OPTION 1: SEPARATE DATABASES (Recommended for Development)
+-----------------------------------------------------------
+- Each computer has its own database
+- Only the CODE syncs via GitHub
+- Good if you're just developing/testing features
+
+
+OPTION 2: MANUAL DATABASE SYNC VIA GOOGLE DRIVE
+------------------------------------------------
+Computer A (end of day):
+1. Copy gcode_database.db to Google Drive manually
+
+Computer B (start of work):
+1. Copy gcode_database.db FROM Google Drive to local folder
+2. Work on it
+3. Copy updated database back TO Google Drive when done
+
+Computer A (next day):
+1. Copy latest database FROM Google Drive
+
+
+OPTION 3: KEEP DATABASE IN GOOGLE DRIVE
+----------------------------------------
+- Keep all CODE in: C:/Documents/File organizer/
+- Keep DATABASE in: L:/My Drive/Home/File organizer/gcode_database.db
+- Update the app to read database from Google Drive path
+- Code syncs via Git, database syncs via Google Drive
+
+
+================================================================================
+                            COMMON COMMANDS
+================================================================================
+
+CHECK STATUS (see what changed):
+    git status
+
+VIEW RECENT COMMITS:
+    git log --oneline -10
+
+GET LATEST CHANGES:
+    git pull
+
+SAVE YOUR WORK:
+    git add .
+    git commit -m "Your message here"
+    git push
+
+UNDO UNCOMMITTED CHANGES (dangerous - you'll lose changes!):
+    git restore filename.py
+
+SEE WHAT YOU CHANGED:
+    git diff
+
+
+================================================================================
+                            TROUBLESHOOTING
+================================================================================
+
+PROBLEM: "Your branch is behind 'origin/main'"
+SOLUTION: You forgot to pull before working. Run:
+    git pull
+    (Git will try to merge automatically)
+
+
+PROBLEM: "Merge conflict in filename.py"
+SOLUTION: You edited the same line on both computers. Open the file, you'll see:
+    <<<<<<< HEAD
+    Your changes
+    =======
+    Other computer's changes
+    >>>>>>> origin/main
+
+    Choose which to keep, delete the markers, then:
+    git add filename.py
+    git commit -m "Resolved merge conflict"
+    git push
+
+
+PROBLEM: "Failed to push"
+SOLUTION: Someone else (or you on another computer) pushed changes. Run:
+    git pull
+    (Then try git push again)
+
+
+PROBLEM: "Permission denied"
+SOLUTION: GitHub authentication issue. You may need a Personal Access Token:
+    1. Go to: https://github.com/settings/tokens
+    2. Generate new token (classic)
+    3. Use token as password when pushing
+
+
+PROBLEM: Forgot to commit before switching computers
+SOLUTION: Changes are still in your working directory. Commit and push them:
+    git add .
+    git commit -m "Forgot to commit earlier"
+    git push
+
+
+================================================================================
+                            WHERE TO RUN COMMANDS
+================================================================================
+
+OPTION 1: GIT BASH (Recommended for Windows)
+---------------------------------------------
+1. Right-click in the "File organizer" folder
+2. Select "Git Bash Here"
+3. Type commands directly
+
+
+OPTION 2: VSCODE TERMINAL
+--------------------------
+1. Open VSCode
+2. Press Ctrl+` (backtick) to open terminal
+3. Make sure you're in the right folder:
+   cd "C:/Users/John Wayne/Documents/File organizer"
+4. Type Git commands
+
+
+OPTION 3: WINDOWS COMMAND PROMPT / POWERSHELL
+----------------------------------------------
+1. Press Win+R, type "cmd", press Enter
+2. Navigate to folder:
+   cd "C:\Users\John Wayne\Documents\File organizer"
+3. Type Git commands
+
+
+================================================================================
+                            QUICK REFERENCE
+================================================================================
+
+START OF WORK (ANY COMPUTER):
+    git pull
+
+END OF WORK (ANY COMPUTER):
+    git add .
+    git commit -m "What I did today"
+    git push
+
+
+THAT'S IT! Follow this pattern and your work will always be synced.
+
+
+================================================================================
+                            ADDITIONAL TIPS
+================================================================================
+
+1. ALWAYS pull before starting work (prevents conflicts)
+
+2. Commit often with clear messages (easier to find bugs later)
+
+3. Push at least once per day (backs up your work)
+
+4. Don't commit the database file (it's too large and binary)
+
+5. If you get stuck, ask Git for help:
+   git status    (shows current state)
+   git log       (shows history)
+
+6. GitHub keeps your work safe - if your computer crashes, everything is
+   backed up on GitHub
+
+
+================================================================================
+                            CURRENT SETUP STATUS
+================================================================================
+
+✓ Git repository initialized and working
+✓ Commit history restored from Jan 15 backup
+✓ Latest catch-up commit: Feb 14 (all recent work)
+✓ Working directory: C:/Users/John Wayne/Documents/File organizer/
+✓ Ready to push to GitHub
+
+Next step: Complete "INITIAL SETUP" section above to push to GitHub!
+
+
+================================================================================
+                            NEED HELP?
+================================================================================
+
+GitHub Docs: https://docs.github.com/en/get-started
+Git Basics: https://git-scm.com/book/en/v2/Getting-Started-Git-Basics
+
+Or ask Claude for help! :)
+
+
+================================================================================

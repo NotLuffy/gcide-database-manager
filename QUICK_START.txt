@@ -1,0 +1,89 @@
+================================================================================
+                            QUICK START GUIDE
+================================================================================
+
+                        DAILY WORKFLOW - CHEAT SHEET
+
+
+STEP 1: OPEN GIT BASH
+----------------------
+Right-click in the folder "File organizer" → "Git Bash Here"
+
+
+STEP 2: GET LATEST CHANGES
+---------------------------
+Type this command:
+
+    git pull
+
+Press Enter. This downloads any changes from your other computer.
+
+
+STEP 3: WORK ON YOUR PROJECT
+-----------------------------
+Open VSCode, edit files, test the application, etc.
+
+
+STEP 4: SAVE YOUR WORK TO GITHUB
+---------------------------------
+When you're done for the day, type these THREE commands:
+
+    git add .
+
+    git commit -m "Describe what you did today"
+
+    git push
+
+That's it!
+
+
+================================================================================
+                        EXAMPLE WORKFLOW
+================================================================================
+
+Monday morning on Computer A:
+------------------------------
+1. Right-click folder → "Git Bash Here"
+2. Type: git pull
+3. Work all day in VSCode
+4. End of day, type:
+   git add .
+   git commit -m "Added new validation feature"
+   git push
+5. Close everything
+
+
+Monday evening on Computer B:
+------------------------------
+1. Right-click folder → "Git Bash Here"
+2. Type: git pull  (gets the work you did on Computer A!)
+3. Keep working
+4. Type:
+   git add .
+   git commit -m "Fixed bugs found during testing"
+   git push
+5. Close everything
+
+
+Tuesday morning back on Computer A:
+------------------------------------
+1. Right-click folder → "Git Bash Here"
+2. Type: git pull  (gets the work you did on Computer B!)
+3. Continue working...
+
+
+================================================================================
+                        THE GOLDEN RULES
+================================================================================
+
+1. ALWAYS "git pull" when you start working
+2. ALWAYS "git push" when you stop working
+3. Commit messages should describe WHAT you did (not how or why)
+
+
+That's all you need to know!
+
+For more details, see: GIT_WORKFLOW_GUIDE.txt
+
+
+================================================================================
