@@ -5575,6 +5575,295 @@ class GCodeDatabaseGUI:
                                f"Failed to apply automatic fixes:\n{str(e)}\n\n"
                                f"You can still import the file without fixes.")
 
+    # ------------------------------------------------------------------
+    # Scan Folder for Issues (per-file feedback, no import)
+    # ------------------------------------------------------------------
+
+    def scan_folder_for_issues(self):
+        """Scan every G-code file in a chosen folder and report per-file issues without importing."""
+        if not self.has_permission('add_files'):
+            messagebox.showerror("Permission Denied", "You don't have permission to scan files.")
+            return
+
+        folder = filedialog.askdirectory(
+            title="Select Folder to Scan for Issues",
+            initialdir=self.config.get('last_folder', '')
+        )
+        if not folder:
+            return
+
+        import glob
+        nc_files = sorted(set(
+            glob.glob(os.path.join(folder, '*.nc')) +
+            glob.glob(os.path.join(folder, '*.NC'))
+        ))
+
+        if not nc_files:
+            messagebox.showinfo("No Files Found",
+                                f"No .nc or .NC files found in:\n{folder}")
+            return
+
+        # --- Progress window ---
+        progress_window = tk.Toplevel(self.root)
+        progress_window.title("Scanning Folder for Issues...")
+        progress_window.geometry("650x420")
+        progress_window.configure(bg=self.bg_color)
+        progress_window.transient(self.root)
+
+        tk.Label(progress_window, text=f"Scanning {len(nc_files)} file(s)...",
+                 bg=self.bg_color, fg=self.fg_color,
+                 font=("Arial", 12, "bold")).pack(pady=12)
+
+        from tkinter import ttk
+        progress_var = tk.DoubleVar()
+        ttk.Progressbar(progress_window, variable=progress_var,
+                        maximum=len(nc_files), length=560).pack(pady=4, padx=20)
+
+        current_lbl = tk.Label(progress_window, text="",
+                               bg=self.bg_color, fg=self.fg_color,
+                               font=("Arial", 9), wraplength=600)
+        current_lbl.pack(pady=4, padx=20)
+
+        log_text = scrolledtext.ScrolledText(progress_window,
+                                             bg=self.input_bg, fg=self.fg_color,
+                                             font=("Courier", 9),
+                                             width=75, height=16)
+        log_text.pack(padx=10, pady=6, fill=tk.BOTH, expand=True)
+        self.root.update()
+
+        # --- Scan loop ---
+        all_results = []
+        for i, file_path in enumerate(nc_files):
+            filename = os.path.basename(file_path)
+            current_lbl.config(text=f"Scanning: {filename}")
+            log_text.insert(tk.END, f"Scanning {filename}...")
+            log_text.see(tk.END)
+            self.root.update_idletasks()
+
+            try:
+                result = self.file_scanner.scan_file_for_issues(file_path)
+                result['file_path'] = file_path
+                all_results.append(result)
+
+                errors = len(result.get('errors', []))
+                warnings = len(result.get('warnings', []))
+                if errors > 0:
+                    log_text.insert(tk.END, f"  ✗ {errors} error(s), {warnings} warning(s)\n")
+                elif warnings > 0:
+                    log_text.insert(tk.END, f"  ⚠ {warnings} warning(s)\n")
+                else:
+                    log_text.insert(tk.END, "  ✓ PASS\n")
+
+            except Exception as e:
+                all_results.append({
+                    'file_path': file_path,
+                    'success': False,
+                    'program_number': '',
+                    'round_size': None,
+                    'errors': [{'category': 'scan_error', 'message': str(e)}],
+                    'warnings': [],
+                    'suggestions': [],
+                })
+                log_text.insert(tk.END, f"  ✗ Scan failed: {e}\n")
+
+            progress_var.set(i + 1)
+            log_text.see(tk.END)
+            self.root.update_idletasks()
+
+        progress_window.destroy()
+        self.show_folder_scan_results_dialog(folder, all_results)
+
+    def show_folder_scan_results_dialog(self, folder, all_results):
+        """Display per-file scan results for an entire folder in a results dialog."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title(f"Folder Scan Results — {os.path.basename(folder)}")
+        dialog.geometry("950x680")
+        dialog.configure(bg=self.bg_color)
+
+        total = len(all_results)
+        passed = sum(1 for r in all_results if not r.get('errors') and not r.get('warnings'))
+        with_warnings = sum(1 for r in all_results if not r.get('errors') and r.get('warnings'))
+        with_errors = sum(1 for r in all_results if r.get('errors'))
+
+        # Header
+        hdr = tk.Frame(dialog, bg=self.bg_color)
+        hdr.pack(fill=tk.X, padx=12, pady=(10, 4))
+        tk.Label(hdr, text=f"Folder: {folder}",
+                 bg=self.bg_color, fg=self.fg_color,
+                 font=("Arial", 10), wraplength=900, justify=tk.LEFT).pack(anchor='w')
+
+        # Summary bar
+        summ = tk.Frame(dialog, bg=self.bg_color, relief=tk.RIDGE, borderwidth=2)
+        summ.pack(fill=tk.X, padx=12, pady=4)
+        inner = tk.Frame(summ, bg=self.bg_color)
+        inner.pack(pady=8)
+        tk.Label(inner, text=f"Total: {total}",
+                 bg=self.bg_color, fg=self.fg_color,
+                 font=("Arial", 11, "bold")).pack(side=tk.LEFT, padx=14)
+        tk.Label(inner, text=f"✓ Pass: {passed}",
+                 bg=self.bg_color, fg="#4CAF50",
+                 font=("Arial", 11, "bold")).pack(side=tk.LEFT, padx=14)
+        tk.Label(inner, text=f"⚠ Warnings: {with_warnings}",
+                 bg=self.bg_color, fg="#FF9800",
+                 font=("Arial", 11, "bold")).pack(side=tk.LEFT, padx=14)
+        tk.Label(inner, text=f"✗ Errors: {with_errors}",
+                 bg=self.bg_color, fg="#F44336",
+                 font=("Arial", 11, "bold")).pack(side=tk.LEFT, padx=14)
+
+        # File list
+        list_frame = tk.Frame(dialog, bg=self.bg_color)
+        list_frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=4)
+        tk.Label(list_frame, text="Files  —  double-click any row for full details:",
+                 bg=self.bg_color, fg=self.fg_color,
+                 font=("Arial", 10, "bold")).pack(anchor='w', pady=(0, 3))
+
+        list_container = tk.Frame(list_frame, bg=self.bg_color)
+        list_container.pack(fill=tk.BOTH, expand=True)
+
+        sb_y = tk.Scrollbar(list_container, orient=tk.VERTICAL)
+        sb_y.pack(side=tk.RIGHT, fill=tk.Y)
+        sb_x = tk.Scrollbar(list_container, orient=tk.HORIZONTAL)
+        sb_x.pack(side=tk.BOTTOM, fill=tk.X)
+
+        file_listbox = tk.Listbox(list_container,
+                                  bg=self.input_bg, fg=self.fg_color,
+                                  font=("Consolas", 10),
+                                  yscrollcommand=sb_y.set,
+                                  xscrollcommand=sb_x.set,
+                                  selectbackground=self.accent_color,
+                                  activestyle='dotbox',
+                                  height=22)
+        file_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        sb_y.config(command=file_listbox.yview)
+        sb_x.config(command=file_listbox.xview)
+
+        result_map = {}
+        for idx, result in enumerate(all_results):
+            filename = os.path.basename(result['file_path'])
+            errors = len(result.get('errors', []))
+            warnings = len(result.get('warnings', []))
+            suggestions = len(result.get('suggestions', []))
+            prog_num = result.get('program_number', '')
+
+            if errors > 0:
+                icon, status_str, color = "✗", f"{errors}E  {warnings}W", "#F44336"
+            elif warnings > 0:
+                icon = "⚠"
+                status_str = f"{warnings}W"
+                if suggestions:
+                    status_str += f"  {suggestions}S"
+                color = "#FF9800"
+            else:
+                icon = "✓"
+                status_str = "PASS"
+                if suggestions:
+                    status_str += f"  {suggestions}S"
+                color = "#4CAF50"
+
+            prog_part = f"[{prog_num}]" if prog_num else ""
+            line = f"{icon}  {filename:<32} {prog_part:<14} {status_str}"
+            file_listbox.insert(tk.END, line)
+            file_listbox.itemconfig(idx, fg=color)
+            result_map[idx] = result
+
+        def on_double_click(event):
+            sel = file_listbox.curselection()
+            if sel:
+                r = result_map[sel[0]]
+                self.show_scan_results_dialog(r, r['file_path'])
+
+        file_listbox.bind('<Double-1>', on_double_click)
+
+        # Bottom buttons
+        btn_frame = tk.Frame(dialog, bg=self.bg_color)
+        btn_frame.pack(fill=tk.X, padx=12, pady=10)
+        tk.Label(btn_frame, text="Double-click a file to view full scan details",
+                 bg=self.bg_color, fg=self.fg_color,
+                 font=("Arial", 9, "italic")).pack(side=tk.LEFT)
+        tk.Button(btn_frame, text="Export Report",
+                  command=lambda: self._export_folder_scan_report(folder, all_results),
+                  bg=self.button_bg, fg=self.fg_color, font=("Arial", 10),
+                  width=15).pack(side=tk.RIGHT, padx=5)
+        tk.Button(btn_frame, text="Close", command=dialog.destroy,
+                  bg=self.button_bg, fg=self.fg_color, font=("Arial", 10),
+                  width=10).pack(side=tk.RIGHT, padx=5)
+
+    def _export_folder_scan_report(self, folder, all_results):
+        """Save a plain-text folder scan report to a file chosen by the user."""
+        from tkinter import filedialog as fd
+        from datetime import datetime
+
+        save_path = fd.asksaveasfilename(
+            title="Save Folder Scan Report",
+            defaultextension=".txt",
+            filetypes=[("Text Files", "*.txt"), ("All Files", "*.*")],
+            initialfile=f"scan_report_{os.path.basename(folder)}.txt"
+        )
+        if not save_path:
+            return
+
+        total = len(all_results)
+        passed = sum(1 for r in all_results if not r.get('errors') and not r.get('warnings'))
+        with_warnings = sum(1 for r in all_results if not r.get('errors') and r.get('warnings'))
+        with_errors = sum(1 for r in all_results if r.get('errors'))
+
+        lines = [
+            "FOLDER SCAN REPORT",
+            f"Generated : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"Folder    : {folder}",
+            "",
+            "SUMMARY",
+            "-------",
+            f"Total Files : {total}",
+            f"Pass        : {passed}",
+            f"Warnings    : {with_warnings}",
+            f"Errors      : {with_errors}",
+            "",
+            "FILE DETAILS",
+            "------------",
+        ]
+
+        for result in all_results:
+            filename = os.path.basename(result['file_path'])
+            errors = result.get('errors', [])
+            warnings = result.get('warnings', [])
+            suggestions = result.get('suggestions', [])
+            prog_num = result.get('program_number', 'Unknown')
+
+            if errors:
+                status = f"ERRORS ({len(errors)})"
+            elif warnings:
+                status = f"WARNINGS ({len(warnings)})"
+            else:
+                status = "PASS"
+
+            lines += [
+                "",
+                "=" * 60,
+                f"File    : {filename}",
+                f"Program : {prog_num}",
+                f"Status  : {status}",
+            ]
+            if errors:
+                lines.append("ERRORS:")
+                for e in errors:
+                    lines.append(f"  x [{e.get('category', '?')}] {e.get('message', '')}")
+            if warnings:
+                lines.append("WARNINGS:")
+                for w in warnings:
+                    lines.append(f"  ! [{w.get('category', '?')}] {w.get('message', '')}")
+            if suggestions:
+                lines.append("SUGGESTIONS:")
+                for s in suggestions:
+                    lines.append(f"  > [{s.get('category', '?')}] {s.get('message', '')}")
+
+        try:
+            with open(save_path, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(lines))
+            messagebox.showinfo("Report Saved", f"Scan report saved to:\n{save_path}")
+        except Exception as e:
+            messagebox.showerror("Save Failed", f"Could not save report:\n{str(e)}")
+
     def _update_internal_program_number(self, file_path, new_number):
         """
         Update the internal O-number in a G-code file.
@@ -7140,6 +7429,11 @@ class GCodeDatabaseGUI:
             # Scan File - Phase 1 feature
             tk.Button(files_group, text="🔍 Scan File", command=self.scan_file_before_import,
                      bg="#9C27B0", fg=self.fg_color, font=("Arial", 9, "bold"),
+                     width=14, height=2).pack(side=tk.LEFT, padx=3)
+
+            # Scan Folder for Issues - shows per-file feedback without importing
+            tk.Button(files_group, text="🔍 Scan Folder\nfor Issues", command=self.scan_folder_for_issues,
+                     bg="#6A1B9A", fg=self.fg_color, font=("Arial", 9, "bold"),
                      width=14, height=2).pack(side=tk.LEFT, padx=3)
 
         tk.Button(files_group, text="📁 Scan Folder", command=self.scan_folder,
