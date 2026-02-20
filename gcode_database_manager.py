@@ -27017,9 +27017,18 @@ class DetailsWindow:
                     warnings = [i.strip() for i in self.record[21].split('|') if i.strip()]
 
                 if warnings:
-                    text.insert(tk.END, "\nWARNINGS:\n")
+                    # Group by keyword-derived category so each type gets
+                    # its own sub-section instead of one flat list.
+                    groups = {}
                     for warning in warnings:
-                        text.insert(tk.END, f"  - {warning}\n")
+                        cat = FileScanner._categorize_validation_warning(warning)
+                        groups.setdefault(cat, []).append(warning)
+
+                    text.insert(tk.END, "\nWARNINGS:\n")
+                    for cat, cat_warnings in groups.items():
+                        text.insert(tk.END, f"\n  {cat}:\n")
+                        for warning in cat_warnings:
+                            text.insert(tk.END, f"    - {warning}\n")
 
             # Feasibility validation (Standards-based)
             # feasibility_status, feasibility_issues, feasibility_warnings are at dynamic indices

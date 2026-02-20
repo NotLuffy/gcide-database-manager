@@ -14,6 +14,38 @@ class FileScanner:
     File scanner for G-code files - scans for issues without importing to database
     """
 
+    @staticmethod
+    def _categorize_validation_warning(msg: str) -> str:
+        """
+        Assign a meaningful sub-category to a validation warning based on
+        keywords in the message text.  Falls back to 'Validation' if no
+        keyword matches.
+        """
+        m = msg.lower()
+        if 'turning tool' in m or ('turning' in m and 'depth' in m):
+            return 'Turning Depth'
+        if 'bore chamfer' in m or ('chamfer' in m and ('cb' in m or 'bore' in m)):
+            return 'Bore Setup'
+        if 'setup' in m and ('cb' in m or 'bore' in m):
+            return 'Bore Setup'
+        if 'g154' in m or 'work offset' in m or 'wcs' in m:
+            return 'Work Offset'
+        if 'tool home' in m or 'g53' in m:
+            return 'Tool Home'
+        if 'counterbore' in m or 'counter bore' in m or 'counter_bore' in m:
+            return 'Counterbore'
+        if 'bore' in m:
+            return 'Bore'
+        if 'hub' in m:
+            return 'Hub'
+        if 'diameter' in m or ' od ' in m or 'outer dia' in m:
+            return 'Diameter'
+        if 'thickness' in m:
+            return 'Thickness'
+        if 'p-code' in m or 'pcode' in m or 'fixture' in m:
+            return 'Fixture Offset'
+        return 'Validation'
+
     def __init__(self):
         self.parser = ImprovedGCodeParser()
 
@@ -134,7 +166,7 @@ class FileScanner:
                         results['warnings'].append({
                             'type': 'validation',
                             'severity': 'warning',
-                            'category': 'Validation',
+                            'category': self._categorize_validation_warning(warning.strip()),
                             'message': warning.strip(),
                             'line_number': None
                         })
