@@ -24,6 +24,7 @@ from validators.turning_tool_depth_validator import TurningToolDepthValidator
 from validators.bore_chamfer_safety_validator import BoreChamferSafetyValidator
 from validators.counterbore_depth_validator import CounterboreDepthValidator
 from validators.g154_presence_validator import G154PresenceValidator
+from validators.steel_ring_recess_validator import SteelRingRecessValidator
 
 
 @dataclass
@@ -470,6 +471,9 @@ class ImprovedGCodeParser:
 
             # 11g. G154 / work offset presence (every operation must declare WCS)
             self._validate_g154_presence(result, lines)
+
+            # 11h. Steel ring recess diameter (interference-fit tolerance check)
+            self._validate_steel_ring_recess(result)
 
             # 12. Get file timestamps
             try:
@@ -3804,6 +3808,31 @@ class ImprovedGCodeParser:
         except Exception as e:
             if self.debug:
                 print(f"Error in G154 presence validation: {e}")
+
+    def _validate_steel_ring_recess(self, result: GCodeParseResult):
+        """
+        Validate the Side-2 recess diameter for steel ring spacers.
+
+        The recess bore must be 0.008"–0.010" smaller than the steel ring
+        OD to create the required interference fit.  Recognised ring sizes:
+        5.000", 5.250", 6.000", 6.500".
+
+        Errors   → recess too tight (ring cannot be pressed in safely)
+        Warnings → recess too loose (ring will not be retained)
+        """
+        try:
+            validator = SteelRingRecessValidator()
+            errors, warnings = validator.validate(
+                result.spacer_type,
+                result.counter_bore_diameter,
+            )
+            if errors:
+                result.validation_issues.extend(errors)
+            if warnings:
+                result.validation_warnings.extend(warnings)
+        except Exception as e:
+            if self.debug:
+                print(f"Error in steel ring recess validation: {e}")
 
     def _validate_consistency(self, result: GCodeParseResult):
         """
