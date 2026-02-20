@@ -3901,6 +3901,7 @@ class ImprovedGCodeParser:
                 center_bore_mm=result.center_bore,
                 counter_bore_diameter_mm=result.counter_bore_diameter,
                 hub_diameter_mm=result.hub_diameter,
+                counter_bore_depth_in=result.counter_bore_depth,
             )
             if errors:
                 result.validation_issues.extend(errors)
