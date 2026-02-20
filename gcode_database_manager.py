@@ -19,6 +19,9 @@ import queue
 # Import the improved parser
 from improved_gcode_parser import ImprovedGCodeParser, GCodeParseResult
 
+# Import 2PC ring/hub OD lookup table for pair-matching
+from validators.twopc_ring_size_validator import TWOPC_RING_TABLE
+
 # Import Phase 1 modules
 from utils.gcode_file_scanner import FileScanner
 from utils.gcode_auto_fixer import AutoFixer
@@ -8085,6 +8088,12 @@ class GCodeDatabaseGUI:
                              bg="#FF6F00", fg=self.fg_color,
                              font=("Arial", 10, "bold"), width=15, height=1)
         btn_batch.pack(side=tk.LEFT, padx=5)
+
+        btn_2pc_match = tk.Button(row4, text="🔗 Find 2PC Match",
+                                  command=self.show_2pc_cb_search_dialog,
+                                  bg="#1565C0", fg=self.fg_color,
+                                  font=("Arial", 10, "bold"), width=14, height=1)
+        btn_2pc_match.pack(side=tk.LEFT, padx=5)
 
         # Duplicates only checkbox
         self.filter_duplicates = tk.BooleanVar()
@@ -17581,6 +17590,322 @@ class GCodeDatabaseGUI:
         tk.Label(btn_frame,
                 text="Higher scores indicate better fit. Hub and step dimensions must allow proper assembly.",
                 bg=self.bg_color, fg="#888888", font=("Arial", 9)).pack(side=tk.LEFT, padx=20)
+
+    def _eval_2pc_ring_fit(self, prog):
+        """
+        Evaluate ring/recess fit quality for a 2PC program using TWOPC_RING_TABLE.
+
+        For LUG programs:  checks counter_bore_diameter clearance (0.003–0.005" over hub OD)
+                           and counter_bore_depth >= 0.300".
+        For STUD programs: checks hub_diameter matches expected hub OD for CB class.
+
+        Returns:
+            (label_str, sort_score)  — lower sort_score = better fit (1 = perfect).
+        """
+        is_lug = '2PC LUG' in prog.get('spacer_type', '')
+        cb_mm = prog.get('center_bore')
+
+        if not cb_mm:
+            return 'No CB data', 99
+
+        # Look up expected hub OD(s) for this program's CB class
+        entry = None
+        for cb_min, cb_max, hub_ods, desc in TWOPC_RING_TABLE:
+            if cb_min <= cb_mm < cb_max:
+                entry = (hub_ods, desc)
+                break
+
+        if entry is None:
+            return '—', 90  # CB in a gap zone, not validated
+
+        hub_ods_in, desc = entry
+
+        if is_lug:
+            cbd_mm = prog.get('counter_bore_diameter')
+            depth_in = prog.get('counter_bore_depth')
+
+            if not cbd_mm:
+                return 'No recess bore', 80
+
+            cbd_in = cbd_mm / 25.4
+            nearest_hub = min(hub_ods_in, key=lambda r: abs(cbd_in - r))
+            clearance = cbd_in - nearest_hub
+            depth_ok = depth_in is not None and depth_in >= 0.300
+            depth_str = f'{depth_in:.3f}"' if depth_in is not None else '—'
+
+            if 0.003 <= clearance <= 0.005 and depth_ok:
+                return f'✓ {clearance:+.3f}" cl / {depth_str} deep', 1
+            elif 0.003 <= clearance <= 0.005:
+                return f'⚠ bore OK / {depth_str} deep (shallow)', 3
+            elif clearance < 0.0:
+                return f'✗ interference {clearance:+.3f}"', 10
+            elif clearance < 0.003:
+                return f'⚠ tight {clearance:+.3f}" cl / {depth_str}', 6
+            else:
+                return f'⚠ loose {clearance:+.3f}" cl / {depth_str}', 7
+
+        else:  # STUD
+            hub_d_mm = prog.get('hub_diameter')
+            hub_h_in = prog.get('hub_height')
+
+            if not hub_d_mm:
+                return 'No hub OD', 80
+
+            hub_d_in = hub_d_mm / 25.4
+            nearest_hub = min(hub_ods_in, key=lambda r: abs(hub_d_in - r))
+            diff = abs(hub_d_in - nearest_hub)
+            hub_h_str = f'{hub_h_in:.3f}"' if hub_h_in is not None else '—'
+
+            if diff <= 0.055:
+                return f'✓ hub OD {hub_d_mm:.1f} mm  h={hub_h_str}', 1
+            elif diff <= 0.25:
+                return f'≈ hub OD close (off {diff:.3f}")  h={hub_h_str}', 4
+            else:
+                return f'✗ hub OD mismatch (off {diff:.3f}")', 10
+
+    def show_2pc_cb_search_dialog(self):
+        """
+        Standalone dialog: pick whether you have a STUD or LUG, enter the target CB
+        of the matching piece, and see all opposite-type programs sorted by CB proximity
+        with ring/recess fit quality evaluated from the hub OD lookup table.
+        """
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Find 2PC Matching Part by CB")
+        dialog.geometry("380x230")
+        dialog.configure(bg=self.bg_color)
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        dialog.update_idletasks()
+        x = (dialog.winfo_screenwidth() - 380) // 2
+        y = (dialog.winfo_screenheight() - 230) // 2
+        dialog.geometry(f"+{x}+{y}")
+
+        tk.Label(dialog, text="Find 2PC Matching Part",
+                 bg=self.bg_color, fg=self.fg_color,
+                 font=("Arial", 13, "bold")).pack(pady=12)
+
+        body = tk.Frame(dialog, bg=self.bg_color)
+        body.pack(padx=30, fill=tk.X)
+
+        # I have a: STUD / LUG
+        tk.Label(body, text="I have a:", bg=self.bg_color, fg=self.fg_color,
+                 font=("Arial", 10)).grid(row=0, column=0, sticky='w', pady=6)
+
+        have_type_var = tk.StringVar(value='2PC STUD')
+        type_frame = tk.Frame(body, bg=self.bg_color)
+        type_frame.grid(row=0, column=1, sticky='w', padx=8)
+        tk.Radiobutton(type_frame, text="STUD", variable=have_type_var, value='2PC STUD',
+                       bg=self.bg_color, fg=self.fg_color, selectcolor=self.input_bg,
+                       activebackground=self.bg_color,
+                       font=("Arial", 10)).pack(side=tk.LEFT, padx=4)
+        tk.Radiobutton(type_frame, text="LUG", variable=have_type_var, value='2PC LUG',
+                       bg=self.bg_color, fg=self.fg_color, selectcolor=self.input_bg,
+                       activebackground=self.bg_color,
+                       font=("Arial", 10)).pack(side=tk.LEFT, padx=4)
+
+        # CB input
+        tk.Label(body, text="Matching piece CB:", bg=self.bg_color, fg=self.fg_color,
+                 font=("Arial", 10)).grid(row=1, column=0, sticky='w', pady=8)
+
+        cb_frame = tk.Frame(body, bg=self.bg_color)
+        cb_frame.grid(row=1, column=1, sticky='w', padx=8)
+        cb_entry = tk.Entry(cb_frame, bg=self.input_bg, fg=self.fg_color,
+                            font=("Arial", 11), width=10)
+        cb_entry.pack(side=tk.LEFT)
+        tk.Label(cb_frame, text="mm", bg=self.bg_color, fg="#888888",
+                 font=("Arial", 10)).pack(side=tk.LEFT, padx=4)
+
+        cb_entry.focus_set()
+
+        tk.Label(dialog, text="Sorted by CB proximity  ·  ring fit graded against hub OD table",
+                 bg=self.bg_color, fg="#666666", font=("Arial", 8, "italic")).pack(pady=4)
+
+        def do_search():
+            cb_str = cb_entry.get().strip()
+            if not cb_str:
+                messagebox.showerror("Missing CB", "Please enter the target center bore in mm", parent=dialog)
+                return
+            try:
+                target_cb = float(cb_str)
+            except ValueError:
+                messagebox.showerror("Invalid CB", "Please enter a valid numeric value", parent=dialog)
+                return
+            if target_cb <= 0:
+                messagebox.showerror("Invalid CB", "CB must be a positive number", parent=dialog)
+                return
+            dialog.destroy()
+            self._show_2pc_cb_results(have_type_var.get(), target_cb)
+
+        cb_entry.bind('<Return>', lambda e: do_search())
+
+        btn_frame = tk.Frame(dialog, bg=self.bg_color)
+        btn_frame.pack(pady=12)
+        tk.Button(btn_frame, text="Search", command=do_search,
+                  bg=self.accent_color, fg=self.fg_color, font=("Arial", 10, "bold"),
+                  width=10).pack(side=tk.LEFT, padx=6)
+        tk.Button(btn_frame, text="Cancel", command=dialog.destroy,
+                  bg=self.button_bg, fg=self.fg_color, font=("Arial", 10),
+                  width=10).pack(side=tk.LEFT, padx=6)
+
+        dialog.wait_window()
+
+    def _show_2pc_cb_results(self, have_type, target_cb_mm):
+        """
+        Query opposite-type 2PC programs, score ring fit, and display in a results window
+        sorted by CB proximity then fit quality.
+        """
+        if '2PC STUD' in have_type:
+            search_type_pattern = '%2PC LUG%'
+            have_label, find_label = 'STUD', 'LUG'
+        else:
+            search_type_pattern = '%2PC STUD%'
+            have_label, find_label = 'LUG', 'STUD'
+
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT program_number, title, outer_diameter, center_bore,
+                       thickness, hub_height, hub_diameter, counter_bore_depth,
+                       counter_bore_diameter, spacer_type, validation_status
+                FROM programs
+                WHERE spacer_type LIKE ?
+                  AND is_deleted = 0
+                ORDER BY center_bore
+            """, (search_type_pattern,))
+            rows = cursor.fetchall()
+            conn.close()
+        except sqlite3.Error as e:
+            messagebox.showerror("Database Error", f"Failed to query programs: {e}")
+            return
+
+        if not rows:
+            messagebox.showinfo("No Results", f"No {find_label} programs found in the database.")
+            return
+
+        # Build, score, and sort results
+        results = []
+        for row in rows:
+            prog = {
+                'program_number': row[0], 'title': row[1], 'outer_diameter': row[2],
+                'center_bore': row[3], 'thickness': row[4], 'hub_height': row[5],
+                'hub_diameter': row[6], 'counter_bore_depth': row[7],
+                'counter_bore_diameter': row[8], 'spacer_type': row[9],
+                'validation_status': row[10],
+            }
+            cb = prog['center_bore']
+            prog['cb_diff'] = abs(cb - target_cb_mm) if cb is not None else 9999
+            label, score = self._eval_2pc_ring_fit(prog)
+            prog['ring_fit_label'] = label
+            prog['ring_fit_score'] = score
+            results.append(prog)
+
+        results.sort(key=lambda x: (x['cb_diff'], x['ring_fit_score']))
+
+        # Look up expected hub OD for the target CB
+        hub_info = '—'
+        for cb_min, cb_max, hub_ods, desc in TWOPC_RING_TABLE:
+            if cb_min <= target_cb_mm < cb_max:
+                hub_ods_str = ' or '.join(f'{h:.3f}"' for h in hub_ods)
+                hub_info = f'{hub_ods_str}  ({desc})'
+                break
+
+        # ── Results window ─────────────────────────────────────────────────────
+        win = tk.Toplevel(self.root)
+        win.title(f"2PC {find_label} Matches — CB ≈ {target_cb_mm:.1f} mm")
+        win.geometry("1150x650")
+        win.configure(bg=self.bg_color)
+
+        # Header
+        hdr = tk.Frame(win, bg=self.bg_color)
+        hdr.pack(fill=tk.X, padx=10, pady=8)
+        tk.Label(hdr,
+                 text=f"Matching {find_label} programs  ·  You have a {have_label}  ·  Target CB = {target_cb_mm:.1f} mm",
+                 bg=self.bg_color, fg=self.fg_color, font=("Arial", 12, "bold")).pack()
+        tk.Label(hdr,
+                 text=f"Expected hub/ring OD for CB {target_cb_mm:.1f} mm:  {hub_info}",
+                 bg=self.bg_color, fg="#FF9800", font=("Arial", 10)).pack(pady=2)
+        tk.Label(hdr,
+                 text=f"{len(results)} {find_label} programs — sorted by CB proximity, then ring fit quality",
+                 bg=self.bg_color, fg="#888888", font=("Arial", 9)).pack()
+
+        # Treeview
+        tree_frame = tk.Frame(win, bg=self.bg_color)
+        tree_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+
+        if find_label == 'LUG':
+            cols   = ('prog', 'cb', 'cb_diff', 'od', 'thick', 'cbd_mm', 'cbd_in', 'depth', 'ring_fit', 'status')
+            hdrs   = ('Prog #', 'CB (mm)', 'CB Diff', 'OD', 'Thick', 'CBD (mm)', 'CBD (in)', 'Depth', 'Ring Fit', 'Status')
+            widths = (80, 70, 65, 65, 65, 78, 82, 68, 270, 85)
+        else:  # STUD
+            cols   = ('prog', 'cb', 'cb_diff', 'od', 'thick', 'hub_d', 'hub_h', 'ring_fit', 'status')
+            hdrs   = ('Prog #', 'CB (mm)', 'CB Diff', 'OD', 'Thick', 'Hub OD (mm)', 'Hub H', 'Ring Fit', 'Status')
+            widths = (80, 70, 65, 65, 65, 90, 68, 320, 85)
+
+        tree = ttk.Treeview(tree_frame, columns=cols, show='headings', height=24)
+        for col, hdr_text, w in zip(cols, hdrs, widths):
+            tree.heading(col, text=hdr_text)
+            tree.column(col, width=w, anchor='w')
+
+        vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
+        hsb = ttk.Scrollbar(tree_frame, orient="horizontal", command=tree.xview)
+        tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        tree.grid(row=0, column=0, sticky='nsew')
+        vsb.grid(row=0, column=1, sticky='ns')
+        hsb.grid(row=1, column=0, sticky='ew')
+        tree_frame.grid_rowconfigure(0, weight=1)
+        tree_frame.grid_columnconfigure(0, weight=1)
+
+        tree.tag_configure('good',     foreground='#4CAF50')
+        tree.tag_configure('warn',     foreground='#FF9800')
+        tree.tag_configure('bad',      foreground='#F44336')
+        tree.tag_configure('exact_cb', background='#1a3a1a')
+
+        # Populate rows
+        for prog in results:
+            cb        = prog.get('center_bore')
+            cb_str    = f"{cb:.1f}" if cb is not None else '—'
+            cb_diff   = prog.get('cb_diff', 9999)
+            diff_str  = f"{cb_diff:+.1f}" if cb_diff < 9999 else '—'
+            od        = prog.get('outer_diameter')
+            od_str    = f'{od:.2f}"' if od else '—'
+            thick     = prog.get('thickness')
+            thick_str = f'{thick:.3f}"' if thick else '—'
+            fit_score = prog.get('ring_fit_score', 99)
+            fit_label = prog.get('ring_fit_label', '—')
+            status    = prog.get('validation_status') or ''
+
+            fit_tag   = 'good' if fit_score <= 1 else ('warn' if fit_score <= 4 else 'bad')
+            item_tags = (fit_tag, 'exact_cb') if cb_diff < 0.5 else (fit_tag,)
+
+            if find_label == 'LUG':
+                cbd_mm  = prog.get('counter_bore_diameter')
+                cbd_mm_str = f'{cbd_mm:.1f}' if cbd_mm else '—'
+                cbd_in_str = f'{cbd_mm/25.4:.4f}"' if cbd_mm else '—'
+                depth      = prog.get('counter_bore_depth')
+                depth_str  = f'{depth:.3f}"' if depth is not None else '—'
+                tree.insert('', 'end', tags=item_tags, values=(
+                    prog['program_number'], cb_str, diff_str, od_str, thick_str,
+                    cbd_mm_str, cbd_in_str, depth_str, fit_label, status))
+            else:
+                hub_d     = prog.get('hub_diameter')
+                hub_d_str = f'{hub_d:.1f}' if hub_d else '—'
+                hub_h     = prog.get('hub_height')
+                hub_h_str = f'{hub_h:.3f}"' if hub_h is not None else '—'
+                tree.insert('', 'end', tags=item_tags, values=(
+                    prog['program_number'], cb_str, diff_str, od_str, thick_str,
+                    hub_d_str, hub_h_str, fit_label, status))
+
+        # Footer
+        footer = tk.Frame(win, bg=self.bg_color)
+        footer.pack(fill=tk.X, padx=10, pady=8)
+        tk.Label(footer,
+                 text='Green = ring fit in spec (0.003–0.005" cl, depth ≥ 0.300")  |  Orange = minor issue  |  Red = mismatch  |  Dark background = exact CB match',
+                 bg=self.bg_color, fg="#888888", font=("Arial", 8)).pack(side=tk.LEFT)
+        tk.Button(footer, text="Close", command=win.destroy,
+                  bg=self.button_bg, fg=self.fg_color, font=("Arial", 10),
+                  width=10).pack(side=tk.RIGHT, padx=5)
 
     def show_resolve_suffixes(self):
         """Show dialog to find and resolve programs with suffix placeholders like (1), _1"""
