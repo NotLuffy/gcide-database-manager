@@ -27,6 +27,45 @@ from validators.g154_presence_validator import G154PresenceValidator
 from validators.steel_ring_recess_validator import SteelRingRecessValidator
 
 
+# ── Known CB equivalence pairs ────────────────────────────────────────────────
+# Some bore sizes are specified one way in the title but programmed a few
+# thousandths larger in the G-code as an accepted machining convention.
+# Each entry: (title_spec_mm, gcode_actual_mm, match_tolerance_mm)
+#
+# 116.7mm / 116.9mm (X4.602):
+#   Title says 116.7mm but the bore is routinely programmed at X4.602"
+#   (4.602 × 25.4 = 116.891mm).  The 0.19mm difference is intentional —
+#   it ensures a clean chamfer lead-in while staying within hub tolerance.
+_CB_EQUIVALENCES = [
+    (116.7, 116.8908, 0.05),   # X4.594 title → X4.602 gcode convention
+]
+
+
+def _resolve_effective_cb(title_cb_mm, gcode_cb_mm):
+    """Return the best CB reference for validators.
+
+    For known equivalent pairs the actual G-code bore is more precise
+    than the rounded title value, so prefer it for comparisons.
+    Returns title_cb_mm unchanged when no equivalence applies.
+    """
+    if title_cb_mm is None or gcode_cb_mm is None:
+        return title_cb_mm
+    for spec, actual, tol in _CB_EQUIVALENCES:
+        if abs(title_cb_mm - spec) < tol and abs(gcode_cb_mm - actual) < tol:
+            return actual
+    return title_cb_mm
+
+
+def _is_known_cb_equivalent(title_cb_mm, gcode_cb_mm):
+    """Return True when (title_cb_mm, gcode_cb_mm) is a known acceptable pair."""
+    if title_cb_mm is None or gcode_cb_mm is None:
+        return False
+    for spec, actual, tol in _CB_EQUIVALENCES:
+        if abs(title_cb_mm - spec) < tol and abs(gcode_cb_mm - actual) < tol:
+            return True
+    return False
+
+
 @dataclass
 class GCodeParseResult:
     """Complete parsing result for a G-code file"""
@@ -3715,11 +3754,15 @@ class ImprovedGCodeParser:
             # Initialize validator
             chamfer_validator = BoreChamferSafetyValidator()
 
+            # For known equivalence pairs, use the actual G-code bore as the
+            # CB reference so the chamfer safety boundary is accurate.
+            effective_cb = _resolve_effective_cb(result.center_bore, result.cb_from_gcode)
+
             # Run validation
             chamfer_result = chamfer_validator.validate_file(
                 lines=lines,
                 outer_diameter=result.outer_diameter,
-                center_bore=result.center_bore,
+                center_bore=effective_cb,
                 spacer_type=result.spacer_type
             )
 
@@ -3865,12 +3908,15 @@ class ImprovedGCodeParser:
             title_cb = result.center_bore  # SPECIFICATION
             gcode_cb = result.cb_from_gcode  # IMPLEMENTATION
 
+            # Skip comparison for known equivalent pairs (e.g. 116.7mm title
+            # vs 116.9mm / X4.602 gcode — accepted machining convention).
+            if _is_known_cb_equivalent(title_cb, gcode_cb):
+                pass  # known pair — no mismatch check needed
+
             # Check if G-code is within acceptable range
             # Lower bound: title_cb - 0.25mm (critical threshold)
             # Upper bound: title_cb + 0.4mm (critical threshold)
-            diff = gcode_cb - title_cb
-
-            if diff < -0.25:
+            elif (diff := gcode_cb - title_cb) < -0.25:
                 # CRITICAL: CB way too small - RED
                 result.validation_issues.append(
                     f'CB TOO SMALL: Spec={title_cb:.1f}mm, G-code={gcode_cb:.1f}mm ({diff:+.2f}mm) - CRITICAL ERROR'
