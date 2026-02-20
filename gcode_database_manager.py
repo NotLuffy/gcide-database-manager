@@ -5484,12 +5484,69 @@ class GCodeDatabaseGUI:
                  bg=self.bg_color, fg=status_color,
                  font=("Arial", 10, "bold")).pack(pady=5)
 
+        # ── Metadata grid (all available fields) ────────────────────────
+        dims   = scan_results.get('dimensions', {}) or {}
+        tools  = scan_results.get('tools_used')  or []
+        pcodes = scan_results.get('pcodes_found') or []
+
+        meta_pairs = []
         if scan_results.get('program_number'):
-            tk.Label(summary_frame, text=f"Program: {scan_results['program_number']}",
-                     bg=self.bg_color, fg=self.fg_color).pack()
+            meta_pairs.append(("Program",     scan_results['program_number']))
+        if scan_results.get('title'):
+            meta_pairs.append(("Title",       scan_results['title']))
+        if scan_results.get('spacer_type'):
+            meta_pairs.append(("Type",        scan_results['spacer_type']))
+        if scan_results.get('material'):
+            meta_pairs.append(("Material",    scan_results['material']))
+        if dims.get('outer_diameter'):
+            meta_pairs.append(("OD",          f"{dims['outer_diameter']:.3f}\""))
         if scan_results.get('round_size'):
-            tk.Label(summary_frame, text=f"Round Size: {scan_results['round_size']}",
-                     bg=self.bg_color, fg=self.fg_color).pack()
+            meta_pairs.append(("Round Size",  f"{scan_results['round_size']}\""))
+        if dims.get('thickness'):
+            meta_pairs.append(("Thickness",   f"{dims['thickness']:.4f}\""))
+        if dims.get('center_bore'):
+            meta_pairs.append(("Center Bore", f"{dims['center_bore']:.3f}\""))
+        if dims.get('hub_diameter'):
+            meta_pairs.append(("Hub Dia",     f"{dims['hub_diameter']:.3f}\""))
+        if dims.get('hub_height'):
+            meta_pairs.append(("Hub Height",  f"{dims['hub_height']:.3f}\""))
+        if dims.get('counter_bore_diameter'):
+            meta_pairs.append(("CB Dia",      f"{dims['counter_bore_diameter']:.3f}\""))
+        if dims.get('counter_bore_depth'):
+            meta_pairs.append(("CB Depth",    f"{dims['counter_bore_depth']:.3f}\""))
+
+        if meta_pairs:
+            meta_frame = tk.Frame(summary_frame, bg=self.bg_color)
+            meta_frame.pack(fill=tk.X, padx=10, pady=(2, 4))
+            for i, (lbl_text, val_text) in enumerate(meta_pairs):
+                col = (i % 2) * 2
+                row = i // 2
+                tk.Label(meta_frame, text=f"{lbl_text}:",
+                         bg=self.bg_color, fg="#90CAF9",
+                         font=("Consolas", 9, "bold"),
+                         anchor='e', width=12).grid(row=row, column=col, sticky='e', padx=(4, 2))
+                tk.Label(meta_frame, text=val_text,
+                         bg=self.bg_color, fg=self.fg_color,
+                         font=("Consolas", 9),
+                         anchor='w').grid(row=row, column=col + 1, sticky='w', padx=(0, 20))
+
+        if tools:
+            tools_row = tk.Frame(summary_frame, bg=self.bg_color)
+            tools_row.pack(fill=tk.X, padx=10, pady=(0, 2))
+            tk.Label(tools_row, text="Tools:", bg=self.bg_color, fg="#90CAF9",
+                     font=("Consolas", 9, "bold")).pack(side=tk.LEFT, padx=4)
+            tk.Label(tools_row, text=", ".join(str(t) for t in tools),
+                     bg=self.bg_color, fg=self.fg_color,
+                     font=("Consolas", 9)).pack(side=tk.LEFT)
+
+        if pcodes:
+            pcodes_row = tk.Frame(summary_frame, bg=self.bg_color)
+            pcodes_row.pack(fill=tk.X, padx=10, pady=(0, 4))
+            tk.Label(pcodes_row, text="P-Codes:", bg=self.bg_color, fg="#90CAF9",
+                     font=("Consolas", 9, "bold")).pack(side=tk.LEFT, padx=4)
+            tk.Label(pcodes_row, text=", ".join(str(p) for p in pcodes),
+                     bg=self.bg_color, fg=self.fg_color,
+                     font=("Consolas", 9)).pack(side=tk.LEFT)
 
         # ── Issues area ─────────────────────────────────────────────────
         issues_frame = tk.Frame(dialog, bg=self.bg_color)
@@ -27109,6 +27166,18 @@ class FileComparisonWindow:
             else:
                 file_contents[prog_num] = "[File not found]"
 
+        # Run live scan on every file so each panel can show fresh issue badges.
+        # Stored as {program_number: scan_result_dict | None}.
+        self.scan_results = {}
+        if self.manager and hasattr(self.manager, 'file_scanner'):
+            for _fi in self.files_data:
+                _pn, _fp = _fi[0], _fi[2]
+                if _fp and os.path.exists(_fp):
+                    try:
+                        self.scan_results[_pn] = self.manager.file_scanner.scan_file_for_issues(_fp)
+                    except Exception:
+                        self.scan_results[_pn] = None
+
         # Create a panel for each file
         for idx, file_info in enumerate(self.files_data):
             self.create_file_panel(panels_frame, file_info, file_contents, idx)
@@ -27161,6 +27230,56 @@ class FileComparisonWindow:
                     bg=header_bg, fg="white",
                     font=("Arial", 9)).pack()
 
+        # ── Live scan badge ──────────────────────────────────────────────
+        scan = self.scan_results.get(prog_num)
+        if scan:
+            s_crashes   = [e for e in scan.get('errors', []) if e.get('type') == 'crash']
+            s_errors    = [e for e in scan.get('errors', []) if e.get('type') != 'crash']
+            s_warnings  = scan.get('warnings', [])
+            s_suggests  = scan.get('suggestions', [])
+
+            if s_crashes:
+                badge_bg, badge_fg = "#B71C1C", "white"
+                parts = [f"🔴 {len(s_crashes)} CRASH{'ES' if len(s_crashes) > 1 else ''}"]
+                if s_errors:   parts.append(f"✗ {len(s_errors)}")
+                if s_warnings: parts.append(f"⚠ {len(s_warnings)}")
+            elif s_errors:
+                badge_bg, badge_fg = "#C62828", "white"
+                parts = [f"✗ {len(s_errors)} ERROR{'S' if len(s_errors) > 1 else ''}"]
+                if s_warnings: parts.append(f"⚠ {len(s_warnings)}")
+            elif s_warnings:
+                badge_bg, badge_fg = "#E65100", "white"
+                parts = [f"⚠ {len(s_warnings)} WARNING{'S' if len(s_warnings) > 1 else ''}"]
+            else:
+                badge_bg, badge_fg = "#1B5E20", "#a5d6a7"
+                parts = ["✓ PASS"]
+
+            if s_suggests and not (s_crashes or s_errors or s_warnings):
+                parts.append(f"💡 {len(s_suggests)}")
+
+            badge_bar = tk.Frame(panel, bg=badge_bg)
+            badge_bar.pack(fill=tk.X)
+            tk.Label(badge_bar, text="  |  ".join(parts),
+                     bg=badge_bg, fg=badge_fg,
+                     font=("Arial", 10, "bold")).pack(pady=4)
+
+            # Show the top 3 issues as a quick-read preview
+            preview_items = (s_crashes + s_errors + s_warnings)[:3]
+            if preview_items:
+                preview_frame = tk.Frame(panel, bg="#212121")
+                preview_frame.pack(fill=tk.X)
+                for item in preview_items:
+                    msg = item.get('message', '').strip()
+                    if len(msg) > 72:
+                        msg = msg[:69] + "..."
+                    item_color = ("#ff8a80" if item.get('type') == 'crash' else
+                                  "#ef9a9a" if item in (s_crashes + s_errors) else
+                                  "#ffcc80")
+                    tk.Label(preview_frame, text=f"  • {msg}",
+                             bg="#212121", fg=item_color,
+                             font=("Courier", 8), anchor='w',
+                             justify=tk.LEFT, wraplength=300).pack(fill=tk.X, padx=5, pady=1)
+
         # Metadata section
         meta_frame = tk.Frame(panel, bg=self.input_bg)
         meta_frame.pack(fill=tk.X, padx=5, pady=5)
@@ -27209,6 +27328,13 @@ class FileComparisonWindow:
         if len(self.files_data) > 1 and index > 0:
             self.highlight_differences(content_text, content, file_contents[self.files_data[0][0]])
 
+        # Highlight lines referenced by scan issues (crash/error/warning)
+        scan_for_hl = self.scan_results.get(prog_num)
+        if scan_for_hl:
+            diff_offset = 2 if (len(self.files_data) > 1 and index > 0 and
+                                 content != file_contents.get(self.files_data[0][0], '')) else 0
+            self.highlight_issue_lines(content_text, scan_for_hl, diff_offset)
+
         # Action buttons
         action_frame = tk.Frame(panel, bg=self.input_bg)
         action_frame.pack(fill=tk.X, padx=5, pady=10)
@@ -27230,6 +27356,13 @@ class FileComparisonWindow:
         tk.Radiobutton(action_frame, text="🗑️ Delete", variable=action_var, value="delete",
                       bg=self.input_bg, fg=self.fg_color, selectcolor=self.button_bg,
                       font=("Arial", 9), command=self.update_summary).pack(side=tk.LEFT, padx=3)
+
+        # Scan details button — only if scan ran and file exists
+        if self.scan_results.get(prog_num) and file_path and os.path.exists(file_path):
+            tk.Button(action_frame, text="🔍 Details",
+                      command=lambda pn=prog_num, fp=file_path: self._open_scan_details(pn, fp),
+                      bg="#4A148C", fg="white",
+                      font=("Arial", 8), padx=4).pack(side=tk.RIGHT, padx=3)
 
     def get_status_color(self, status):
         """Get color based on validation status"""
@@ -27337,6 +27470,52 @@ class FileComparisonWindow:
 
         # Re-disable the widget
         text_widget.config(state=tk.DISABLED)
+
+    def highlight_issue_lines(self, text_widget, scan, line_offset=0):
+        """Highlight G-code lines that are referenced by scan issues."""
+        import re as _re
+
+        text_widget.tag_configure("issue_crash",
+                                  background="#4a0000", foreground="#ff8a80")
+        text_widget.tag_configure("issue_error",
+                                  background="#3e1000", foreground="#ffcc80")
+        text_widget.tag_configure("issue_warning",
+                                  background="#2a1800", foreground="#ffe082")
+
+        all_issues = scan.get('errors', []) + scan.get('warnings', [])
+        highlighted = False
+
+        for item in all_issues:
+            msg = item.get('message', '')
+            m = _re.match(r'Line\s+(\d+):', msg)
+            if not m:
+                continue
+            gcode_line = int(m.group(1))
+            text_line  = gcode_line + line_offset
+            start = f"{text_line}.0"
+            end   = f"{text_line}.end"
+
+            t = item.get('type', '')
+            if t == 'crash':
+                tag = "issue_crash"
+            elif item.get('severity') == 'error':
+                tag = "issue_error"
+            else:
+                tag = "issue_warning"
+
+            if not highlighted:
+                text_widget.config(state=tk.NORMAL)
+                highlighted = True
+            text_widget.tag_add(tag, start, end)
+
+        if highlighted:
+            text_widget.config(state=tk.DISABLED)
+
+    def _open_scan_details(self, prog_num, file_path):
+        """Open the full scan results dialog for one file in the comparison view."""
+        scan = self.scan_results.get(prog_num)
+        if scan and self.manager:
+            self.manager.show_scan_results_dialog(scan, file_path)
 
     def update_summary(self):
         """Update the summary label with current action counts"""
