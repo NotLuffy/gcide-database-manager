@@ -151,6 +151,30 @@ class FileScanner:
                             'line_number': None
                         })
 
+            # Crash issues (MOST CRITICAL — machine crash risk)
+            if hasattr(parse_result, 'crash_issues') and parse_result.crash_issues:
+                for issue in parse_result.crash_issues:
+                    if issue.strip():
+                        results['errors'].append({
+                            'type': 'crash',
+                            'severity': 'error',
+                            'category': 'Crash Prevention',
+                            'message': issue.strip(),
+                            'line_number': None
+                        })
+
+            # Crash warnings (serious but not immediately destructive)
+            if hasattr(parse_result, 'crash_warnings') and parse_result.crash_warnings:
+                for warning in parse_result.crash_warnings:
+                    if warning.strip():
+                        results['warnings'].append({
+                            'type': 'crash_warning',
+                            'severity': 'warning',
+                            'category': 'Crash Prevention',
+                            'message': warning.strip(),
+                            'line_number': None
+                        })
+
             # Best practice suggestions (don't affect PASS status)
             if hasattr(parse_result, 'best_practice_suggestions') and parse_result.best_practice_suggestions:
                 for suggestion in parse_result.best_practice_suggestions:

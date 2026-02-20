@@ -23,6 +23,7 @@ from validators.hub_breakthrough_validator import HubBreakThroughValidator
 from validators.turning_tool_depth_validator import TurningToolDepthValidator
 from validators.bore_chamfer_safety_validator import BoreChamferSafetyValidator
 from validators.counterbore_depth_validator import CounterboreDepthValidator
+from validators.g154_presence_validator import G154PresenceValidator
 
 
 @dataclass
@@ -466,6 +467,9 @@ class ImprovedGCodeParser:
 
             # 11f. Counterbore depth validation (STEP parts only)
             self._validate_counterbore_depth(result, lines)
+
+            # 11g. G154 / work offset presence (every operation must declare WCS)
+            self._validate_g154_presence(result, lines)
 
             # 12. Get file timestamps
             try:
@@ -3180,7 +3184,9 @@ class ImprovedGCodeParser:
             # Examples of FALSE positives we're avoiding:
             #   - (OP1), (OP2), (OP22) - operation labels, not P-codes
             #   - Standalone P## in comments
-            g54_match = re.search(r'G(?:54\.1|154)\s*P(\d+)', line, re.IGNORECASE)
+            # G154 P##, G54 P##, or G54.1 P## — G54(?:\.1)? makes ".1" optional
+            # so plain G54 P## is now also captured.  [ \t]* avoids crossing lines.
+            g54_match = re.search(r'G(?:154|54(?:\.1)?)[ \t]*P(\d+)', line, re.IGNORECASE)
             if g54_match:
                 pcode = int(g54_match.group(1))
                 # Work offsets are typically in range 1-99
@@ -3775,6 +3781,29 @@ class ImprovedGCodeParser:
             # If validation fails, log error but don't crash the parser
             if self.debug:
                 print(f"Error in counterbore depth validation: {e}")
+
+    def _validate_g154_presence(self, result: GCodeParseResult, lines: List[str]):
+        """
+        Validate that every tool operation declares a work coordinate system
+        (G154 P#, G54, G54.1 P#, or G55) within its first 5 code lines.
+
+        Missing work offsets cause the tool to cut in whatever coordinate
+        space was last active, which can produce wrong dimensions if the
+        previous operation used a different fixture offset (P-code).
+
+        Real-world catch: o73876 T121 (BORE) had no G154 P11 — it ran on
+        the inherited P11 from the drill and happened to be correct, but
+        the omission is a latent error for any file where fixture offsets
+        differ between operations.
+        """
+        try:
+            validator = G154PresenceValidator()
+            errors, _ = validator.validate_file(lines)
+            if errors:
+                result.validation_warnings.extend(errors)
+        except Exception as e:
+            if self.debug:
+                print(f"Error in G154 presence validation: {e}")
 
     def _validate_consistency(self, result: GCodeParseResult):
         """

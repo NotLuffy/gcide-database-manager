@@ -3435,18 +3435,42 @@ class GCodeDatabaseGUI:
                 except:
                     pass
 
-            # Find first available number in range
-            # Query by numeric range, not round_size (more reliable)
+            # Build the set of program numbers already used in the programs table
+            # so we catch numbers that exist in the DB but weren't marked in the
+            # registry (e.g. imported before the registry existed, or registry drift).
+            cursor.execute("""
+                SELECT CAST(REPLACE(REPLACE(LOWER(program_number), 'o', ''), ' ', '') AS INTEGER)
+                FROM programs
+                WHERE program_number IS NOT NULL
+            """)
+            used_in_db = set()
+            for row in cursor.fetchall():
+                try:
+                    if row[0] is not None:
+                        used_in_db.add(int(row[0]))
+                except (ValueError, TypeError):
+                    pass
+
+            # Find first available number in range that is neither marked USED in
+            # the registry NOR already present in the programs table.
             cursor.execute("""
                 SELECT program_number
                 FROM program_number_registry
                 WHERE CAST(REPLACE(program_number, 'o', '') AS INTEGER) BETWEEN ? AND ?
                 AND status = 'AVAILABLE'
                 ORDER BY CAST(REPLACE(program_number, 'o', '') AS INTEGER)
-                LIMIT 1
             """, (range_start, range_end))
 
-            result = cursor.fetchone()
+            result = None
+            for row in cursor.fetchall():
+                try:
+                    num = int(str(row[0]).replace('o', '').replace('O', ''))
+                    if num not in used_in_db:
+                        result = row
+                        break
+                except (ValueError, TypeError):
+                    pass
+
             conn.close()
 
             if result:
@@ -3480,26 +3504,42 @@ class GCodeDatabaseGUI:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
 
-            # Find available numbers in range
+            # Build set of numbers already in the programs table so we catch any
+            # that exist in the DB but aren't marked USED in the registry.
+            cursor.execute("""
+                SELECT CAST(REPLACE(REPLACE(LOWER(program_number), 'o', ''), ' ', '') AS INTEGER)
+                FROM programs
+                WHERE program_number IS NOT NULL
+            """)
+            used_in_db = set()
+            for row in cursor.fetchall():
+                try:
+                    if row[0] is not None:
+                        used_in_db.add(int(row[0]))
+                except (ValueError, TypeError):
+                    pass
+
+            # Fetch all registry-available candidates then filter against programs table
             cursor.execute("""
                 SELECT program_number
                 FROM program_number_registry
                 WHERE CAST(REPLACE(program_number, 'o', '') AS INTEGER) BETWEEN ? AND ?
                 AND status = 'AVAILABLE'
                 ORDER BY CAST(REPLACE(program_number, 'o', '') AS INTEGER)
-                LIMIT ?
-            """, (range_start, range_end, count))
+            """, (range_start, range_end))
 
-            results = cursor.fetchall()
+            rows = cursor.fetchall()
             conn.close()
 
-            # Convert to integers
             available = []
-            for row in results:
+            for row in rows:
                 try:
                     num = int(str(row[0]).replace('o', '').replace('O', ''))
-                    available.append(num)
-                except:
+                    if num not in used_in_db:
+                        available.append(num)
+                        if len(available) >= count:
+                            break
+                except (ValueError, TypeError):
                     pass
 
             return available
@@ -5390,85 +5430,137 @@ class GCodeDatabaseGUI:
             messagebox.showerror("Scan Error", f"Failed to scan file:\n{str(e)}")
 
     def show_scan_results_dialog(self, scan_results, file_path):
-        """Show scan results in a dialog (Phase 1 feature)"""
+        """Show scan results in a structured, severity-ordered dialog."""
         dialog = tk.Toplevel(self.root)
         dialog.title(f"Scan Results - {os.path.basename(file_path)}")
-        dialog.geometry("700x600")
+        dialog.geometry("760x700")
         dialog.configure(bg=self.bg_color)
 
-        # Header
+        # ── Header ──────────────────────────────────────────────────────
         header = tk.Frame(dialog, bg=self.bg_color)
         header.pack(fill=tk.X, padx=10, pady=10)
+        tk.Label(header, text=f"File: {os.path.basename(file_path)}",
+                 bg=self.bg_color, fg=self.fg_color,
+                 font=("Arial", 11, "bold")).pack(anchor='w')
 
-        file_label = tk.Label(header, text=f"File: {os.path.basename(file_path)}",
-                             bg=self.bg_color, fg=self.fg_color, font=("Arial", 11, "bold"))
-        file_label.pack(anchor='w')
+        # ── Counts ──────────────────────────────────────────────────────
+        all_errors      = scan_results.get('errors', [])
+        all_warnings    = scan_results.get('warnings', [])
+        all_suggestions = scan_results.get('suggestions', [])
 
-        # Summary
+        crashes       = [e for e in all_errors if e.get('type') == 'crash']
+        other_errors  = [e for e in all_errors if e.get('type') != 'crash']
+        warnings_count    = len(all_warnings)
+        errors_count      = len(all_errors)
+        crashes_count     = len(crashes)
+        other_errors_count = len(other_errors)
+        suggestions_count = len(all_suggestions)
+
+        # ── Summary bar ─────────────────────────────────────────────────
         summary_frame = tk.Frame(dialog, bg=self.bg_color, relief=tk.RIDGE, borderwidth=2)
         summary_frame.pack(fill=tk.X, padx=10, pady=5)
 
-        warnings_count = len(scan_results.get('warnings', []))
-        errors_count = len(scan_results.get('errors', []))
-        suggestions_count = len(scan_results.get('suggestions', []))
+        if crashes_count > 0:
+            status_color = "#FF1744"
+            parts = [f"🔴 {crashes_count} Crash(es)"]
+            if other_errors_count: parts.append(f"✗ {other_errors_count} Error(s)")
+            if warnings_count:     parts.append(f"⚠ {warnings_count} Warning(s)")
+            status_text = "  |  ".join(parts)
+        elif other_errors_count > 0:
+            status_color = "#F44336"
+            status_text = f"✗ {other_errors_count} Error(s)"
+            if warnings_count: status_text += f"  |  ⚠ {warnings_count} Warning(s)"
+        elif warnings_count > 0:
+            status_color = "#FF9800"
+            status_text = f"⚠ {warnings_count} Warning(s)"
+        else:
+            status_color = "#4CAF50"
+            status_text = "✓ PASS"
 
-        # Status based on errors and warnings only (suggestions don't affect status)
-        status_color = "#4CAF50" if errors_count == 0 and warnings_count == 0 else \
-                      "#FF9800" if errors_count == 0 else "#F44336"
-        status_text = "✓ PASS" if errors_count == 0 and warnings_count == 0 else \
-                     f"⚠ {warnings_count} Warning(s)" if errors_count == 0 else \
-                     f"✗ {errors_count} Error(s), {warnings_count} Warning(s)"
+        if suggestions_count:
+            status_text += f"  |  💡 {suggestions_count} Suggestion(s)"
 
-        # Add suggestion count to display (informational only)
-        if suggestions_count > 0:
-            status_text += f" | 💡 {suggestions_count} Suggestion(s)"
+        tk.Label(summary_frame, text=status_text,
+                 bg=self.bg_color, fg=status_color,
+                 font=("Arial", 10, "bold")).pack(pady=5)
 
-        tk.Label(summary_frame, text=status_text, bg=self.bg_color, fg=status_color,
-                font=("Arial", 10, "bold")).pack(pady=5)
-
-        # Program info
         if scan_results.get('program_number'):
             tk.Label(summary_frame, text=f"Program: {scan_results['program_number']}",
-                    bg=self.bg_color, fg=self.fg_color).pack()
+                     bg=self.bg_color, fg=self.fg_color).pack()
         if scan_results.get('round_size'):
             tk.Label(summary_frame, text=f"Round Size: {scan_results['round_size']}",
-                    bg=self.bg_color, fg=self.fg_color).pack()
+                     bg=self.bg_color, fg=self.fg_color).pack()
 
-        # Issues list
+        # ── Issues area ─────────────────────────────────────────────────
         issues_frame = tk.Frame(dialog, bg=self.bg_color)
         issues_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
 
-        tk.Label(issues_frame, text="Issues Found:", bg=self.bg_color, fg=self.fg_color,
-                font=("Arial", 10, "bold")).pack(anchor='w')
+        tk.Label(issues_frame,
+                 text="Issues  (most severe → least severe):",
+                 bg=self.bg_color, fg=self.fg_color,
+                 font=("Arial", 10, "bold")).pack(anchor='w')
 
-        # Scrolled text for issues
-        issues_text = scrolledtext.ScrolledText(issues_frame, height=20, width=80,
-                                                bg=self.input_bg, fg=self.fg_color,
-                                                font=("Consolas", 9))
+        issues_text = scrolledtext.ScrolledText(
+            issues_frame, height=22, width=86,
+            bg=self.input_bg, fg=self.fg_color,
+            font=("Consolas", 9), wrap=tk.WORD)
         issues_text.pack(fill=tk.BOTH, expand=True)
 
-        # Add errors
-        if errors_count > 0:
-            issues_text.insert(tk.END, "=== ERRORS ===\n", "error")
-            for error in scan_results['errors']:
-                issues_text.insert(tk.END, f"✗ [{error['category']}] {error['message']}\n\n")
+        # ── Text tags ────────────────────────────────────────────────────
+        issues_text.tag_configure("crash_hdr",   foreground="#FF1744", font=("Consolas", 10, "bold"))
+        issues_text.tag_configure("error_hdr",   foreground="#F44336", font=("Consolas", 10, "bold"))
+        issues_text.tag_configure("warning_hdr", foreground="#FF9800", font=("Consolas", 10, "bold"))
+        issues_text.tag_configure("suggest_hdr", foreground="#42A5F5", font=("Consolas", 10, "bold"))
+        issues_text.tag_configure("cat_crash",   foreground="#FF6D6D", font=("Consolas",  9, "bold"))
+        issues_text.tag_configure("cat_error",   foreground="#EF9A9A", font=("Consolas",  9, "bold"))
+        issues_text.tag_configure("cat_warn",    foreground="#FFCC80", font=("Consolas",  9, "bold"))
+        issues_text.tag_configure("cat_suggest", foreground="#90CAF9", font=("Consolas",  9, "bold"))
+        issues_text.tag_configure("item_crash",   foreground="#FF6D6D")
+        issues_text.tag_configure("item_error",   foreground="#EF9A9A")
+        issues_text.tag_configure("item_warn",    foreground="#FFCC80")
+        issues_text.tag_configure("item_suggest", foreground="#90CAF9")
+        issues_text.tag_configure("pass_msg",     foreground="#4CAF50", font=("Consolas", 9, "bold"))
 
-        # Add warnings
-        if warnings_count > 0:
-            issues_text.insert(tk.END, "=== WARNINGS ===\n", "warning")
-            for warning in scan_results['warnings']:
-                issues_text.insert(tk.END, f"⚠ [{warning['category']}] {warning['message']}\n\n")
+        DIV = "─" * 70 + "\n"
 
-        # Add suggestions (best practices - don't affect PASS status)
-        if suggestions_count > 0:
-            issues_text.insert(tk.END, "=== SUGGESTIONS (Best Practices) ===\n", "suggestion")
-            for suggestion in scan_results['suggestions']:
-                issues_text.insert(tk.END, f"💡 [{suggestion['category']}] {suggestion['message']}\n\n")
+        def insert_section(title, items, hdr_tag, cat_tag, item_tag, icon):
+            """Render one severity band grouped by category."""
+            if not items:
+                return
+            issues_text.insert(tk.END, DIV, hdr_tag)
+            issues_text.insert(tk.END, f"  {icon}  {title}  ({len(items)})\n", hdr_tag)
+            issues_text.insert(tk.END, DIV, hdr_tag)
+            issues_text.insert(tk.END, "\n")
 
-        if errors_count == 0 and warnings_count == 0 and suggestions_count == 0:
-            issues_text.insert(tk.END, "No issues found. File looks good!\n")
-        elif errors_count == 0 and warnings_count == 0:
-            issues_text.insert(tk.END, "\n✓ File PASSES validation (suggestions are optional best practices)\n")
+            # Group by category, preserving insertion order
+            groups = {}
+            for item in items:
+                cat = item.get('category', 'General')
+                groups.setdefault(cat, []).append(item)
+
+            for cat, cat_items in groups.items():
+                issues_text.insert(tk.END, f"  {cat}:\n", cat_tag)
+                for it in cat_items:
+                    msg = it.get('message', '').strip()
+                    issues_text.insert(tk.END, f"       {icon} {msg}\n", item_tag)
+                issues_text.insert(tk.END, "\n")
+
+        total = errors_count + warnings_count + suggestions_count
+
+        if total == 0:
+            issues_text.insert(tk.END,
+                "\n  ✓  No issues found — file looks good!\n", "pass_msg")
+        else:
+            # Ordered: crashes → errors → warnings → suggestions
+            insert_section("CRASHES",              crashes,       "crash_hdr",   "cat_crash",   "item_crash",   "✗")
+            insert_section("ERRORS",               other_errors,  "error_hdr",   "cat_error",   "item_error",   "✗")
+            insert_section("WARNINGS",             all_warnings,  "warning_hdr", "cat_warn",    "item_warn",    "⚠")
+            insert_section("SUGGESTIONS",          all_suggestions, "suggest_hdr", "cat_suggest", "item_suggest", "💡")
+
+            if not crashes and not other_errors and not all_warnings and all_suggestions:
+                issues_text.insert(tk.END,
+                    "\n  ✓  File PASSES validation  "
+                    "(suggestions are optional best practices)\n", "pass_msg")
 
         issues_text.config(state=tk.DISABLED)
 
