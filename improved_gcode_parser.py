@@ -25,6 +25,7 @@ from validators.bore_chamfer_safety_validator import BoreChamferSafetyValidator
 from validators.counterbore_depth_validator import CounterboreDepthValidator
 from validators.g154_presence_validator import G154PresenceValidator
 from validators.steel_ring_recess_validator import SteelRingRecessValidator
+from validators.twopc_ring_size_validator import TwoPCRingSizeValidator
 
 
 # ── Known CB equivalence pairs ────────────────────────────────────────────────
@@ -513,6 +514,9 @@ class ImprovedGCodeParser:
 
             # 11h. Steel ring recess diameter (interference-fit tolerance check)
             self._validate_steel_ring_recess(result)
+
+            # 11i. 2PC mating hub ring size (CB → expected ring OD lookup)
+            self._validate_2pc_ring_size(result)
 
             # 12. Get file timestamps
             try:
@@ -3876,6 +3880,35 @@ class ImprovedGCodeParser:
         except Exception as e:
             if self.debug:
                 print(f"Error in steel ring recess validation: {e}")
+
+    def _validate_2pc_ring_size(self, result: GCodeParseResult):
+        """
+        Validate the ring OD for 2-piece spacer programs.
+
+        For each CB size class there is a standard ring (or small set of
+        accepted rings) used to retain the STUD insert in the LUG half.
+
+        Ring OD lives in:
+          • counter_bore_diameter — step bore on LUG parts; inner hub on HC STUDs
+          • hub_diameter           — hub OD on simple STUD parts (fallback)
+
+        Warnings → detected ring OD does not match the lookup expectation.
+        """
+        try:
+            validator = TwoPCRingSizeValidator()
+            errors, warnings = validator.validate(
+                spacer_type=result.spacer_type,
+                center_bore_mm=result.center_bore,
+                counter_bore_diameter_mm=result.counter_bore_diameter,
+                hub_diameter_mm=result.hub_diameter,
+            )
+            if errors:
+                result.validation_issues.extend(errors)
+            if warnings:
+                result.validation_warnings.extend(warnings)
+        except Exception as e:
+            if self.debug:
+                print(f"Error in 2PC ring size validation: {e}")
 
     def _validate_consistency(self, result: GCodeParseResult):
         """
