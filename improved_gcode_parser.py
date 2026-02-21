@@ -3727,7 +3727,8 @@ class ImprovedGCodeParser:
             turning_result = turning_validator.validate_file(
                 lines=lines,
                 thickness=result.thickness,
-                hub_height=result.hub_height or 0.0
+                hub_height=result.hub_height or 0.0,
+                outer_diameter=result.outer_diameter or 0.0
             )
 
             # Add warnings (exceeding conservative standards)
@@ -4045,6 +4046,16 @@ class ImprovedGCodeParser:
                     # Detect that pattern and revert to title thickness.
                     is_small_mating_hub = 0.20 <= hub_h <= 0.35
                     if is_small_mating_hub and abs(calculated_thickness - (title_thickness + hub_h)) < 0.15:
+                        calculated_thickness = title_thickness
+
+                    # 2PC HC STUD false-positive suppression for large stated hubs (≥ 0.35"):
+                    # These parts (e.g. 0.75" body + 0.50" HC hub) are drilled through the
+                    # full part height with variable extra clearance (0.15-0.40").
+                    # Formula gives: calc = drill - hub_h - 0.15 = body + extra_clearance
+                    # Extra clearance of 0.25" → calc = body + 0.25" → false TITLE MISLABELED.
+                    # Rule: if calc is within 0-0.30" above title_thickness, trust the title.
+                    is_large_stated_hub = hub_h >= 0.35
+                    if is_large_stated_hub and 0 <= (calculated_thickness - title_thickness) < 0.30:
                         calculated_thickness = title_thickness
                 else:
                     # No hub in title - check if drill pattern suggests unstated hub
