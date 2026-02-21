@@ -7680,257 +7680,243 @@ class GCodeDatabaseGUI:
         title.pack(side=tk.LEFT, padx=10)
 
     def create_ribbon_tabs(self, parent):
-        """Create ribbon-style tab interface for organizing buttons"""
-        # Create notebook (tabbed interface)
-        style = ttk.Style()
-        style.configure('Ribbon.TNotebook', background=self.bg_color, borderwidth=0)
-        style.configure('Ribbon.TNotebook.Tab', padding=[20, 10], font=('Arial', 10, 'bold'))
+        """Collapsible flat-button ribbon.
 
-        ribbon = ttk.Notebook(parent, style='Ribbon.TNotebook')
-        ribbon.pack(fill=tk.X, padx=5, pady=5)
+        Clicking a tab shows its panel; clicking the already-active tab
+        collapses/hides the panel. Clicking it again re-expands it.
+        """
+        # ── Tab button bar (always visible) ──────────────────────────────
+        tab_bar = tk.Frame(parent, bg=self.bg_color)
+        tab_bar.pack(fill=tk.X, padx=5, pady=(4, 0))
 
-        # Tab 1: File Management
-        tab_files = tk.Frame(ribbon, bg=self.bg_color)
-        ribbon.add(tab_files, text='📂 Files')
+        # ── Collapsible content area ──────────────────────────────────────
+        self._ribbon_content_frame = tk.Frame(parent, bg=self.bg_color)
+        self._ribbon_content_frame.pack(fill=tk.X, padx=5, pady=(0, 4))
 
-        files_group = tk.Frame(tab_files, bg=self.bg_color)
-        files_group.pack(fill=tk.X, padx=5, pady=5)
+        self._ribbon_expanded   = True
+        self._ribbon_active_key = None
+        self._ribbon_buttons    = {}   # key → Button
+        self._ribbon_panels     = {}   # key → Frame
 
-        # Process New - requires add permission
-        if self.has_permission('add_files'):
-            tk.Button(files_group, text="⚡ Process New", command=self.process_new_files_workflow,
-                     bg="#4CAF50", fg=self.fg_color, font=("Arial", 9, "bold"),
-                     width=14, height=2).pack(side=tk.LEFT, padx=3)
+        # ── Helper: register one tab ──────────────────────────────────────
+        def _tab(key, label, builder):
+            panel = tk.Frame(self._ribbon_content_frame, bg=self.bg_color)
+            builder(panel)
+            self._ribbon_panels[key] = panel
 
-            # Scan File - Phase 1 feature
-            tk.Button(files_group, text="🔍 Scan File", command=self.scan_file_before_import,
-                     bg="#9C27B0", fg=self.fg_color, font=("Arial", 9, "bold"),
-                     width=14, height=2).pack(side=tk.LEFT, padx=3)
+            btn = tk.Button(
+                tab_bar, text=label,
+                command=lambda k=key: self._ribbon_tab_click(k),
+                bg=self.button_bg, fg=self.fg_color,
+                font=("Arial", 9, "bold"),
+                relief=tk.FLAT, padx=14, pady=5, cursor="hand2"
+            )
+            btn.pack(side=tk.LEFT, padx=2, pady=2)
+            self._ribbon_buttons[key] = btn
 
-            # Scan Folder for Issues - shows per-file feedback without importing
-            tk.Button(files_group, text="🔍 Scan Folder\nfor Issues", command=self.scan_folder_for_issues,
-                     bg="#6A1B9A", fg=self.fg_color, font=("Arial", 9, "bold"),
-                     width=14, height=2).pack(side=tk.LEFT, padx=3)
-
-        tk.Button(files_group, text="📁 Scan Folder", command=self.scan_folder,
-                 bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
-                 width=14, height=2).pack(side=tk.LEFT, padx=3)
-
-        # Rescan Database - requires batch operations
-        if self.has_permission('batch_operations'):
-            tk.Button(files_group, text="🔄 Rescan Database", command=self.rescan_database,
-                     bg="#FF6F00", fg=self.fg_color, font=("Arial", 9, "bold"),
-                     width=14, height=2).pack(side=tk.LEFT, padx=3)
-
-            tk.Button(files_group, text="⚡ Rescan Changed", command=self.rescan_changed_files,
-                     bg="#2E7D32", fg=self.fg_color, font=("Arial", 9, "bold"),
-                     width=14, height=2).pack(side=tk.LEFT, padx=3)
-
-        # Organize by OD - requires move permission
-        if self.has_permission('move_files'):
-            tk.Button(files_group, text="📁 Organize by OD", command=self.organize_files_by_od,
-                     bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
-                     width=14, height=2).pack(side=tk.LEFT, padx=3)
-
-        # Export functions - available to all with export permission
-        if self.has_permission('export_data'):
-            tk.Button(files_group, text="📋 Copy Filtered", command=self.copy_filtered_view,
-                     bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
-                     width=14, height=2).pack(side=tk.LEFT, padx=3)
-
-            tk.Button(files_group, text="📊 Export Filtered", command=self.export_filtered_to_excel,
-                     bg="#1976D2", fg=self.fg_color, font=("Arial", 9, "bold"),
-                     width=14, height=2).pack(side=tk.LEFT, padx=3)
-
-        # Add Entry - requires add permission
-        if self.has_permission('add_files'):
-            tk.Button(files_group, text="➕ Add Entry", command=self.add_entry,
-                     bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
-                     width=14, height=2).pack(side=tk.LEFT, padx=3)
-
-        # Tab 2: Duplicates - only show if user has manage_duplicates permission
-        if self.has_permission('manage_duplicates'):
-            tab_duplicates = tk.Frame(ribbon, bg=self.bg_color)
-            ribbon.add(tab_duplicates, text='🔍 Duplicates')
-
-            dup_group = tk.Frame(tab_duplicates, bg=self.bg_color)
-            dup_group.pack(fill=tk.X, padx=5, pady=5)
-
-            tk.Button(dup_group, text="🔍 Find Repeats", command=self.find_and_mark_repeats,
-                     bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
-                     width=14, height=2).pack(side=tk.LEFT, padx=3)
-
-            tk.Button(dup_group, text="📝 Rename Duplicates", command=self.rename_duplicate_files,
-                     bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
-                     width=14, height=2).pack(side=tk.LEFT, padx=3)
-
-            if self.has_permission('delete_files'):
-                tk.Button(dup_group, text="🗑️ Delete Duplicates", command=self.delete_duplicates,
-                         bg="#D32F2F", fg=self.fg_color, font=("Arial", 9, "bold"),
+        # ── Panel content builders ────────────────────────────────────────
+        def build_files(f):
+            g = tk.Frame(f, bg=self.bg_color)
+            g.pack(fill=tk.X, padx=5, pady=5)
+            if self.has_permission('add_files'):
+                tk.Button(g, text="⚡ Process New", command=self.process_new_files_workflow,
+                         bg="#4CAF50", fg=self.fg_color, font=("Arial", 9, "bold"),
                          width=14, height=2).pack(side=tk.LEFT, padx=3)
-
-            tk.Button(dup_group, text="📐 View Variations", command=self.show_dimensional_variations,
-                     bg="#9C27B0", fg=self.fg_color, font=("Arial", 9, "bold"),
-                     width=14, height=2).pack(side=tk.LEFT, padx=3)
-
-        # Tab 3: Reports - available to all with export permission
-        if self.has_permission('export_data'):
-            tab_reports = tk.Frame(ribbon, bg=self.bg_color)
-            ribbon.add(tab_reports, text='📊 Reports')
-
-            reports_group = tk.Frame(tab_reports, bg=self.bg_color)
-            reports_group.pack(fill=tk.X, padx=5, pady=5)
-
-            tk.Button(reports_group, text="📊 Export Excel", command=self.export_csv,
+                tk.Button(g, text="🔍 Scan File", command=self.scan_file_before_import,
+                         bg="#9C27B0", fg=self.fg_color, font=("Arial", 9, "bold"),
+                         width=14, height=2).pack(side=tk.LEFT, padx=3)
+                tk.Button(g, text="🔍 Scan Folder\nfor Issues", command=self.scan_folder_for_issues,
+                         bg="#6A1B9A", fg=self.fg_color, font=("Arial", 9, "bold"),
+                         width=14, height=2).pack(side=tk.LEFT, padx=3)
+            tk.Button(g, text="📁 Scan Folder", command=self.scan_folder,
                      bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
                      width=14, height=2).pack(side=tk.LEFT, padx=3)
-
-            tk.Button(reports_group, text="📈 Google Sheets", command=self.export_google_sheets,
-                     bg="#34A853", fg=self.fg_color, font=("Arial", 9, "bold"),
-                     width=14, height=2).pack(side=tk.LEFT, padx=3)
-
-            tk.Button(reports_group, text="📋 Unused #s", command=self.export_unused_numbers,
-                     bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
-                     width=14, height=2).pack(side=tk.LEFT, padx=3)
-
-            tk.Button(reports_group, text="🔧 Tool Analysis", command=self.view_tool_statistics,
-                     bg="#9C27B0", fg=self.fg_color, font=("Arial", 9, "bold"),
-                     width=14, height=2).pack(side=tk.LEFT, padx=3)
-
-            tk.Button(reports_group, text="🔩 Tool Positions", command=self.scan_tool_change_positions,
-                     bg="#FF5722", fg=self.fg_color, font=("Arial", 9, "bold"),
-                     width=14, height=2).pack(side=tk.LEFT, padx=3)
-
-            tk.Button(reports_group, text="❓ Legend/Help", command=self.show_legend,
-                     bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
-                     width=14, height=2).pack(side=tk.LEFT, padx=3)
-
-        # Tab 4: Backup & Database - only for those with backup permission
-        if self.has_permission('backup_restore'):
-            tab_database = tk.Frame(ribbon, bg=self.bg_color)
-            ribbon.add(tab_database, text='💾 Backup')
-
-            db_group = tk.Frame(tab_database, bg=self.bg_color)
-            db_group.pack(fill=tk.X, padx=5, pady=5)
-
-            tk.Button(db_group, text="📦 Full Backup", command=self.create_full_backup,
-                     bg="#2E7D32", fg=self.fg_color, font=("Arial", 9, "bold"),
-                     width=14, height=2).pack(side=tk.LEFT, padx=3)
-
-            tk.Button(db_group, text="📂 Restore Backup", command=self.restore_from_backup,
-                     bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
-                     width=14, height=2).pack(side=tk.LEFT, padx=3)
-
-            tk.Button(db_group, text="📋 View Backups", command=self.view_backups,
-                     bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
-                     width=14, height=2).pack(side=tk.LEFT, padx=3)
-
-            tk.Button(db_group, text="📋 Manage Profiles", command=self.manage_database_profiles,
-                     bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
-                     width=14, height=2).pack(side=tk.LEFT, padx=3)
-
-        # Tab 5: Workflow - only for editors and above
-        if self.has_permission('batch_operations'):
-            tab_workflow = tk.Frame(ribbon, bg=self.bg_color)
-            ribbon.add(tab_workflow, text='🔄 Workflow')
-
-            workflow_group = tk.Frame(tab_workflow, bg=self.bg_color)
-            workflow_group.pack(fill=tk.X, padx=5, pady=5)
-
-            tk.Button(workflow_group, text="🧙 Workflow Wizard", command=self.show_workflow_wizard,
-                     bg="#E91E63", fg=self.fg_color, font=("Arial", 9, "bold"),
-                     width=14, height=2).pack(side=tk.LEFT, padx=3)
-
-            tk.Button(workflow_group, text="🔄 Sync Registry", command=self.sync_registry_ui,
-                     bg="#9C27B0", fg=self.fg_color, font=("Arial", 9, "bold"),
-                     width=14, height=2).pack(side=tk.LEFT, padx=3)
-
-            tk.Button(workflow_group, text="🎯 Detect Round Sizes", command=self.detect_round_sizes_ui,
-                     bg="#673AB7", fg=self.fg_color, font=("Arial", 9, "bold"),
-                     width=14, height=2).pack(side=tk.LEFT, padx=3)
-
-            tk.Button(workflow_group, text="📊 Round Size Stats", command=self.show_round_size_stats,
-                     bg="#3F51B5", fg=self.fg_color, font=("Arial", 9, "bold"),
-                     width=14, height=2).pack(side=tk.LEFT, padx=3)
-
-            tk.Button(workflow_group, text="🔧 Fix Tool Homes", command=self.correct_tool_home_positions,
-                     bg="#FF5722", fg=self.fg_color, font=("Arial", 9, "bold"),
-                     width=14, height=2).pack(side=tk.LEFT, padx=3)
-
-            tk.Button(workflow_group, text="🔄 Refresh All Files", command=self.refresh_all_files,
-                     bg="#2196F3", fg=self.fg_color, font=("Arial", 9, "bold"),
-                     width=14, height=2).pack(side=tk.LEFT, padx=3)
-
-        # Tab 6: Maintenance - only for admins
-        if self.has_permission('clear_database'):
-            tab_maint = tk.Frame(ribbon, bg=self.bg_color)
-            ribbon.add(tab_maint, text='⚙️ Maintenance')
-
-            maint_group = tk.Frame(tab_maint, bg=self.bg_color)
-            maint_group.pack(fill=tk.X, padx=5, pady=5)
-
-            tk.Button(maint_group, text="🗑️ Clear Database", command=self.clear_database,
-                     bg="#D32F2F", fg=self.fg_color, font=("Arial", 9, "bold"),
-                     width=14, height=2).pack(side=tk.LEFT, padx=3)
-
-            tk.Button(maint_group, text="❌ Delete Filtered", command=self.delete_filtered_view,
-                     bg="#D32F2F", fg=self.fg_color, font=("Arial", 9, "bold"),
-                     width=14, height=2).pack(side=tk.LEFT, padx=3)
-
-            tk.Button(maint_group, text="🔍 Integrity Check", command=self.show_extended_integrity_check,
-                     bg="#FF9800", fg=self.fg_color, font=("Arial", 9, "bold"),
-                     width=14, height=2).pack(side=tk.LEFT, padx=3)
-
-            tk.Button(maint_group, text="🔢 Resolve Suffixes", command=self.show_resolve_suffixes,
-                     bg="#9C27B0", fg=self.fg_color, font=("Arial", 9, "bold"),
-                     width=14, height=2).pack(side=tk.LEFT, padx=3)
-
-            # User Management - admin only
-            if self.has_permission('manage_users'):
-                tk.Button(maint_group, text="👥 User Management", command=self.show_user_management,
+            if self.has_permission('batch_operations'):
+                tk.Button(g, text="🔄 Rescan Database", command=self.rescan_database,
+                         bg="#FF6F00", fg=self.fg_color, font=("Arial", 9, "bold"),
+                         width=14, height=2).pack(side=tk.LEFT, padx=3)
+                tk.Button(g, text="⚡ Rescan Changed", command=self.rescan_changed_files,
+                         bg="#2E7D32", fg=self.fg_color, font=("Arial", 9, "bold"),
+                         width=14, height=2).pack(side=tk.LEFT, padx=3)
+            if self.has_permission('move_files'):
+                tk.Button(g, text="📁 Organize by OD", command=self.organize_files_by_od,
+                         bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
+                         width=14, height=2).pack(side=tk.LEFT, padx=3)
+            if self.has_permission('export_data'):
+                tk.Button(g, text="📋 Copy Filtered", command=self.copy_filtered_view,
+                         bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
+                         width=14, height=2).pack(side=tk.LEFT, padx=3)
+                tk.Button(g, text="📊 Export Filtered", command=self.export_filtered_to_excel,
                          bg="#1976D2", fg=self.fg_color, font=("Arial", 9, "bold"),
                          width=14, height=2).pack(side=tk.LEFT, padx=3)
+            if self.has_permission('add_files'):
+                tk.Button(g, text="➕ Add Entry", command=self.add_entry,
+                         bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
+                         width=14, height=2).pack(side=tk.LEFT, padx=3)
 
-            # Change Password - available to all logged-in users
-            tk.Button(maint_group, text="🔐 Change Password", command=self.show_change_password,
+        def build_duplicates(f):
+            g = tk.Frame(f, bg=self.bg_color)
+            g.pack(fill=tk.X, padx=5, pady=5)
+            tk.Button(g, text="🔍 Find Repeats", command=self.find_and_mark_repeats,
                      bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
                      width=14, height=2).pack(side=tk.LEFT, padx=3)
-
-            # Archive Management buttons
-            tk.Button(maint_group, text="🗜️ Archive Cleanup", command=lambda: ArchiveCleanupWindow(self),
-                     bg="#607D8B", fg=self.fg_color, font=("Arial", 9, "bold"),
+            tk.Button(g, text="📝 Rename Duplicates", command=self.rename_duplicate_files,
+                     bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
                      width=14, height=2).pack(side=tk.LEFT, padx=3)
-
-            tk.Button(maint_group, text="🔄 Sync Warnings", command=self.sync_validation_status_with_warnings,
-                     bg="#FF9800", fg=self.fg_color, font=("Arial", 9, "bold"),
-                     width=14, height=2).pack(side=tk.LEFT, padx=3)
-
-            tk.Button(maint_group, text="🔍 Find Duplicates", command=self.show_duplicate_browser,
+            if self.has_permission('delete_files'):
+                tk.Button(g, text="🗑️ Delete Duplicates", command=self.delete_duplicates,
+                         bg="#D32F2F", fg=self.fg_color, font=("Arial", 9, "bold"),
+                         width=14, height=2).pack(side=tk.LEFT, padx=3)
+            tk.Button(g, text="📐 View Variations", command=self.show_dimensional_variations,
                      bg="#9C27B0", fg=self.fg_color, font=("Arial", 9, "bold"),
                      width=14, height=2).pack(side=tk.LEFT, padx=3)
 
-            tk.Button(maint_group, text="💾 Fix Drive Letter", command=self.detect_and_fix_drive_letter,
+        def build_reports(f):
+            g = tk.Frame(f, bg=self.bg_color)
+            g.pack(fill=tk.X, padx=5, pady=5)
+            tk.Button(g, text="📊 Export Excel", command=self.export_csv,
+                     bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
+                     width=14, height=2).pack(side=tk.LEFT, padx=3)
+            tk.Button(g, text="📈 Google Sheets", command=self.export_google_sheets,
+                     bg="#34A853", fg=self.fg_color, font=("Arial", 9, "bold"),
+                     width=14, height=2).pack(side=tk.LEFT, padx=3)
+            tk.Button(g, text="📋 Unused #s", command=self.export_unused_numbers,
+                     bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
+                     width=14, height=2).pack(side=tk.LEFT, padx=3)
+            tk.Button(g, text="🔧 Tool Analysis", command=self.view_tool_statistics,
+                     bg="#9C27B0", fg=self.fg_color, font=("Arial", 9, "bold"),
+                     width=14, height=2).pack(side=tk.LEFT, padx=3)
+            tk.Button(g, text="🔩 Tool Positions", command=self.scan_tool_change_positions,
+                     bg="#FF5722", fg=self.fg_color, font=("Arial", 9, "bold"),
+                     width=14, height=2).pack(side=tk.LEFT, padx=3)
+            tk.Button(g, text="❓ Legend/Help", command=self.show_legend,
+                     bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
+                     width=14, height=2).pack(side=tk.LEFT, padx=3)
+
+        def build_backup(f):
+            g = tk.Frame(f, bg=self.bg_color)
+            g.pack(fill=tk.X, padx=5, pady=5)
+            tk.Button(g, text="📦 Full Backup", command=self.create_full_backup,
+                     bg="#2E7D32", fg=self.fg_color, font=("Arial", 9, "bold"),
+                     width=14, height=2).pack(side=tk.LEFT, padx=3)
+            tk.Button(g, text="📂 Restore Backup", command=self.restore_from_backup,
+                     bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
+                     width=14, height=2).pack(side=tk.LEFT, padx=3)
+            tk.Button(g, text="📋 View Backups", command=self.view_backups,
+                     bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
+                     width=14, height=2).pack(side=tk.LEFT, padx=3)
+            tk.Button(g, text="📋 Manage Profiles", command=self.manage_database_profiles,
+                     bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
+                     width=14, height=2).pack(side=tk.LEFT, padx=3)
+
+        def build_workflow(f):
+            g = tk.Frame(f, bg=self.bg_color)
+            g.pack(fill=tk.X, padx=5, pady=5)
+            tk.Button(g, text="🧙 Workflow Wizard", command=self.show_workflow_wizard,
+                     bg="#E91E63", fg=self.fg_color, font=("Arial", 9, "bold"),
+                     width=14, height=2).pack(side=tk.LEFT, padx=3)
+            tk.Button(g, text="🔄 Sync Registry", command=self.sync_registry_ui,
+                     bg="#9C27B0", fg=self.fg_color, font=("Arial", 9, "bold"),
+                     width=14, height=2).pack(side=tk.LEFT, padx=3)
+            tk.Button(g, text="🎯 Detect Round Sizes", command=self.detect_round_sizes_ui,
+                     bg="#673AB7", fg=self.fg_color, font=("Arial", 9, "bold"),
+                     width=14, height=2).pack(side=tk.LEFT, padx=3)
+            tk.Button(g, text="📊 Round Size Stats", command=self.show_round_size_stats,
+                     bg="#3F51B5", fg=self.fg_color, font=("Arial", 9, "bold"),
+                     width=14, height=2).pack(side=tk.LEFT, padx=3)
+            tk.Button(g, text="🔧 Fix Tool Homes", command=self.correct_tool_home_positions,
+                     bg="#FF5722", fg=self.fg_color, font=("Arial", 9, "bold"),
+                     width=14, height=2).pack(side=tk.LEFT, padx=3)
+            tk.Button(g, text="🔄 Refresh All Files", command=self.refresh_all_files,
                      bg="#2196F3", fg=self.fg_color, font=("Arial", 9, "bold"),
                      width=14, height=2).pack(side=tk.LEFT, padx=3)
 
-            tk.Button(maint_group, text="📦 Archive Migration", command=self.show_archive_migration_dialog,
+        def build_maintenance(f):
+            g = tk.Frame(f, bg=self.bg_color)
+            g.pack(fill=tk.X, padx=5, pady=5)
+            tk.Button(g, text="🗑️ Clear Database", command=self.clear_database,
+                     bg="#D32F2F", fg=self.fg_color, font=("Arial", 9, "bold"),
+                     width=14, height=2).pack(side=tk.LEFT, padx=3)
+            tk.Button(g, text="❌ Delete Filtered", command=self.delete_filtered_view,
+                     bg="#D32F2F", fg=self.fg_color, font=("Arial", 9, "bold"),
+                     width=14, height=2).pack(side=tk.LEFT, padx=3)
+            tk.Button(g, text="🔍 Integrity Check", command=self.show_extended_integrity_check,
+                     bg="#FF9800", fg=self.fg_color, font=("Arial", 9, "bold"),
+                     width=14, height=2).pack(side=tk.LEFT, padx=3)
+            tk.Button(g, text="🔢 Resolve Suffixes", command=self.show_resolve_suffixes,
+                     bg="#9C27B0", fg=self.fg_color, font=("Arial", 9, "bold"),
+                     width=14, height=2).pack(side=tk.LEFT, padx=3)
+            if self.has_permission('manage_users'):
+                tk.Button(g, text="👥 User Management", command=self.show_user_management,
+                         bg="#1976D2", fg=self.fg_color, font=("Arial", 9, "bold"),
+                         width=14, height=2).pack(side=tk.LEFT, padx=3)
+            tk.Button(g, text="🔐 Change Password", command=self.show_change_password,
+                     bg=self.button_bg, fg=self.fg_color, font=("Arial", 9, "bold"),
+                     width=14, height=2).pack(side=tk.LEFT, padx=3)
+            tk.Button(g, text="🗜️ Archive Cleanup", command=lambda: ArchiveCleanupWindow(self),
+                     bg="#607D8B", fg=self.fg_color, font=("Arial", 9, "bold"),
+                     width=14, height=2).pack(side=tk.LEFT, padx=3)
+            tk.Button(g, text="🔄 Sync Warnings", command=self.sync_validation_status_with_warnings,
+                     bg="#FF9800", fg=self.fg_color, font=("Arial", 9, "bold"),
+                     width=14, height=2).pack(side=tk.LEFT, padx=3)
+            tk.Button(g, text="🔍 Find Duplicates", command=self.show_duplicate_browser,
+                     bg="#9C27B0", fg=self.fg_color, font=("Arial", 9, "bold"),
+                     width=14, height=2).pack(side=tk.LEFT, padx=3)
+            tk.Button(g, text="💾 Fix Drive Letter", command=self.detect_and_fix_drive_letter,
+                     bg="#2196F3", fg=self.fg_color, font=("Arial", 9, "bold"),
+                     width=14, height=2).pack(side=tk.LEFT, padx=3)
+            tk.Button(g, text="📦 Archive Migration", command=self.show_archive_migration_dialog,
                      bg="#00838F", fg=self.fg_color, font=("Arial", 9, "bold"),
                      width=14, height=2).pack(side=tk.LEFT, padx=3)
-
-            # Clean Stale Records button
-            tk.Button(maint_group, text="🧹 Clean Stale", command=self.clean_stale_records,
+            tk.Button(g, text="🧹 Clean Stale", command=self.clean_stale_records,
                      bg="#558B2F", fg=self.fg_color, font=("Arial", 9, "bold"),
                      width=14, height=2).pack(side=tk.LEFT, padx=3)
-
-            # USB Sync Manager button
-            tk.Button(maint_group, text="💾 USB Sync", command=self.open_usb_sync_window,
+            tk.Button(g, text="💾 USB Sync", command=self.open_usb_sync_window,
                      bg="#673AB7", fg=self.fg_color, font=("Arial", 9, "bold"),
                      width=14, height=2).pack(side=tk.LEFT, padx=3)
-
-            # Archived/Deleted Files Browser button
-            tk.Button(maint_group, text="🗑 Deleted/Archived", command=self.open_archived_files_browser,
+            tk.Button(g, text="🗑 Deleted/Archived", command=self.open_archived_files_browser,
                      bg="#E91E63", fg=self.fg_color, font=("Arial", 9, "bold"),
                      width=14, height=2).pack(side=tk.LEFT, padx=3)
+
+        # ── Register tabs (permission-gated) ─────────────────────────────
+        _tab('files',       '📂 Files',        build_files)
+        if self.has_permission('manage_duplicates'):
+            _tab('duplicates',  '🔍 Duplicates',   build_duplicates)
+        if self.has_permission('export_data'):
+            _tab('reports',     '📊 Reports',       build_reports)
+        if self.has_permission('backup_restore'):
+            _tab('backup',      '💾 Backup',        build_backup)
+        if self.has_permission('batch_operations'):
+            _tab('workflow',    '🔄 Workflow',      build_workflow)
+        if self.has_permission('clear_database'):
+            _tab('maintenance', '⚙️ Maintenance',   build_maintenance)
+
+        # ── Open Files tab by default ─────────────────────────────────────
+        first = next(iter(self._ribbon_panels), None)
+        if first:
+            self._ribbon_tab_click(first)
+
+    def _ribbon_tab_click(self, key):
+        """Toggle ribbon: collapse if active tab clicked, else switch panels."""
+        if self._ribbon_active_key == key and self._ribbon_expanded:
+            # Collapse — same tab clicked while open
+            self._ribbon_content_frame.pack_forget()
+            self._ribbon_expanded = False
+            self._ribbon_buttons[key].config(relief=tk.FLAT, bg=self.button_bg)
+        else:
+            # Expand or switch tab
+            if not self._ribbon_expanded:
+                self._ribbon_content_frame.pack(fill=tk.X, padx=5, pady=(0, 4))
+                self._ribbon_expanded = True
+            # Reset all panels and buttons
+            for k, panel in self._ribbon_panels.items():
+                panel.pack_forget()
+            for k, btn in self._ribbon_buttons.items():
+                btn.config(relief=tk.FLAT, bg=self.button_bg)
+            # Activate selected
+            self._ribbon_panels[key].pack(fill=tk.X)
+            self._ribbon_buttons[key].config(relief=tk.SUNKEN, bg=self.accent_color)
+            self._ribbon_active_key = key
 
     def create_filter_section(self, parent):
         """Create filter controls"""
@@ -8131,30 +8117,22 @@ class GCodeDatabaseGUI:
         ]
         # Store raw keywords so _update_error_filter_counts can add (N) suffixes
         self._error_filter_keywords = common_errors
-        self.filter_error_text = ttk.Combobox(row2_6, values=common_errors, width=47)
+        # Longest keyword + counter suffix: "exceeds standard depth (2121)" = 29 chars
+        self.filter_error_text = ttk.Combobox(row2_6, values=common_errors, width=30)
         self.filter_error_text.pack(side=tk.LEFT, padx=2)
         self.filter_error_text.set("")  # Default to empty
 
-        tk.Label(row2_6, text="(Select common error or type custom search)",
-                bg=self.bg_color, fg="#888888", font=("Arial", 8, "italic")).pack(side=tk.LEFT, padx=5)
-
-        # Row 2.7 - Date Imported filter
-        row2_7 = tk.Frame(filter_container, bg=self.bg_color)
-        row2_7.pack(fill=tk.X, pady=5)
-
-        tk.Label(row2_7, text="Date Imported:", bg=self.bg_color, fg=self.fg_color,
-                font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=5)
-
-        tk.Label(row2_7, text="From:", bg=self.bg_color, fg=self.fg_color).pack(side=tk.LEFT, padx=2)
-        self.filter_date_from = tk.Entry(row2_7, width=12, bg=self.input_bg, fg=self.fg_color)
+        # Date Imported — same row, right of error filter
+        tk.Label(row2_6, text="Date:", bg=self.bg_color, fg=self.fg_color,
+                font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=(12, 2))
+        tk.Label(row2_6, text="From:", bg=self.bg_color, fg=self.fg_color).pack(side=tk.LEFT, padx=(0, 2))
+        self.filter_date_from = tk.Entry(row2_6, width=10, bg=self.input_bg, fg=self.fg_color)
         self.filter_date_from.pack(side=tk.LEFT, padx=2)
-
-        tk.Label(row2_7, text="To:", bg=self.bg_color, fg=self.fg_color).pack(side=tk.LEFT, padx=5)
-        self.filter_date_to = tk.Entry(row2_7, width=12, bg=self.input_bg, fg=self.fg_color)
+        tk.Label(row2_6, text="To:", bg=self.bg_color, fg=self.fg_color).pack(side=tk.LEFT, padx=(4, 2))
+        self.filter_date_to = tk.Entry(row2_6, width=10, bg=self.input_bg, fg=self.fg_color)
         self.filter_date_to.pack(side=tk.LEFT, padx=2)
-
-        tk.Label(row2_7, text="(YYYY-MM-DD format)",
-                bg=self.bg_color, fg="#888888", font=("Arial", 8, "italic")).pack(side=tk.LEFT, padx=5)
+        tk.Label(row2_6, text="YYYY-MM-DD",
+                bg=self.bg_color, fg="#888888", font=("Arial", 8, "italic")).pack(side=tk.LEFT, padx=4)
 
         # Row 3 - Sort options
         row3 = tk.Frame(filter_container, bg=self.bg_color)
