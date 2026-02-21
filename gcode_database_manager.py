@@ -8401,27 +8401,28 @@ class GCodeDatabaseGUI:
         self.process_dropped_files(gcode_files)
 
     def _parse_drop_files(self, data):
-        """Parse file paths from drag-drop event data"""
-        # Handle different formats from different systems
+        """Parse file paths from drag-drop event data.
+
+        tkinterdnd2 on Windows wraps each path that contains spaces in {}.
+        Examples:
+          Single no-spaces : C:/repo/o75445.nc
+          Single w-spaces  : {C:/Users/John Wayne/repo/o75445.nc}
+          Multiple         : {C:/Users/John Wayne/a.nc} C:/simple/b.nc
+        """
         if isinstance(data, list):
             return data
 
-        # Windows/Unix paths can be space or newline separated
-        # Wrapped in {} or not
-        files = []
         data = str(data)
+        files = []
 
-        # Remove outer braces if present
-        if data.startswith('{') and data.endswith('}'):
-            data = data[1:-1]
+        # Pull out every {…} group first (handles spaces inside paths)
+        brace_paths = re.findall(r'\{([^}]+)\}', data)
+        files.extend(brace_paths)
 
-        # Split by spaces, but respect paths with spaces
-        import shlex
-        try:
-            files = shlex.split(data)
-        except:
-            # Fallback: simple split
-            files = data.split()
+        # Remove those groups, then split whatever remains on whitespace
+        remainder = re.sub(r'\{[^}]+\}', '', data).strip()
+        if remainder:
+            files.extend(remainder.split())
 
         return [f.strip() for f in files if f.strip()]
 
