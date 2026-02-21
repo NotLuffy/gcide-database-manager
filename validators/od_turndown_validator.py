@@ -89,12 +89,23 @@ class ODTurnDownValidator:
                 if x_match:
                     x_value = float(x_match.group(1))
 
+                    # Filter 1: X must be in OD territory (within 1.0" of standard).
+                    # Hub face plunges (X3.x for a 6.25" round) are not OD turn-downs.
+                    if x_value < standard_od - 1.0:
+                        continue
+
                     # Check if next line is cutting down the side (G01 Z-negative)
                     if i + 1 < len(lines):
                         next_line = lines[i + 1].upper()
                         if 'G01' in next_line:
                             z_match = re.search(r'Z\s*(-\d+\.?\d*)', next_line)
                             if z_match:
+                                # Filter 2: Z depth must be meaningful (>= 0.10").
+                                # Hub face cleanup passes (Z-0.06) are not OD turn-downs.
+                                z_value = abs(float(z_match.group(1)))
+                                if z_value < 0.10:
+                                    continue
+
                                 # Found OD turn-down! Check if it matches standard
                                 side_str = f"Side {side}" if side else "unknown side"
 
