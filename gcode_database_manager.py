@@ -10598,9 +10598,15 @@ class GCodeDatabaseGUI:
         progress_text.insert(tk.END, f"Errors: {errors}\n")
         progress_text.see(tk.END)
 
-        # Close button
+        # Close button — also opens details for the selected program so the
+        # user can immediately see the updated validation results
+        def _close_rescan():
+            progress_window.destroy()
+            if self.tree.selection():
+                self.view_details()
+
         close_btn = tk.Button(progress_window, text="Close",
-                             command=progress_window.destroy,
+                             command=_close_rescan,
                              bg=self.button_bg, fg=self.fg_color,
                              font=("Arial", 10, "bold"))
         close_btn.pack(pady=10)
@@ -10857,9 +10863,15 @@ class GCodeDatabaseGUI:
         progress_text.insert(tk.END, f"\n✓ Much faster than full rescan!\n")
         progress_text.see(tk.END)
 
-        # Close button
+        # Close button — also opens details for the selected program so the
+        # user can immediately see the updated validation results
+        def _close_rescan_changed():
+            progress_window.destroy()
+            if self.tree.selection():
+                self.view_details()
+
         close_btn = tk.Button(progress_window, text="Close",
-                             command=progress_window.destroy,
+                             command=_close_rescan_changed,
                              bg=self.button_bg, fg=self.fg_color,
                              font=("Arial", 10, "bold"))
         close_btn.pack(pady=10)
@@ -13295,32 +13307,9 @@ class GCodeDatabaseGUI:
             # Refresh the display to show updated color coding
             self.refresh_results()
 
-            # Build detailed message
-            msg_parts = [f"✅ {program_number} has been re-scanned and updated.", ""]
-            msg_parts.append(f"Status: {validation_status}")
-            msg_parts.append("")
-
-            # Add all status details
-            for detail in status_details:
-                msg_parts.append(detail)
-
-            # Add specific issue counts
-            if parse_result.crash_issues:
-                msg_parts.append(f"\n⛔ CRASH RISKS: {len(parse_result.crash_issues)}")
-            if parse_result.crash_warnings:
-                msg_parts.append(f"⚠️ Crash Warnings: {len(parse_result.crash_warnings)}")
-            if parse_result.validation_issues:
-                msg_parts.append(f"\nCritical Issues: {len(parse_result.validation_issues)}")
-            if parse_result.validation_warnings:
-                msg_parts.append(f"Validation Warnings: {len(parse_result.validation_warnings)}")
-            if parse_result.bore_warnings:
-                msg_parts.append(f"Bore Warnings: {len(parse_result.bore_warnings)}")
-            if parse_result.dimensional_issues:
-                msg_parts.append(f"Dimensional Issues: {len(parse_result.dimensional_issues)}")
-            if parse_result.tool_home_issues:
-                msg_parts.append(f"Tool Home Issues: {len(parse_result.tool_home_issues)}")
-
-            messagebox.showinfo("File Re-scanned", "\n".join(msg_parts))
+            # Open the details page so the user immediately sees the updated
+            # validation results without needing an extra click
+            self.view_details()
 
         except Exception as e:
             conn.close()
