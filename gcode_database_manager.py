@@ -8216,10 +8216,7 @@ class GCodeDatabaseGUI:
                                            font=("Arial", 9))
         missing_path_check.pack(side=tk.LEFT, padx=10)
 
-        # Results count label
-        self.results_label = tk.Label(row4, text="", bg=self.bg_color, fg=self.fg_color,
-                                     font=("Arial", 10))
-        self.results_label.pack(side=tk.RIGHT, padx=10)
+        # (results_label moved to bottom action bar, right of Compare)
         
     def create_results_section(self, parent):
         """Create results table"""
@@ -8333,7 +8330,12 @@ class GCodeDatabaseGUI:
                                font=("Arial", 8, "bold"), width=12)
         btn_compare.pack(side=tk.LEFT, padx=3)
 
-        # Status label for drag-drop feedback (separate from results counter)
+        # White status/count label — right of Compare, left side of bar
+        self.results_label = tk.Label(action_frame, text="", bg=self.bg_color, fg=self.fg_color,
+                                     font=("Arial", 9))
+        self.results_label.pack(side=tk.LEFT, padx=10)
+
+        # Drag-drop feedback label — far right
         self.dragdrop_label = tk.Label(action_frame, text="",
                                      bg=self.bg_color, fg=self.fg_color,
                                      font=("Arial", 9))
