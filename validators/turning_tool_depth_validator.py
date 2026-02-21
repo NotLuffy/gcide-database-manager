@@ -82,8 +82,15 @@ class TurningToolDepthValidator:
 
         return None
 
+    # Max incremental Z pass depth for hub creation (production standard)
+    HUB_PASS_MAX = {
+        # hub_height_min: max_z_per_pass
+        0.50: 0.20,  # hubs >= 0.50": max 0.20" per pass
+    }
+
     def validate_file(self, lines: List[str], thickness: Optional[float],
-                     hub_height: Optional[float]) -> TurningDepthResult:
+                     hub_height: Optional[float],
+                     outer_diameter: Optional[float] = None) -> TurningDepthResult:
         """
         Validate turning tool operations against standard depth limits.
 
@@ -91,6 +98,7 @@ class TurningToolDepthValidator:
             lines: G-code file lines
             thickness: Body thickness in inches
             hub_height: Hub height in inches (0 for non-hub parts)
+            outer_diameter: Part outer diameter (used for hub pass depth check)
 
         Returns:
             TurningDepthResult with warnings and notes
@@ -103,6 +111,7 @@ class TurningToolDepthValidator:
             return TurningDepthResult([], [], None, None)
 
         hub_height = hub_height or 0.0
+        outer_diameter = outer_diameter or 0.0
         total_height = thickness + hub_height
 
         # Get standard max depth for this thickness
@@ -110,12 +119,17 @@ class TurningToolDepthValidator:
         if not standard_max_depth:
             return TurningDepthResult([], [], total_height, None)
 
-        # Track turning tool operations
-        in_turning_tool = False
-        found_flip = False
-        side = 1
+        # Determine whether to check incremental hub pass depth:
+        # For hubs >= 0.50", each hub face plunge must be <= 0.20" deeper than the previous.
+        check_hub_passes = hub_height >= 0.50
+        hub_pass_max = 0.20
 
-        # Track which lines we've already flagged
+        # Track state
+        in_turning_tool = False
+        side = 1
+        current_x = None   # last known X position
+        current_z = 0.0    # last known Z position
+        prev_hub_face_z = None  # Z at the last hub face plunge (X < OD - 2.0")
         flagged_lines = set()
 
         for i, line in enumerate(lines, 1):
@@ -127,9 +141,11 @@ class TurningToolDepthValidator:
 
             # Track flip
             if 'M01' in line_upper or 'M1' in line_upper or 'FLIP' in line_upper:
-                found_flip = True
                 side = 2
-                in_turning_tool = False  # Reset tool tracking after flip
+                in_turning_tool = False
+                current_x = None
+                current_z = 0.0
+                prev_hub_face_z = None
                 continue
 
             # Remove inline comments
@@ -143,44 +159,78 @@ class TurningToolDepthValidator:
             tool_match = re.search(r'T(\d+)', code_part, re.IGNORECASE)
             if tool_match:
                 tool_num = tool_match.group(1)
-                in_turning_tool = tool_num[0] == '3'  # T3xx = turning tool
+                in_turning_tool = tool_num[0] == '3'
+                current_x = None
+                current_z = 0.0
+                prev_hub_face_z = None
                 continue
 
-            # Only check turning tool operations
             if not in_turning_tool:
                 continue
 
-            # Check Z movements
-            z_match = re.search(r'Z\s*(-\d+\.?\d*)', code_part, re.IGNORECASE)
-            if z_match and i not in flagged_lines:
-                z_depth = abs(float(z_match.group(1)))
+            # Track current X and Z position
+            x_match = re.search(r'X\s*(-?\d+\.?\d*)', code_part, re.IGNORECASE)
+            if x_match:
+                new_x = abs(float(x_match.group(1)))
 
-                # Check against standard limit
-                if z_depth > standard_max_depth + self.tolerance:
-                    margin = z_depth - standard_max_depth
-                    side_str = f"Side {side}"
+                # --- Check 2: hub face plunge incremental depth ---
+                # Detect when X dips from OD territory into hub-face territory.
+                # Hub face X is much smaller than OD (< OD - 2.0").
+                # Each successive plunge Z must be <= 0.20" deeper than the last.
+                if check_hub_passes and outer_diameter > 0:
+                    hub_face_threshold = outer_diameter - 2.0
+                    was_at_od = current_x is None or current_x >= outer_diameter - 0.5
+                    now_at_hub = new_x < hub_face_threshold
+                    if was_at_od and now_at_hub and i not in flagged_lines:
+                        baseline = prev_hub_face_z if prev_hub_face_z is not None else 0.0
+                        increment = current_z - baseline
+                        if increment > hub_pass_max:
+                            side_str = f"Side {side}"
+                            warnings.append(
+                                f"{side_str} Line {i}: Hub face plunge at Z-{current_z:.2f} "
+                                f"is {increment:.2f}\" deeper than previous pass Z-{baseline:.2f} "
+                                f"- exceeds {hub_pass_max:.2f}\" max per pass for "
+                                f"{hub_height:.2f}\" hub (take 0.20\" incremental passes)"
+                            )
+                            flagged_lines.add(i)
+                        prev_hub_face_z = current_z
 
-                    # Build part description
-                    if hub_height > 0:
-                        part_desc = f"{total_height:.2f}\" total ({thickness:.2f}\" + {hub_height:.2f}\" hub)"
-                    else:
-                        part_desc = f"{thickness:.2f}\" part"
+                current_x = new_x
 
-                    warnings.append(
-                        f"{side_str} Line {i}: Turning tool Z-{z_depth:.2f} exceeds standard depth "
-                        f"(max: Z-{standard_max_depth:.2f} for {part_desc}) "
-                        f"- Over by {margin:.2f}\""
-                    )
-                    flagged_lines.add(i)
+            z_match = re.search(r'Z\s*(-?\d+\.?\d*)', code_part, re.IGNORECASE)
+            if z_match:
+                z_val = float(z_match.group(1))
+                # Only track depth when cutting into the part (negative Z).
+                # Positive Z is a clearance/approach move — reset depth to 0.
+                current_z = abs(z_val) if z_val < 0 else 0.0
 
-                # Note if following standard
-                elif z_depth <= standard_max_depth and z_depth > 0.1:
-                    side_str = f"Side {side}"
-                    notes.append(
-                        f"{side_str} Line {i}: Proper depth Z-{z_depth:.2f} "
-                        f"(within standard Z-{standard_max_depth:.2f})"
-                    )
-                    flagged_lines.add(i)
+            # --- Check 1: total depth vs standard limit (negative Z only) ---
+            neg_z_match = re.search(r'Z\s*(-\d+\.?\d*)', code_part, re.IGNORECASE)
+            if not neg_z_match or i in flagged_lines:
+                continue
+
+            z_depth = abs(float(neg_z_match.group(1)))
+            side_str = f"Side {side}"
+
+            if z_depth > standard_max_depth + self.tolerance:
+                margin = z_depth - standard_max_depth
+                if hub_height > 0:
+                    part_desc = f"{total_height:.2f}\" total ({thickness:.2f}\" + {hub_height:.2f}\" hub)"
+                else:
+                    part_desc = f"{thickness:.2f}\" part"
+                warnings.append(
+                    f"{side_str} Line {i}: Turning tool Z-{z_depth:.2f} exceeds standard depth "
+                    f"(max: Z-{standard_max_depth:.2f} for {part_desc}) "
+                    f"- Over by {margin:.2f}\""
+                )
+                flagged_lines.add(i)
+
+            elif z_depth <= standard_max_depth and z_depth > 0.1:
+                notes.append(
+                    f"{side_str} Line {i}: Proper depth Z-{z_depth:.2f} "
+                    f"(within standard Z-{standard_max_depth:.2f})"
+                )
+                flagged_lines.add(i)
 
         return TurningDepthResult(
             warnings=warnings,
