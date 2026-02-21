@@ -8131,52 +8131,44 @@ class GCodeDatabaseGUI:
         tk.Label(row2_6, text="To:", bg=self.bg_color, fg=self.fg_color).pack(side=tk.LEFT, padx=(4, 2))
         self.filter_date_to = tk.Entry(row2_6, width=10, bg=self.input_bg, fg=self.fg_color)
         self.filter_date_to.pack(side=tk.LEFT, padx=2)
-        tk.Label(row2_6, text="YYYY-MM-DD",
-                bg=self.bg_color, fg="#888888", font=("Arial", 8, "italic")).pack(side=tk.LEFT, padx=4)
+        tk.Label(row2_6, text="YMD",
+                bg=self.bg_color, fg="#888888", font=("Arial", 8, "italic")).pack(side=tk.LEFT, padx=(2, 10))
 
-        # Row 3 - Sort options
-        row3 = tk.Frame(filter_container, bg=self.bg_color)
-        row3.pack(fill=tk.X, pady=5)
+        # Sort — same row, right of date
+        tk.Label(row2_6, text="Sort:", bg=self.bg_color, fg=self.fg_color,
+                font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=(0, 2))
 
-        tk.Label(row3, text="Sort by:", bg=self.bg_color, fg=self.fg_color,
-                font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=5)
-
-        # Sort columns available
         sort_columns = ["", "Program #", "Dup", "Type", "Lathe", "OD", "Thick", "CB", "Hub H", "Hub D",
                        "CB Bore", "Step D", "Material", "Status"]
 
-        # Sort 1
-        self.sort1_col = ttk.Combobox(row3, values=sort_columns, state="readonly", width=10)
-        self.sort1_col.pack(side=tk.LEFT, padx=2)
+        self.sort1_col = ttk.Combobox(row2_6, values=sort_columns, state="readonly", width=9)
+        self.sort1_col.pack(side=tk.LEFT, padx=1)
         self.sort1_col.set("CB")
-        self.sort1_dir = ttk.Combobox(row3, values=["Low→High", "High→Low"], state="readonly", width=9)
-        self.sort1_dir.pack(side=tk.LEFT, padx=2)
+        self.sort1_dir = ttk.Combobox(row2_6, values=["Low→High", "High→Low"], state="readonly", width=8)
+        self.sort1_dir.pack(side=tk.LEFT, padx=1)
         self.sort1_dir.set("Low→High")
 
-        tk.Label(row3, text="then", bg=self.bg_color, fg=self.fg_color).pack(side=tk.LEFT, padx=3)
+        tk.Label(row2_6, text="›", bg=self.bg_color, fg="#888888").pack(side=tk.LEFT, padx=2)
 
-        # Sort 2
-        self.sort2_col = ttk.Combobox(row3, values=sort_columns, state="readonly", width=10)
-        self.sort2_col.pack(side=tk.LEFT, padx=2)
+        self.sort2_col = ttk.Combobox(row2_6, values=sort_columns, state="readonly", width=9)
+        self.sort2_col.pack(side=tk.LEFT, padx=1)
         self.sort2_col.set("OD")
-        self.sort2_dir = ttk.Combobox(row3, values=["Low→High", "High→Low"], state="readonly", width=9)
-        self.sort2_dir.pack(side=tk.LEFT, padx=2)
+        self.sort2_dir = ttk.Combobox(row2_6, values=["Low→High", "High→Low"], state="readonly", width=8)
+        self.sort2_dir.pack(side=tk.LEFT, padx=1)
         self.sort2_dir.set("Low→High")
 
-        tk.Label(row3, text="then", bg=self.bg_color, fg=self.fg_color).pack(side=tk.LEFT, padx=3)
+        tk.Label(row2_6, text="›", bg=self.bg_color, fg="#888888").pack(side=tk.LEFT, padx=2)
 
-        # Sort 3
-        self.sort3_col = ttk.Combobox(row3, values=sort_columns, state="readonly", width=10)
-        self.sort3_col.pack(side=tk.LEFT, padx=2)
+        self.sort3_col = ttk.Combobox(row2_6, values=sort_columns, state="readonly", width=9)
+        self.sort3_col.pack(side=tk.LEFT, padx=1)
         self.sort3_col.set("")
-        self.sort3_dir = ttk.Combobox(row3, values=["Low→High", "High→Low"], state="readonly", width=9)
-        self.sort3_dir.pack(side=tk.LEFT, padx=2)
+        self.sort3_dir = ttk.Combobox(row2_6, values=["Low→High", "High→Low"], state="readonly", width=8)
+        self.sort3_dir.pack(side=tk.LEFT, padx=1)
         self.sort3_dir.set("Low→High")
 
-        btn_sort = tk.Button(row3, text="↕️ Sort", command=self.apply_multi_sort,
-                            bg=self.button_bg, fg=self.fg_color,
-                            font=("Arial", 9, "bold"), width=8)
-        btn_sort.pack(side=tk.LEFT, padx=5)
+        tk.Button(row2_6, text="↕ Sort", command=self.apply_multi_sort,
+                 bg=self.button_bg, fg=self.fg_color,
+                 font=("Arial", 9, "bold"), width=6).pack(side=tk.LEFT, padx=(4, 2))
 
         # Row 4 - Action buttons
         row4 = tk.Frame(filter_container, bg=self.bg_color)
