@@ -114,11 +114,26 @@ class ODTurnDownValidator:
                                         f"{side_str}: OD turn-down X{x_value:.3f}\" matches standard (X{standard_od:.3f}\")"
                                     )
                                 else:
-                                    warnings.append(
-                                        f"OUT OF COMMON PRACTICE - {side_str}: OD turn-down X{x_value:.3f}\" "
-                                        f"does not match standard X{standard_od:.3f}\" for {round_size:.2f}\" rounds "
-                                        f"(Line {i+1})"
-                                    )
+                                    # Check if this X matches the standard for a different round size
+                                    other_match = None
+                                    for other_size, other_od in self.STANDARD_OD_TURNDOWN.items():
+                                        if other_size != round_size and abs(x_value - other_od) <= self.tolerance:
+                                            other_match = other_size
+                                            break
+
+                                    if other_match:
+                                        warnings.append(
+                                            f"OUT OF COMMON PRACTICE - {side_str}: OD turn-down X{x_value:.3f}\" "
+                                            f"does not match standard X{standard_od:.3f}\" for {round_size:.2f}\" rounds "
+                                            f"- matches {other_match:.2f}\" round standard instead "
+                                            f"(Line {i+1})"
+                                        )
+                                    else:
+                                        warnings.append(
+                                            f"OUT OF COMMON PRACTICE - {side_str}: OD turn-down X{x_value:.3f}\" "
+                                            f"does not match standard X{standard_od:.3f}\" for {round_size:.2f}\" rounds "
+                                            f"(Line {i+1})"
+                                        )
 
         return warnings, notes
 
