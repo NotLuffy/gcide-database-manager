@@ -4026,8 +4026,19 @@ class ImprovedGCodeParser:
 
                 # First check if hub_height was extracted from title
                 if result.hub_height:
-                    # Hub height specified in title - use it
-                    calculated_thickness = result.drill_depth - result.hub_height - 0.15
+                    # Hub height detected - use it
+                    hub_h = result.hub_height
+                    calculated_thickness = result.drill_depth - hub_h - 0.15
+
+                    # 2PC mating-hub false-positive suppression:
+                    # On 2PC parts the mating hub (0.20-0.35") is NOT included in the title
+                    # thickness. When the programmer drills through the full part height
+                    # (body + hub + extra safety clearance), the formula above yields
+                    # calc ≈ title_thickness + hub_h instead of title_thickness.
+                    # Detect that pattern and revert to title thickness.
+                    is_small_mating_hub = 0.20 <= hub_h <= 0.35
+                    if is_small_mating_hub and abs(calculated_thickness - (title_thickness + hub_h)) < 0.15:
+                        calculated_thickness = title_thickness
                 else:
                     # No hub in title - check if drill pattern suggests unstated hub
                     # Calculate implied hub from drill depth
