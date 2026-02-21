@@ -5728,6 +5728,85 @@ class GCodeDatabaseGUI:
                                f"You can still import the file without fixes.")
 
     # ------------------------------------------------------------------
+    # Auto-Fix Crash Risks (right-click action on existing DB entry)
+    # ------------------------------------------------------------------
+
+    def auto_fix_crash_risks(self):
+        """
+        Apply AutoFixer.fix_rapid_to_negative_z to the selected file,
+        create a backup, write the result, then rescan.
+        """
+        if not self.has_permission('edit_files'):
+            messagebox.showerror("Permission Denied",
+                                 "You need edit permission to auto-fix files.")
+            return
+
+        selected = self.tree.selection()
+        if not selected:
+            return
+
+        program_number = self.tree.item(selected[0])['values'][0]
+
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT file_path, crash_issues FROM programs WHERE program_number = ?",
+                       (program_number,))
+        row = cursor.fetchone()
+        conn.close()
+
+        if not row or not row[0]:
+            messagebox.showwarning("Auto-Fix", "No file path found for this program.")
+            return
+
+        file_path = row[0]
+        if not os.path.exists(file_path):
+            messagebox.showwarning("Auto-Fix", f"File not found:\n{file_path}")
+            return
+
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            original = f.read()
+
+        fixed_content, changes = AutoFixer.fix_rapid_to_negative_z(original)
+
+        if not changes:
+            messagebox.showinfo("Auto-Fix: G00 Crash Risks",
+                                "No explicit G00 rapid-to-negative-Z patterns found.\n"
+                                "File is already safe (or only modal G00 cases exist,\n"
+                                "which require manual review).")
+            return
+
+        change_summary = "\n".join(f"  • {c}" for c in changes)
+        confirmed = messagebox.askyesno(
+            "Auto-Fix: G00 Crash Risks",
+            f"Found {len(changes)} line(s) to fix in {program_number}:\n\n"
+            f"{change_summary}\n\n"
+            f"A backup will be created before saving.\n\nApply fixes?",
+            icon='warning'
+        )
+        if not confirmed:
+            return
+
+        # Backup
+        import shutil
+        backup_path = file_path + '.crash_fix_backup'
+        shutil.copy2(file_path, backup_path)
+
+        with open(file_path, 'w', encoding='utf-8') as f:
+            f.write(fixed_content)
+
+        logger.info(f"Auto-fix crash risks applied to {file_path}: {changes}")
+
+        messagebox.showinfo(
+            "Auto-Fix Applied",
+            f"Fixed {len(changes)} line(s).\n\n"
+            f"{change_summary}\n\n"
+            f"Backup saved as:\n{backup_path}\n\n"
+            f"Rescanning file..."
+        )
+
+        self.refresh_selected_file()
+
+    # ------------------------------------------------------------------
     # Scan Folder for Issues (per-file feedback, no import)
     # ------------------------------------------------------------------
 
@@ -7966,25 +8045,49 @@ class GCodeDatabaseGUI:
         # Combobox with common error types (editable for custom searches)
         common_errors = [
             "",  # Empty for "all"
+            # --- Crash / Safety ---
+            "CRASH RISK",
+            "Diagonal rapid",
+            "Z before G53",
+            "JAW CLEARANCE",
+            "BORE CHAMFER CRASH",
+            # --- Turning / OD ---
+            "Hub face plunge",
+            "exceeds standard depth",
+            "OUT OF COMMON PRACTICE",
+            # --- Work Offset ---
+            "no work offset",
+            # --- Dimensional / Title ---
+            "THICKNESS ERROR",
+            "TITLE MISLABELED",
+            "P-CODE MISMATCH",
             "FILENAME MISMATCH",
             "CB TOO LARGE",
             "CB TOO SMALL",
-            "THICKNESS ERROR",
             "OB TOO LARGE",
             "OB TOO SMALL",
             "OD MISMATCH",
+            # --- 2PC ---
+            "2PC ring size",
+            "2PC LUG recess",
+            # --- Steel Ring ---
+            "Steel ring",
+            # --- Hub / Bore ---
+            "HUB BREAK-THROUGH",
+            "Counterbore",
             "DRILL",
             "CHAMFER",
             "STEP",
             "HUB",
             "BORE",
+            # --- Tool Home ---
+            "G53",
+            "TOOL_HOME",
             "Z-16",
             "Z-13",
             "Z-11",
             "Z-9",
-            "G53",
-            "TOOL_HOME",
-            # Haas lathe-specific validation errors
+            # --- Haas Validation ---
             "G00 and G01",
             "G01 without feedrate",
             "G96",
@@ -7994,7 +8097,7 @@ class GCodeDatabaseGUI:
             "M05",
             "M30",
             "decimal point",
-            "coolant"
+            "coolant",
         ]
         self.filter_error_text = ttk.Combobox(row2_6, values=common_errors, width=47)
         self.filter_error_text.pack(side=tk.LEFT, padx=2)
@@ -12471,11 +12574,16 @@ class GCodeDatabaseGUI:
             query += " AND counter_bore_diameter <= ?"
             params.append(float(self.filter_step_d_max.get()))
 
-        # Error text filter (searches in validation_issues, validation_warnings, bore_warnings, dimensional_issues, tool_home_issues)
+        # Error text filter — searches all error/warning columns including crash
         if self.filter_error_text.get():
             error_search = f"%{self.filter_error_text.get()}%"
-            query += " AND (validation_issues LIKE ? OR validation_warnings LIKE ? OR bore_warnings LIKE ? OR dimensional_issues LIKE ? OR tool_home_issues LIKE ?)"
-            params.extend([error_search, error_search, error_search, error_search, error_search])
+            query += (
+                " AND (validation_issues LIKE ? OR validation_warnings LIKE ?"
+                " OR bore_warnings LIKE ? OR dimensional_issues LIKE ?"
+                " OR tool_home_issues LIKE ? OR crash_issues LIKE ?"
+                " OR crash_warnings LIKE ?)"
+            )
+            params.extend([error_search] * 7)
 
         # Date Imported filter
         if hasattr(self, 'filter_date_from') and self.filter_date_from.get():
@@ -16934,6 +17042,25 @@ class GCodeDatabaseGUI:
             menu = tk.Menu(self.root, tearoff=0, bg=self.input_bg, fg=self.fg_color)
             menu.add_command(label="Edit File", command=self.open_file)
             menu.add_command(label="Refresh File", command=self.refresh_selected_file)
+
+            # Auto-Fix crash risks — only when crash_issues exist and user can edit
+            if self.has_permission('edit_files'):
+                try:
+                    prog_num = self.tree.item(row_id)['values'][0]
+                    _conn = sqlite3.connect(self.db_path)
+                    _cur  = _conn.cursor()
+                    _cur.execute("SELECT crash_issues FROM programs WHERE program_number = ?",
+                                 (prog_num,))
+                    _ci_row = _cur.fetchone()
+                    _conn.close()
+                    _has_crash = (_ci_row and _ci_row[0] and
+                                  _ci_row[0] not in ('null', '[]', ''))
+                except Exception:
+                    _has_crash = False
+
+                if _has_crash:
+                    menu.add_command(label="🔧 Auto-Fix: G00 Crash Risks",
+                                     command=self.auto_fix_crash_risks)
 
             # Edit Entry - only for editors and above
             if self.has_permission('edit_files'):
