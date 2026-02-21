@@ -501,9 +501,14 @@ class GCodeDatabaseGUI:
             # self.clipboard = ClipboardManager()
             # logger.debug("Enhanced modules initialized")
 
-            # Configure ttk theme
-            style = ttk.Style()
-            style.theme_use('clam')
+            # Configure ttk theme — prefer sv_ttk dark for modern look
+            try:
+                import sv_ttk
+                sv_ttk.set_theme("dark")
+                style = ttk.Style()
+            except ImportError:
+                style = ttk.Style()
+                style.theme_use('clam')
             self._update_ttk_styles()
 
             # Show login dialog - must succeed before continuing
@@ -532,6 +537,9 @@ class GCodeDatabaseGUI:
             logger.info("Refreshing results...")
             self.refresh_results()
             logger.info("Results refreshed")
+
+            # Update error filter dropdown with DB hit counts
+            self.root.after(200, self._update_error_filter_counts)
 
             # Set up clean shutdown handler
             self.root.protocol("WM_DELETE_WINDOW", self._on_closing)
@@ -7190,6 +7198,43 @@ class GCodeDatabaseGUI:
         # Scrollbar styling
         style.configure('TScrollbar', background=self.button_bg, troughcolor=self.bg_color)
 
+    def _update_error_filter_counts(self):
+        """Refresh the Error Contains combobox to show (N) hit counts from the DB."""
+        if not hasattr(self, '_error_filter_keywords') or not hasattr(self, 'filter_error_text'):
+            return
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            new_values = []
+            for kw in self._error_filter_keywords:
+                if not kw:
+                    new_values.append("")
+                    continue
+                search = f"%{kw}%"
+                cursor.execute(
+                    "SELECT COUNT(*) FROM programs WHERE ("
+                    "validation_issues LIKE ? OR validation_warnings LIKE ? "
+                    "OR bore_warnings LIKE ? OR dimensional_issues LIKE ? "
+                    "OR tool_home_issues LIKE ? OR crash_issues LIKE ? "
+                    "OR crash_warnings LIKE ?)",
+                    [search] * 7
+                )
+                count = cursor.fetchone()[0]
+                new_values.append(f"{kw} ({count})" if count > 0 else kw)
+
+            conn.close()
+
+            # Preserve current selection (strip suffix before comparing)
+            current_raw = re.sub(r'\s*\(\d+\)$', '', self.filter_error_text.get())
+            self.filter_error_text['values'] = new_values
+            for v in new_values:
+                if re.sub(r'\s*\(\d+\)$', '', v) == current_raw:
+                    self.filter_error_text.set(v)
+                    break
+        except Exception:
+            pass  # Never crash the UI for cosmetic counts
+
     def backup_database(self) -> bool:
         """Create a backup of the database in a special backup folder
 
@@ -8099,6 +8144,8 @@ class GCodeDatabaseGUI:
             "decimal point",
             "coolant",
         ]
+        # Store raw keywords so _update_error_filter_counts can add (N) suffixes
+        self._error_filter_keywords = common_errors
         self.filter_error_text = ttk.Combobox(row2_6, values=common_errors, width=47)
         self.filter_error_text.pack(side=tk.LEFT, padx=2)
         self.filter_error_text.set("")  # Default to empty
@@ -12577,7 +12624,9 @@ class GCodeDatabaseGUI:
 
         # Error text filter — searches all error/warning columns including crash
         if self.filter_error_text.get():
-            error_search = f"%{self.filter_error_text.get()}%"
+            # Strip count suffix added by _update_error_filter_counts, e.g. " (14)"
+            _raw_term = re.sub(r'\s*\(\d+\)$', '', self.filter_error_text.get())
+            error_search = f"%{_raw_term}%"
             query += (
                 " AND (validation_issues LIKE ? OR validation_warnings LIKE ?"
                 " OR bore_warnings LIKE ? OR dimensional_issues LIKE ?"
@@ -13302,6 +13351,136 @@ class GCodeDatabaseGUI:
                 messagebox.showerror("File Not Found", f"File not found:\n{filepath}")
         else:
             messagebox.showerror("Error", "No file path in database")
+
+    def show_3d_spacer_model(self):
+        """Render a 3D surface-of-revolution model for the selected spacer."""
+        selected = self.tree.selection()
+        if not selected:
+            messagebox.showwarning("No Selection", "Please select a program first")
+            return
+
+        program_number = self.tree.item(selected[0])['values'][0]
+
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT title, outer_diameter, thickness, center_bore, "
+            "hub_height, hub_diameter, counter_bore_diameter, counter_bore_depth "
+            "FROM programs WHERE program_number = ?",
+            (program_number,)
+        )
+        row = cursor.fetchone()
+        conn.close()
+
+        if not row:
+            messagebox.showerror("Error", "Program not found in database")
+            return
+
+        title, od, thickness, cb_mm, hub_h, hub_d_mm, cbd_mm, cbd_depth = row
+
+        if not od or not thickness:
+            messagebox.showwarning("Insufficient Data",
+                                   "Part requires OD and thickness to render 3D model")
+            return
+
+        # Unit conversions (CB/hub diameters stored in mm, spacer dims in inches)
+        od_in    = float(od)
+        t_in     = float(thickness)
+        cb_in    = float(cb_mm) / 25.4 if cb_mm else od_in * 0.35
+        hub_h_in = float(hub_h) if hub_h else 0.0
+        hub_d_in = float(hub_d_mm) / 25.4 if hub_d_mm else None
+        cbd_in   = float(cbd_mm) / 25.4 if cbd_mm else None
+        cbd_dep  = float(cbd_depth) if cbd_depth else None
+
+        try:
+            import numpy as np
+            from matplotlib.figure import Figure
+            from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+            from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 – registers '3d' projection
+        except ImportError as exc:
+            messagebox.showerror("Import Error",
+                                 f"matplotlib / numpy required for 3D model:\n{exc}")
+            return
+
+        win = tk.Toplevel(self.root)
+        win.title(f"3D Model — {program_number}")
+        win.geometry("820x680")
+        win.configure(bg=self.bg_color)
+
+        fig = Figure(figsize=(8, 6.2), dpi=100, facecolor='#1a1a2e')
+        ax  = fig.add_subplot(111, projection='3d')
+        ax.set_facecolor('#16213e')
+
+        theta = np.linspace(0, 2 * np.pi, 72, endpoint=True)
+
+        body_color = '#4fc3f7'   # sky blue — main spacer body
+        hub_color  = '#81c784'   # green    — protruding hub ring
+        bore_color = '#ff8a65'   # orange   — counter-bore shelf
+
+        def _cyl(r, z_bot, z_top, color, alpha=0.82):
+            """Cylindrical wall surface."""
+            z = np.array([z_bot, z_top])
+            T, Z = np.meshgrid(theta, z)
+            ax.plot_surface(r * np.cos(T), r * np.sin(T), Z,
+                            color=color, alpha=alpha, linewidth=0, shade=True)
+
+        def _disk(r_in, r_out, z, color, alpha=0.85):
+            """Flat annular disk at height z."""
+            r = np.linspace(r_in, r_out, 2)
+            T, R = np.meshgrid(theta, r)
+            ax.plot_surface(R * np.cos(T), R * np.sin(T), np.full_like(R, z),
+                            color=color, alpha=alpha, linewidth=0, shade=True)
+
+        r_out = od_in / 2.0
+        r_in  = cb_in / 2.0
+
+        # ── Main body ─────────────────────────────────────────────────────
+        _cyl(r_out, 0.0, t_in, body_color)             # outer wall
+        _cyl(r_in,  0.0, t_in, body_color, alpha=0.45) # inner bore wall
+        _disk(r_in, r_out, t_in, body_color)            # top (wheel-side) face
+
+        if hub_h_in > 0.0:
+            r_hub = (hub_d_in / 2.0) if hub_d_in else (r_in + 0.20)
+            hub_z = -hub_h_in
+            _disk(r_hub, r_out, 0.0, body_color)        # bottom face (annular, hub takes center)
+            _cyl(r_hub, hub_z, 0.0, hub_color)          # hub outer wall
+            _cyl(r_in,  hub_z, 0.0, hub_color, alpha=0.40)  # hub bore wall
+            _disk(r_in, r_hub, hub_z, hub_color)        # hub bottom face
+            _disk(r_in, r_hub, 0.0,  hub_color)         # hub shoulder (meets body)
+        else:
+            _disk(r_in, r_out, 0.0, body_color)         # full flat bottom face
+
+        # ── Counter-bore shelf (if present and geometrically sensible) ────
+        if cbd_in and cbd_dep and cbd_in > r_in * 2 and cbd_in < r_out * 2:
+            r_cbd     = cbd_in / 2.0
+            z_cbd_bot = t_in - cbd_dep
+            if 0.0 < z_cbd_bot < t_in:
+                _cyl(r_cbd, z_cbd_bot, t_in, bore_color, alpha=0.60)
+                _disk(r_in, r_cbd, z_cbd_bot, bore_color, alpha=0.70)
+
+        # ── Labels and cosmetics ──────────────────────────────────────────
+        ax.set_xlabel('X (in)', color='#cccccc', labelpad=8)
+        ax.set_ylabel('Y (in)', color='#cccccc', labelpad=8)
+        ax.set_zlabel('Z (in)', color='#cccccc', labelpad=8)
+        ax.tick_params(colors='#aaaaaa', labelsize=7)
+        for pane in (ax.xaxis.pane, ax.yaxis.pane, ax.zaxis.pane):
+            pane.fill = False
+            pane.set_edgecolor('#333355')
+        ax.grid(True, color='#333355', linewidth=0.4)
+
+        sub = f"OD={od_in}\"  T={t_in}\"  CB={cb_mm:.1f}mm"
+        if hub_h_in > 0:
+            sub += f"  Hub={hub_h_in}\""
+        ax.set_title(f"{program_number}: {title or ''}\n{sub}",
+                     color='white', pad=12, fontsize=9)
+
+        canvas = FigureCanvasTkAgg(fig, master=win)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+        toolbar_frame = tk.Frame(win, bg=self.bg_color)
+        toolbar_frame.pack(fill=tk.X)
+        NavigationToolbar2Tk(canvas, toolbar_frame).update()
 
     def refresh_selected_file(self, event=None):
         """Re-parse selected file and update database - useful after editing a file"""
@@ -17094,6 +17273,8 @@ class GCodeDatabaseGUI:
                     spacer_type = str(values[3]) if len(values) > 3 else ''
                     if '2PC' in spacer_type:
                         menu.add_command(label="🔗 Find Compatible 2PC Parts", command=self.show_compatible_2pc_parts)
+            # 2PC CB match search — always available from right-click
+            menu.add_command(label="🔗 Find 2PC Match by CB", command=self.show_2pc_cb_search_dialog)
 
             menu.add_separator()
 
@@ -17104,6 +17285,7 @@ class GCodeDatabaseGUI:
 
             menu.add_command(label="View Version History", command=self.show_version_history_window)
             menu.add_command(label="View Toolpath", command=self.show_toolpath_plotter)
+            menu.add_command(label="View 3D Model", command=self.show_3d_spacer_model)
 
             # Archive and Delete - only for those with permission
             if self.has_permission('delete_files') or self.has_permission('move_files'):
