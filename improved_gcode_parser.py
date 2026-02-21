@@ -1723,6 +1723,13 @@ class ImprovedGCodeParser:
         # Populate result dimensions
         if detected_hub_height:
             result['hub_height'] = round(detected_hub_height, 2)
+            # Snap to standard hub sizes: machining variance causes the final facing pass
+            # to read slightly short (e.g. Z-0.22 instead of Z-0.25).
+            h = result['hub_height']
+            if 0.20 <= h <= 0.27:
+                result['hub_height'] = 0.25
+            elif 0.45 <= h < 0.50:
+                result['hub_height'] = 0.50
         if hub_diameter:
             result['hub_diameter'] = round(hub_diameter, 1)
         if step_depth:
@@ -4055,8 +4062,13 @@ class ImprovedGCodeParser:
                     if is_valid_2pc_hub:
                         # 2PC with unstated hub: title thickness is correct, drill includes hub
                         calculated_thickness = title_thickness
-                        # Populate hub_height with calculated value
-                        result.hub_height = implied_hub
+                        # Populate hub_height with calculated value; snap to standard sizes
+                        h = implied_hub
+                        if 0.20 <= h <= 0.27:
+                            h = 0.25
+                        elif 0.45 <= h < 0.50:
+                            h = 0.50
+                        result.hub_height = h
                     else:
                         # Not a recognized 2PC hub pattern - standard 2PC calculation
                         calculated_thickness = result.drill_depth - 0.15
