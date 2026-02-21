@@ -7937,45 +7937,35 @@ class GCodeDatabaseGUI:
         filter_container = tk.Frame(parent, bg=self.bg_color)
         filter_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        # Row 0 - Title Search Bar (prominent)
-        row0 = tk.Frame(filter_container, bg=self.bg_color)
-        row0.pack(fill=tk.X, pady=(5, 10))
+        # Row 1 - Title search + Program # + dropdowns all on one line
+        row1 = tk.Frame(filter_container, bg=self.bg_color)
+        row1.pack(fill=tk.X, pady=5)
 
-        tk.Label(row0, text="🔍 Title Search:", bg=self.bg_color, fg=self.fg_color,
-                font=("Arial", 10, "bold")).pack(side=tk.LEFT, padx=5)
-        self.filter_title = tk.Entry(row0, bg=self.input_bg, fg=self.fg_color,
-                                     font=("Arial", 10), width=60)
-        self.filter_title.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
-
-        # Bind Enter key to trigger search
+        # Title search
+        tk.Label(row1, text="🔍 Title:", bg=self.bg_color, fg=self.fg_color,
+                font=("Arial", 10, "bold")).pack(side=tk.LEFT, padx=(5, 2))
+        self.filter_title = tk.Entry(row1, bg=self.input_bg, fg=self.fg_color,
+                                     font=("Arial", 10), width=25)
+        self.filter_title.pack(side=tk.LEFT, padx=2)
         self.filter_title.bind('<Return>', lambda _: self.refresh_results())
 
-        # Clear title search button
-        btn_clear_title = tk.Button(row0, text="✕", command=self.clear_title_search,
+        btn_clear_title = tk.Button(row1, text="✕", command=self.clear_title_search,
                                    bg=self.button_bg, fg=self.fg_color,
-                                   font=("Arial", 9, "bold"), width=3)
-        btn_clear_title.pack(side=tk.LEFT, padx=2)
+                                   font=("Arial", 9, "bold"), width=2)
+        btn_clear_title.pack(side=tk.LEFT, padx=(1, 4))
 
-        # Fuzzy search checkbox
         self.fuzzy_search_enabled = tk.BooleanVar(value=False)
-        fuzzy_cb = tk.Checkbutton(row0, text="Fuzzy", variable=self.fuzzy_search_enabled,
+        fuzzy_cb = tk.Checkbutton(row1, text="Fuzzy", variable=self.fuzzy_search_enabled,
                                  command=self.refresh_results,
                                  bg=self.bg_color, fg=self.fg_color,
                                  selectcolor=self.input_bg, activebackground=self.bg_color,
                                  font=("Arial", 9))
-        fuzzy_cb.pack(side=tk.LEFT, padx=5)
+        fuzzy_cb.pack(side=tk.LEFT, padx=(0, 8))
 
-        tk.Label(row0, text="(Use + for multi-term search, e.g., \"lug + 1.25 + 74\". Press Enter to search)",
-                bg=self.bg_color, fg="#888888", font=("Arial", 8, "italic")).pack(side=tk.LEFT, padx=5)
-
-        # Row 1
-        row1 = tk.Frame(filter_container, bg=self.bg_color)
-        row1.pack(fill=tk.X, pady=5)
-
-        # Program Number (supports comma-separated list)
-        tk.Label(row1, text="Program # (or list):", bg=self.bg_color, fg=self.fg_color).pack(side=tk.LEFT, padx=5)
-        self.filter_program = tk.Entry(row1, bg=self.input_bg, fg=self.fg_color, width=20)
-        self.filter_program.pack(side=tk.LEFT, padx=5)
+        # Program Number
+        tk.Label(row1, text="Prog #:", bg=self.bg_color, fg=self.fg_color).pack(side=tk.LEFT, padx=(0, 2))
+        self.filter_program = tk.Entry(row1, bg=self.input_bg, fg=self.fg_color, width=12)
+        self.filter_program.pack(side=tk.LEFT, padx=(2, 5))
         self.filter_program.bind('<KeyRelease>', lambda e: self.refresh_results())
         
         # Spacer Type
