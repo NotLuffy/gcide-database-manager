@@ -165,22 +165,32 @@ class AutoFixer:
     @staticmethod
     def fix_work_offset_z_clearance(content: str) -> Tuple[str, List[str]]:
         """
-        Ensure G55 / G154 P## / G155 positioning lines approach with Z >= 1.0.
+        Ensure G55 / G154 P## / G155 positioning lines approach with Z >= 1.0,
+        then insert a G00 Z0.2 working-clearance rapid immediately after so the
+        subsequent G01 feed only travels from Z0.2, not the full inch from Z1.
 
-        Applies to all tools — turning, chamfer bore, bore, and drill all need
-        at least Z1.0 clearance on the work-offset positioning line.
+        Applies to all tools — turning, chamfer bore, bore, and drill.
 
         Example:
-            G55 G00 X8.55 Z0.1  →  G55 G00 X8.55 Z1.
-            G55 G00 X4.76 Z0.1  →  G55 G00 X4.76 Z1.
+            BEFORE:
+                G55 G00 X8.55 Z0.1 M08    ← too low, and G01 would feed from Z0.1
+                G01 Z-0.1 F0.013
 
-        X and all other words on the line are left unchanged.
+            AFTER:
+                G55 G00 X8.55 Z1. M08     ← safe positioning clearance
+                G00 Z0.2                   ← rapid to working clearance
+                G01 Z-0.1 F0.013          ← feed starts from Z0.2, not Z1.
+
+        If a G00 to positive Z already follows the work-offset line, the
+        G00 Z0.2 insertion is skipped to avoid redundant rapid moves.
+        X and all other words on the original line are left unchanged.
         """
-        lines = content.split('\n')
-        output:  List[str] = []
+        lines  = content.split('\n')
+        output: List[str] = []
         changes: List[str] = []
 
-        for i, line in enumerate(lines, 1):
+        for i, line in enumerate(lines):
+            line_num  = i + 1
             code_part = line.split('(')[0]
 
             if AutoFixer._WORK_OFFSET_PAT.search(code_part):
@@ -188,13 +198,37 @@ class AutoFixer:
                 if z_match:
                     z_val = float(z_match.group(1))
                     if z_val < 1.0:
+                        # Fix Z to Z1. on the positioning line
                         new_code = AutoFixer._Z_WORD_PAT.sub('Z1.', code_part, count=1)
-                        suffix = line[len(code_part):]
+                        suffix   = line[len(code_part):]
                         output.append(new_code + suffix)
-                        changes.append(
-                            f"Line {i}: work offset Z{z_val} → Z1."
-                            f"  [{code_part.strip()[:50]}]"
-                        )
+
+                        # Check if the next non-empty / non-comment line is
+                        # already a G00 to a positive Z — if so, skip insert
+                        already_clear = False
+                        for j in range(i + 1, min(i + 6, len(lines))):
+                            nxt = lines[j].strip()
+                            if not nxt or nxt.startswith('(') or nxt.startswith('%'):
+                                continue
+                            nxt_code = lines[j].split('(')[0]
+                            if AutoFixer._G00_PAT.search(nxt_code):
+                                zm = AutoFixer._Z_WORD_PAT.search(nxt_code)
+                                if zm and float(zm.group(1)) > 0:
+                                    already_clear = True
+                            break   # only look at the first real line
+
+                        if not already_clear:
+                            indent = line[:len(line) - len(line.lstrip())]
+                            output.append(f"{indent}G00 Z0.2")
+                            changes.append(
+                                f"Line {line_num}: work offset Z{z_val} → Z1."
+                                f" + G00 Z0.2  [{code_part.strip()[:50]}]"
+                            )
+                        else:
+                            changes.append(
+                                f"Line {line_num}: work offset Z{z_val} → Z1."
+                                f"  [{code_part.strip()[:50]}]"
+                            )
                         continue
             output.append(line)
 
