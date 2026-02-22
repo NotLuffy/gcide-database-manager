@@ -165,38 +165,25 @@ class AutoFixer:
     @staticmethod
     def fix_work_offset_z_clearance(content: str) -> Tuple[str, List[str]]:
         """
-        Ensure G55 / G154 P## / G155 positioning lines approach with Z >= 1.0,
-        but ONLY when a turning tool (T3xx) is active.
+        Ensure G55 / G154 P## / G155 positioning lines approach with Z >= 1.0.
 
-        Turning tools approach the OD face and need Z1.0 clearance on the
-        work-offset line.  Bore and drill tools operate inside the bore and
-        have different clearance requirements — they are skipped.
+        Applies to all tools — turning, chamfer bore, bore, and drill all need
+        at least Z1.0 clearance on the work-offset positioning line.
 
         Example:
-            T303
-            G55 G00 X8.55 Z0.1  →  G55 G00 X8.55 Z1.   (turning — fixed)
-            T121
-            G55 G00 X4.76 Z0.1  →  unchanged            (bore — not touched)
+            G55 G00 X8.55 Z0.1  →  G55 G00 X8.55 Z1.
+            G55 G00 X4.76 Z0.1  →  G55 G00 X4.76 Z1.
 
-        X and all other words on the fixed line are left unchanged.
+        X and all other words on the line are left unchanged.
         """
         lines = content.split('\n')
         output:  List[str] = []
         changes: List[str] = []
 
-        is_turning_tool = False  # True when active tool is T3xx
-
         for i, line in enumerate(lines, 1):
             code_part = line.split('(')[0]
 
-            # Track tool changes
-            t_match = AutoFixer._TOOL_PAT.search(code_part)
-            if t_match:
-                is_turning_tool = t_match.group(0).upper()[1] == '3'
-                output.append(line)
-                continue
-
-            if is_turning_tool and AutoFixer._WORK_OFFSET_PAT.search(code_part):
+            if AutoFixer._WORK_OFFSET_PAT.search(code_part):
                 z_match = AutoFixer._Z_WORD_PAT.search(code_part)
                 if z_match:
                     z_val = float(z_match.group(1))
@@ -205,7 +192,7 @@ class AutoFixer:
                         suffix = line[len(code_part):]
                         output.append(new_code + suffix)
                         changes.append(
-                            f"Line {i}: turning tool work offset Z{z_val} → Z1."
+                            f"Line {i}: work offset Z{z_val} → Z1."
                             f"  [{code_part.strip()[:50]}]"
                         )
                         continue

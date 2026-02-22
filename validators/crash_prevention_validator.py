@@ -320,18 +320,13 @@ class CrashPreventionValidator:
 
     def _detect_work_offset_low_z(self, lines: List[str]):
         """
-        Detect G55 / G154 P## / G155 positioning lines where Z < 1.0,
-        but ONLY when a turning tool (T3xx) is active.
+        Detect G55 / G154 P## / G155 positioning lines where Z < 1.0.
 
-        Turning tools approach the OD face from outside — they need at least
-        Z1.0 clearance on the work-offset positioning line so a subsequent
-        modal G00 move doesn't plunge directly into the part.
+        Any tool (turning, chamfer bore, bore, drill) approaching a work
+        offset with Z < 1.0 has insufficient clearance above the part face.
+        A subsequent modal G00 move could plunge directly into material.
 
-        Bore and drill tools (T1xx, T2xx) operate inside the bore and have
-        different clearance requirements — this check does not apply to them.
-
-        Example crash sequence (turning tool):
-            T303
+        Example crash sequence:
             G55 G00 X8.55 Z0.1   ← only 0.1" above face — CRASH RISK
             Z-0.225               ← modal G00 plunge with no runway
 
@@ -339,31 +334,23 @@ class CrashPreventionValidator:
         """
         work_offset_pat = re.compile(r'\b(G55|G154\s*P\d+|G155)\b', re.IGNORECASE)
         z_pat           = re.compile(r'Z(-?\d+\.?\d*)', re.IGNORECASE)
-        tool_pat        = re.compile(r'\bT(\d+)\b', re.IGNORECASE)
-
-        is_turning_tool = False  # True when active tool is T3xx
 
         for line_num, line in enumerate(lines, 1):
             if line.strip().startswith('(') or line.strip().startswith('%'):
                 continue
 
             code_part = line.split('(')[0]
-
-            # Track tool changes — turning tool = T3xx (first digit 3)
-            t_match = tool_pat.search(code_part)
-            if t_match:
-                is_turning_tool = t_match.group(1)[0] == '3'
+            if 'G53' in code_part.upper():
                 continue
 
-            # Only flag work-offset lines when a turning tool is active
-            if is_turning_tool and work_offset_pat.search(code_part):
+            if work_offset_pat.search(code_part):
                 z_match = z_pat.search(code_part)
                 if z_match:
                     z_val = float(z_match.group(1))
                     if z_val < 1.0:
                         self.crash_issues.append(
-                            f"Line {line_num}: CRASH RISK - Turning tool work offset "
-                            f"approach Z{z_val} (must be >= Z1.0 for safe clearance). "
+                            f"Line {line_num}: CRASH RISK - Work offset approach "
+                            f"Z{z_val} (must be >= Z1.0 for safe clearance). "
                             f"Change to: Z1.  [{code_part.strip()[:60]}]"
                         )
 
