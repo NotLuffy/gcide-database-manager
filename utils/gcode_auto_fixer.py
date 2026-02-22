@@ -155,6 +155,110 @@ class AutoFixer:
 
         return '\n'.join(fixed_lines), changes
 
+    # Patterns shared by fix_modal_g00_z_plunge
+    _G_CODE_PAT = re.compile(r'\b(G0*[0-3])\b', re.IGNORECASE)
+    _X_PAT      = re.compile(r'X(-?\d+\.?\d*)', re.IGNORECASE)
+
+    @staticmethod
+    def fix_modal_g00_z_plunge(content: str) -> Tuple[str, List[str]]:
+        """
+        Fix bare Z-plunge lines that execute as modal G00 rapids.
+
+        A "modal G00 plunge" is a line containing only a Z coordinate (e.g.
+        'Z-0.005') where the active G-code modal state is G00 — making it a
+        rapid plunge into material with no feed rate protection.
+
+        Fix applied to each detected line:
+          1. Insert 'G00 Z0.2' before it  (safe clearance approach)
+          2. Prepend 'G01' and append feedrate looked up from the NEXT lines
+
+        Before:
+            G55 G00 X5.794 Z1.
+            Z-0.005                  ← modal G00 rapid plunge — CRASH RISK
+
+        After:
+            G55 G00 X5.794 Z1.
+            G00 Z0.2                 ← safe clearance
+            G01 Z-0.005 F0.008       ← controlled feed entry
+
+        Returns:
+            (fixed_content, changes)  — changes is a list of human-readable
+            descriptions of every line modified.
+        """
+        lines = content.split('\n')
+        output:  List[str] = []
+        changes: List[str] = []
+
+        active_g = None   # current modal G-code (G00, G01, G02, G03)
+        last_z   = None   # most recent Z value seen
+
+        def _lookahead_f(start: int) -> str:
+            """Scan forward from start for the first F value."""
+            for j in range(start, min(start + 60, len(lines))):
+                code = lines[j].split('(')[0]
+                m = AutoFixer._F_PAT.search(code)
+                if m:
+                    return m.group(1)
+            return '0.008'
+
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if not stripped or stripped.startswith('%') or stripped.startswith('('):
+                output.append(line)
+                continue
+
+            code_part  = line.split('(')[0]
+            code_upper = code_part.upper()
+
+            # Tool change or tool-home resets modal state
+            if 'G53' in code_upper or AutoFixer._TOOL_PAT.search(code_upper):
+                active_g = None
+                last_z   = None
+                output.append(line)
+                continue
+
+            # Update modal G-code from any explicit G0x on this line
+            g_match = AutoFixer._G_CODE_PAT.search(code_upper)
+            if g_match:
+                raw = g_match.group(1).upper()
+                active_g = ('G0' + raw[1]) if len(raw) == 2 else raw
+
+            # Check for a bare Z-only plunge under modal G00
+            z_match = AutoFixer._Z_PAT.search(code_part)
+            if z_match:
+                z_val = float(z_match.group(1))
+                is_modal_g00 = (active_g == 'G00') and (not g_match)
+                is_z_only    = not AutoFixer._X_PAT.search(code_part)
+                is_plunge    = z_val < 0 and (last_z is None or z_val < last_z)
+
+                if is_modal_g00 and is_z_only and is_plunge:
+                    feedrate = _lookahead_f(i + 1)
+                    indent   = line[:len(line) - len(line.lstrip())]
+
+                    # 1. Safe clearance approach
+                    output.append(f"{indent}G00 Z0.2")
+
+                    # 2. Controlled feed line (preserve any inline comment)
+                    code_stripped = code_part.strip()
+                    fixed = f"{indent}G01 {code_stripped}"
+                    if not AutoFixer._F_PAT.search(fixed):
+                        fixed += f" F{feedrate}"
+                    if '(' in line:
+                        fixed += ' ' + line[line.index('('):]
+
+                    output.append(fixed)
+                    changes.append(
+                        f"Line {i + 1}: modal G00 Z{z_val} → G00 Z0.2 + G01 Z{z_val} F{feedrate}"
+                    )
+                    last_z = z_val
+                    continue
+
+                last_z = z_val
+
+            output.append(line)
+
+        return '\n'.join(output), changes
+
     @staticmethod
     def apply_all_fixes(content, scan_results):
         """

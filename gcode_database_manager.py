@@ -5774,19 +5774,32 @@ class GCodeDatabaseGUI:
         with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
             original = f.read()
 
-        fixed_content, changes = AutoFixer.fix_rapid_to_negative_z(original)
+        # Pass 1: fix explicit G00 rapid-to-negative-Z
+        fixed_content, changes_explicit = AutoFixer.fix_rapid_to_negative_z(original)
+
+        # Pass 2: fix modal G00 bare-Z plunges (runs on already-patched content)
+        fixed_content, changes_modal = AutoFixer.fix_modal_g00_z_plunge(fixed_content)
+
+        changes = changes_explicit + changes_modal
 
         if not changes:
             messagebox.showinfo("Auto-Fix: G00 Crash Risks",
-                                "No explicit G00 rapid-to-negative-Z patterns found.\n"
-                                "File is already safe (or only modal G00 cases exist,\n"
-                                "which require manual review).")
+                                "No G00 crash-risk patterns found in this file.")
             return
 
-        change_summary = "\n".join(f"  • {c}" for c in changes)
+        # Group changes by type for the summary
+        sections = []
+        if changes_explicit:
+            sections.append(f"Explicit G00 rapids ({len(changes_explicit)}):\n" +
+                            "\n".join(f"  • {c}" for c in changes_explicit))
+        if changes_modal:
+            sections.append(f"Modal G00 bare-Z plunges ({len(changes_modal)}):\n" +
+                            "\n".join(f"  • {c}" for c in changes_modal))
+
+        change_summary = "\n\n".join(sections)
         confirmed = messagebox.askyesno(
             "Auto-Fix: G00 Crash Risks",
-            f"Found {len(changes)} line(s) to fix in {program_number}:\n\n"
+            f"Found {len(changes)} fix(es) in {program_number}:\n\n"
             f"{change_summary}\n\n"
             f"A backup will be created before saving.\n\nApply fixes?",
             icon='warning'
