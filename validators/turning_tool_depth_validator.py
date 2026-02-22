@@ -31,20 +31,20 @@ class TurningToolDepthValidator:
     # Production-proven standard depth limits by total thickness
     # Format: {total_thickness: max_z_depth}
     #
-    # For parts < 2.00": conservative limits account for stock sizing variation
+    # For parts < 1.50": conservative limits account for stock sizing variation
     #   (~0.15" tolerance) which is a significant % of thin stock.
-    #   Formula keeps ~0.15" buffer even on undersized stock.
     #
-    # For parts >= 2.00": liberal limits using (total - 0.50").
-    #   Jaw limit = total - 0.30".  New limit leaves 0.20" buffer at ideal
-    #   stock and 0.05" buffer if stock is 0.15" undersized — acceptable
-    #   because 0.15" variation is a much smaller % of thick stock.
+    # For parts >= 1.50": formula is (total - 0.50").
+    #   Jaw limit = total - 0.30".  Leaving 0.20" buffer at ideal stock.
+    #   Example: 1.50" → jaw limit 1.20" → max 1.00" (1.20 - 0.20 = 1.00)
+    #   For parts beyond the table, get_standard_depth() extrapolates using
+    #   the same total - 0.50" formula.
     STANDARD_DEPTH_LIMITS = {
         0.75: 0.35,
         1.00: 0.55,
         1.25: 0.70,
-        1.50: 0.80,
-        1.75: 1.00,
+        1.50: 1.00,
+        1.75: 1.25,
         2.00: 1.50,
         2.25: 1.75,
         2.50: 2.00,
@@ -54,6 +54,21 @@ class TurningToolDepthValidator:
         3.50: 3.00,
         3.75: 3.25,
         4.00: 3.50,
+        4.25: 3.75,
+        4.50: 4.00,
+        4.75: 4.25,
+        5.00: 4.50,
+        5.25: 4.75,
+        5.50: 5.00,
+        5.75: 5.25,
+        6.00: 5.50,
+        6.25: 5.75,
+        6.50: 6.00,
+        6.75: 6.25,
+        7.00: 6.50,
+        7.25: 6.75,
+        7.50: 7.00,
+        8.00: 7.50,
     }
 
     def __init__(self):
