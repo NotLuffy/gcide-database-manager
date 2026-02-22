@@ -156,7 +156,7 @@ class AutoFixer:
         return '\n'.join(fixed_lines), changes
 
     # Patterns shared by fix_modal_g00_z_plunge and fix_work_offset_z_clearance
-    _G_CODE_PAT      = re.compile(r'\b(G0*[0-3])\b', re.IGNORECASE)
+    _G_CODE_PAT      = re.compile(r'\b(G0*[0-3])(?!\d)', re.IGNORECASE)  # (?!\d) handles G01Z (no space)
     _X_PAT           = re.compile(r'X(-?\d+\.?\d*)', re.IGNORECASE)
     _WORK_OFFSET_PAT = re.compile(r'\b(G55|G154\s*P\d+|G155)\b', re.IGNORECASE)
     _Z_WORD_PAT      = re.compile(r'Z(-?\d+\.?\d*)', re.IGNORECASE)

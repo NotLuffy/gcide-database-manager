@@ -82,7 +82,7 @@ class CrashPreventionValidator:
         Note: Skips G53 lines - tool home uses machine coordinates
         """
         # Patterns to detect G-codes and coordinates
-        g_code_pattern = re.compile(r'\b(G0*[0123])\b', re.IGNORECASE)  # Matches G00, G01, G02, G03, G0, G1, G2, G3
+        g_code_pattern = re.compile(r'\b(G0*[0123])(?!\d)', re.IGNORECASE)  # (?!\d) handles G01Z (no space)
         canned_cycle_pattern = re.compile(r'\b(G7[3-6]|G8[0-9])\b', re.IGNORECASE)  # G73-G76, G80-G89 (drilling/boring cycles)
         z_pattern = re.compile(r'Z(-?\d+\.?\d*)', re.IGNORECASE)
 
@@ -174,7 +174,7 @@ class CrashPreventionValidator:
         Note: Skips G53 lines - tool home uses machine coordinates
         """
         # Patterns to detect G-codes and coordinates
-        g_code_pattern = re.compile(r'\b(G0*[0123])\b', re.IGNORECASE)
+        g_code_pattern = re.compile(r'\b(G0*[0123])(?!\d)', re.IGNORECASE)  # (?!\d) handles G01Z (no space)
         canned_cycle_pattern = re.compile(r'\b(G7[3-6]|G8[0-9])\b', re.IGNORECASE)  # G73-G76, G80-G89 (drilling/boring cycles)
         x_pattern = re.compile(r'X(-?\d+\.?\d*)', re.IGNORECASE)
         z_pattern = re.compile(r'Z(-?\d+\.?\d*)', re.IGNORECASE)
