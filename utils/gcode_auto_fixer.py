@@ -93,17 +93,30 @@ class AutoFixer:
         return z_val < 0 and (last_z is None or z_val < last_z)
 
     @staticmethod
-    def _fix_g00_z_line(line: str, z_val: float, prior_lines: List[str], line_num: int):
+    def _fix_g00_z_line(line: str, z_val: float, prior_lines: List[str],
+                        line_num: int, last_z):
         """
-        Convert a G00 Z-plunge line to G01 with feedrate.
+        Convert a G00 Z-plunge line to G01 with feedrate, and prepend a
+        G00 Z0.2 working-clearance rapid when the previous Z was > 0.2
+        (so the G01 feed only travels from Z0.2, not from Z1. or further).
 
-        Returns (fixed_line, change_description).
+        Returns (extra_line_or_None, fixed_line, change_description).
         """
         feedrate   = AutoFixer._lookup_feedrate(line.split('(')[0], prior_lines)
         fixed_line = AutoFixer._G00_PAT.sub('G01', line, count=1)
         if not AutoFixer._F_PAT.search(fixed_line.split('(')[0]):
             fixed_line = AutoFixer._inject_feedrate(fixed_line, feedrate)
-        return fixed_line, f"Line {line_num}: G00 Z{z_val} → G01 Z{z_val} F{feedrate}"
+
+        # Insert G00 Z0.2 before the G01 when the tool is coming from far above
+        indent = line[:len(line) - len(line.lstrip())]
+        if last_z is None or last_z > 0.2:
+            clearance_line = f"{indent}G00 Z0.2"
+            desc = (f"Line {line_num}: G00 Z{z_val} → G00 Z0.2 + G01 Z{z_val} F{feedrate}")
+        else:
+            clearance_line = None
+            desc = f"Line {line_num}: G00 Z{z_val} → G01 Z{z_val} F{feedrate}"
+
+        return clearance_line, fixed_line, desc
 
     @staticmethod
     def fix_rapid_to_negative_z(content: str) -> Tuple[str, List[str]]:
@@ -111,9 +124,12 @@ class AutoFixer:
         Fix explicit G00 rapid moves that plunge to negative Z by converting
         them to G01 (controlled feed) with an appropriate feedrate.
 
+        A G00 Z0.2 working-clearance rapid is inserted before the G01 whenever
+        the prior Z position was above Z0.2, so the feed only travels from
+        Z0.2 to depth rather than from Z1. or further.
+
         Only lines with an EXPLICIT G00 are modified.  Modal G00 cases are
-        left alone — modifying bare coordinate lines can shift the modal state
-        for surrounding moves in unexpected ways.
+        handled by Pass 2 (fix_modal_g00_z_plunge).
 
         Returns:
             (fixed_content, changes)  — changes is a list of human-readable
@@ -144,7 +160,10 @@ class AutoFixer:
                 is_g00_plunge = (AutoFixer._G00_PAT.search(code_part)
                                  and AutoFixer._is_deeper_negative(z_val, last_z))
                 if is_g00_plunge:
-                    fixed_line, desc = AutoFixer._fix_g00_z_line(line, z_val, fixed_lines, line_num)
+                    clearance, fixed_line, desc = AutoFixer._fix_g00_z_line(
+                        line, z_val, fixed_lines, line_num, last_z)
+                    if clearance:
+                        fixed_lines.append(clearance)
                     fixed_lines.append(fixed_line)
                     changes.append(desc)
                     last_z = z_val
