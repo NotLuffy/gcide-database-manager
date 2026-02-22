@@ -4162,10 +4162,20 @@ class ImprovedGCodeParser:
                                     break
 
                 if pcode_agrees_with_drill:
-                    # Title is mislabeled - both P-code and drill agree
-                    result.dimensional_issues.append(
-                        f'TITLE MISLABELED: Title says {title_thickness:.2f}" but drill depth ({calculated_thickness:.2f}") and P-codes both indicate different thickness - TITLE NEEDS CORRECTION'
+                    # Hub-centric exception: some parts (e.g. "SPECIAL") label the
+                    # TOTAL height in the title rather than body-only thickness.
+                    # If title_thickness ≈ pcode_total_height the label is the total —
+                    # suppress the false mislabel alarm.
+                    title_states_total = (
+                        result.spacer_type == 'hub_centric'
+                        and any(abs(title_thickness - pcode_map.get(p, -1)) < 0.02
+                                for p in result.pcodes_found)
                     )
+                    if not title_states_total:
+                        # Title is mislabeled - both P-code and drill agree
+                        result.dimensional_issues.append(
+                            f'TITLE MISLABELED: Title says {title_thickness:.2f}" but drill depth ({calculated_thickness:.2f}") and P-codes both indicate different thickness - TITLE NEEDS CORRECTION'
+                        )
                 else:
                     # CRITICAL: Thickness way off - RED
                     # For hub-centric, show total heights for clarity
@@ -4362,9 +4372,16 @@ class ImprovedGCodeParser:
                                         # Title is mislabeled
                                         if result.spacer_type == 'hub_centric':
                                             hub_h = result.hub_height if result.hub_height else 0.50
-                                            result.dimensional_issues.append(
-                                                f'TITLE MISLABELED: Title says {result.thickness}"+{hub_h}"hub={title_total:.2f}"total but P-code ({actual_desc}) and drill depth ({drill_total:.2f}"total) both indicate {pcode_total:.2f}"total - TITLE NEEDS CORRECTION'
-                                            )
+                                            # Some hub-centric parts (e.g. "SPECIAL") label
+                                            # TOTAL height in the title rather than body-only.
+                                            # If title_thickness ≈ pcode_total the label is
+                                            # already the total — suppress the false alarm.
+                                            if abs(result.thickness - pcode_total) < 0.02:
+                                                pass  # title states total height — valid
+                                            else:
+                                                result.dimensional_issues.append(
+                                                    f'TITLE MISLABELED: Title says {result.thickness}"+{hub_h}"hub={title_total:.2f}"total but P-code ({actual_desc}) and drill depth ({drill_total:.2f}"total) both indicate {pcode_total:.2f}"total - TITLE NEEDS CORRECTION'
+                                                )
                                         elif result.spacer_type in ('2PC LUG', '2PC STUD', '2PC UNSURE') and result.hub_height:
                                             # 2PC with hub - show hub in error message
                                             result.dimensional_issues.append(
