@@ -364,15 +364,18 @@ class AutoFixer:
         Ensure every G01 that opens a new feed-mode block carries an F word.
 
         Rule: when the active modal changes from anything other than G01 to G01
-        (explicit G01 on the line), and that line has no F word, inject the last
-        known feedrate seen anywhere earlier in the file.
+        (explicit G01 on the line), and that line has no F word, inject F0.008
+        as a safe conservative feedrate.  F0.008 is always used instead of a
+        backward lookup because a backward lookup risks injecting a feedrate
+        from a different tool or operation context.  The controller will update
+        F as soon as it reaches the next explicit F word in the program.
 
         Canned-cycle lines (G80-G89), tool-change lines, and G53 lines are
         skipped (they don't affect the feed modal and need no correction).
 
         Example (o48501 line 129):
             G00 Z0.1          ← modal G00
-            G01 Z-0.005       ← switches to G01, NO F  ← fixed to G01 Z-0.005 F0.007
+            G01 Z-0.005       ← switches to G01, NO F  ← fixed to G01 Z-0.005 F0.008
             G01 X4.878 F0.007 ← continuing G01 modal, F present — OK
         """
         lines  = content.split('\n')
@@ -380,7 +383,6 @@ class AutoFixer:
         changes: List[str] = []
 
         active_g = None
-        last_f   = None
 
         for i, line in enumerate(lines, 1):
             stripped = line.strip()
@@ -395,17 +397,11 @@ class AutoFixer:
             if 'G53' in code_upper or AutoFixer._TOOL_PAT.search(code_upper):
                 active_g = None
                 output.append(line)
-                f_m = AutoFixer._F_PAT.search(code_part)
-                if f_m:
-                    last_f = f_m.group(1)
                 continue
 
             # Canned cycles: skip (controller manages their internal motion)
             if AutoFixer._CANNED_PAT.search(code_upper):
                 output.append(line)
-                f_m = AutoFixer._F_PAT.search(code_part)
-                if f_m:
-                    last_f = f_m.group(1)
                 continue
 
             g_match = AutoFixer._G_CODE_PAT.search(code_upper)
@@ -416,19 +412,13 @@ class AutoFixer:
                 # G00→G01 (or G02/G03→G01, or None→G01) transition without F
                 if new_g == 'G01' and active_g != 'G01':
                     if not AutoFixer._F_PAT.search(code_part):
-                        feedrate = last_f if last_f else '0.008'
-                        line = AutoFixer._inject_feedrate(line, feedrate)
+                        line = AutoFixer._inject_feedrate(line, '0.008')
                         changes.append(
-                            f"Line {i}: G01 transition missing F → added F{feedrate}"
+                            f"Line {i}: G01 transition missing F → added F0.008"
                             f"  [{code_part.strip()[:50]}]"
                         )
 
                 active_g = new_g
-
-            # Track last F seen on any line
-            f_m = AutoFixer._F_PAT.search(code_part)
-            if f_m:
-                last_f = f_m.group(1)
 
             output.append(line)
 
