@@ -155,9 +155,50 @@ class AutoFixer:
 
         return '\n'.join(fixed_lines), changes
 
-    # Patterns shared by fix_modal_g00_z_plunge
-    _G_CODE_PAT = re.compile(r'\b(G0*[0-3])\b', re.IGNORECASE)
-    _X_PAT      = re.compile(r'X(-?\d+\.?\d*)', re.IGNORECASE)
+    # Patterns shared by fix_modal_g00_z_plunge and fix_work_offset_z_clearance
+    _G_CODE_PAT      = re.compile(r'\b(G0*[0-3])\b', re.IGNORECASE)
+    _X_PAT           = re.compile(r'X(-?\d+\.?\d*)', re.IGNORECASE)
+    _WORK_OFFSET_PAT = re.compile(r'\b(G55|G154\s*P\d+)\b', re.IGNORECASE)
+    _Z_WORD_PAT      = re.compile(r'Z(-?\d+\.?\d*)', re.IGNORECASE)
+
+    @staticmethod
+    def fix_work_offset_z_clearance(content: str) -> Tuple[str, List[str]]:
+        """
+        Ensure G55 / G154 P## positioning lines approach with Z >= 1.0.
+
+        On any line that contains a G55 or G154 P## work-offset code, if the
+        Z value on that same line is less than 1.0 (including negative values),
+        replace it with Z1.
+
+        Example:
+            G55 G00 X5.794 Z0.5  →  G55 G00 X5.794 Z1.
+            G154 P3 G00 X3.0 Z0.1  →  G154 P3 G00 X3.0 Z1.
+
+        X and all other words on the line are left unchanged.
+        """
+        lines = content.split('\n')
+        output:  List[str] = []
+        changes: List[str] = []
+
+        for i, line in enumerate(lines, 1):
+            code_part = line.split('(')[0]
+            if AutoFixer._WORK_OFFSET_PAT.search(code_part):
+                z_match = AutoFixer._Z_WORD_PAT.search(code_part)
+                if z_match:
+                    z_val = float(z_match.group(1))
+                    if z_val < 1.0:
+                        # Replace only the Z word, keep everything else
+                        new_code = AutoFixer._Z_WORD_PAT.sub('Z1.', code_part, count=1)
+                        # Reattach any inline comment that was after the code
+                        suffix = line[len(code_part):]
+                        output.append(new_code + suffix)
+                        changes.append(
+                            f"Line {i}: work offset Z{z_val} → Z1.  [{code_part.strip()[:50]}]"
+                        )
+                        continue
+            output.append(line)
+
+        return '\n'.join(output), changes
 
     @staticmethod
     def fix_modal_g00_z_plunge(content: str) -> Tuple[str, List[str]]:

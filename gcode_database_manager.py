@@ -5774,13 +5774,16 @@ class GCodeDatabaseGUI:
         with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
             original = f.read()
 
+        # Pass 0: fix G55/G154 P## lines where Z < 1.0 (work-offset clearance)
+        fixed_content, changes_offset = AutoFixer.fix_work_offset_z_clearance(original)
+
         # Pass 1: fix explicit G00 rapid-to-negative-Z
-        fixed_content, changes_explicit = AutoFixer.fix_rapid_to_negative_z(original)
+        fixed_content, changes_explicit = AutoFixer.fix_rapid_to_negative_z(fixed_content)
 
         # Pass 2: fix modal G00 bare-Z plunges (runs on already-patched content)
         fixed_content, changes_modal = AutoFixer.fix_modal_g00_z_plunge(fixed_content)
 
-        changes = changes_explicit + changes_modal
+        changes = changes_offset + changes_explicit + changes_modal
 
         if not changes:
             messagebox.showinfo("Auto-Fix: G00 Crash Risks",
@@ -5789,6 +5792,9 @@ class GCodeDatabaseGUI:
 
         # Group changes by type for the summary
         sections = []
+        if changes_offset:
+            sections.append(f"Work-offset Z clearance ({len(changes_offset)}):\n" +
+                            "\n".join(f"  • {c}" for c in changes_offset))
         if changes_explicit:
             sections.append(f"Explicit G00 rapids ({len(changes_explicit)}):\n" +
                             "\n".join(f"  • {c}" for c in changes_explicit))
