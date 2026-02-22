@@ -13247,15 +13247,30 @@ class GCodeDatabaseGUI:
         
         program_number = self.tree.item(selected[0])['values'][0]
         
-        # Get file path from database
+        # Get file path and crash issues from database
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        cursor.execute("SELECT file_path FROM programs WHERE program_number = ?", (program_number,))
+        cursor.execute("SELECT file_path, crash_issues FROM programs WHERE program_number = ?",
+                       (program_number,))
         result = cursor.fetchone()
         conn.close()
-        
+
         if result and result[0]:
-            filepath = result[0]
+            filepath  = result[0]
+            raw_crash = result[1]
+
+            # Extract line numbers from stored crash issue messages ("Line X: ...")
+            crash_lines = []
+            if raw_crash:
+                try:
+                    issues = json.loads(raw_crash)
+                    for msg in issues:
+                        m = re.search(r'Line (\d+):', msg)
+                        if m:
+                            crash_lines.append(int(m.group(1)))
+                except Exception:
+                    pass
+
             if os.path.exists(filepath):
                 # AUTO-BACKUP: Create version archive before opening file for editing
                 try:
@@ -13283,7 +13298,8 @@ class GCodeDatabaseGUI:
                 if hasattr(self, 'repository_path') and self.repository_path in filepath:
                     repo_mgr = RepositoryManager(self.db_path, self.repository_path)
 
-                # Launch integrated text editor
+                # Launch integrated text editor — pass crash lines so they are
+                # highlighted immediately and the view scrolls to the first one
                 editor = GCodeTextEditor(
                     parent=self.root,
                     file_path=filepath,
@@ -13291,7 +13307,8 @@ class GCodeDatabaseGUI:
                     on_save_callback=lambda: self.refresh_selected_file(),
                     bg_color=self.bg_color,
                     fg_color=self.fg_color,
-                    repository_manager=repo_mgr
+                    repository_manager=repo_mgr,
+                    crash_lines=crash_lines or None
                 )
             else:
                 messagebox.showerror("File Not Found", f"File not found:\n{filepath}")

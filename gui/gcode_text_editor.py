@@ -227,7 +227,8 @@ class GCodeTextEditor:
     def __init__(self, parent, file_path: str, program_number: str,
                  on_save_callback: Optional[Callable] = None,
                  bg_color: str = '#1e1e1e', fg_color: str = '#d4d4d4',
-                 repository_manager = None):
+                 repository_manager = None,
+                 crash_lines: list = None):
         """
         Initialize G-code text editor.
 
@@ -239,6 +240,7 @@ class GCodeTextEditor:
             bg_color: Background color
             fg_color: Foreground color
             repository_manager: RepositoryManager instance for versioning
+            crash_lines: Line numbers of known crash risks to highlight on open
         """
         self.file_path = file_path
         self.program_number = program_number
@@ -248,7 +250,7 @@ class GCodeTextEditor:
         self.repository_manager = repository_manager
         self.modified = False
         self.original_content = ""
-        self.error_lines = []  # Lines with validation errors
+        self.error_lines = list(crash_lines) if crash_lines else []
         self.current_playback_line = 1  # Current line for playback
         self.syntax_highlighting_enabled = True
 
@@ -265,6 +267,10 @@ class GCodeTextEditor:
 
         # Create UI
         self._create_ui()
+
+        # If crash lines were passed, scroll to the first one after the UI renders
+        if self.error_lines:
+            self.dialog.after(200, self._scroll_to_first_error)
 
         # Bind close event
         self.dialog.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -456,14 +462,22 @@ class GCodeTextEditor:
 
     def _highlight_error_lines(self):
         """Highlight lines with validation errors"""
-        # Remove previous error highlights
         self.text_widget.tag_remove('error', '1.0', tk.END)
-
-        # Apply error highlighting
         for line_num in self.error_lines:
             self.text_widget.tag_add('error',
                                     f"{line_num}.0",
                                     f"{line_num}.end")
+
+    def _scroll_to_first_error(self):
+        """Highlight crash-risk lines and scroll to the first one."""
+        self._highlight_error_lines()
+        self.line_numbers.redraw()
+        if self.error_lines:
+            first = min(self.error_lines)
+            self.text_widget.see(f"{first}.0")
+            # Centre the line in the viewport
+            self.text_widget.mark_set("insert", f"{first}.0")
+            self.line_numbers.redraw()
 
     def show_find_dialog(self):
         """Show Find/Replace dialog"""
