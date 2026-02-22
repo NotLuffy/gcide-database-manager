@@ -45,6 +45,9 @@ class CrashPreventionValidator:
         # CRITICAL: Negative Z before tool home (G53)
         self._detect_negative_z_before_tool_home(lines)
 
+        # CRITICAL: G55/G154 P## positioning with Z < 1.0 (insufficient clearance)
+        self._detect_work_offset_low_z(lines)
+
         # WARNING: Jaw clearance violations (if we have thickness)
         if parse_result and parse_result.thickness:
             self._detect_jaw_clearance_violations(lines, parse_result)
@@ -314,6 +317,39 @@ class CrashPreventionValidator:
                         f"Add: G00 Z0.2 before G53 (best practice for safety margin)"
                     )
                 # PASS: Z0 or positive is safe, or no Z movement found (tool at home)
+
+    def _detect_work_offset_low_z(self, lines: List[str]):
+        """
+        Detect G55 / G154 P## positioning lines where Z < 1.0.
+
+        When a work-offset line positions the tool with Z < 1.0 the tool is
+        too close to the part before any subsequent modal G00 move happens,
+        leaving no safe clearance margin.
+
+        Example crash sequence:
+            G55 G00 X8.55 Z0.1   ← only 0.1" above part — if next move is modal
+            Z-0.225               ← modal G00 plunge with barely any runway
+
+        Fix: raise Z on the work-offset line to Z1.
+        """
+        work_offset_pat = re.compile(r'\b(G55|G154\s*P\d+)\b', re.IGNORECASE)
+        z_pat           = re.compile(r'Z(-?\d+\.?\d*)', re.IGNORECASE)
+
+        for line_num, line in enumerate(lines, 1):
+            if line.strip().startswith('(') or line.strip().startswith('%'):
+                continue
+
+            code_part = line.split('(')[0]
+            if work_offset_pat.search(code_part):
+                z_match = z_pat.search(code_part)
+                if z_match:
+                    z_val = float(z_match.group(1))
+                    if z_val < 1.0:
+                        self.crash_issues.append(
+                            f"Line {line_num}: CRASH RISK - Work offset approach Z{z_val} "
+                            f"(must be >= Z1.0 for safe clearance). "
+                            f"Change to: Z1.  [{code_part.strip()[:60]}]"
+                        )
 
     def _detect_jaw_clearance_violations(self, lines: List[str], parse_result):
         """
