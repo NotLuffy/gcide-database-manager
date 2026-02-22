@@ -12,6 +12,7 @@ This parser provides high-accuracy detection of:
 - P-codes and validation
 """
 
+import math
 import os
 import re
 from typing import Optional, Dict, List, Tuple
@@ -4262,6 +4263,12 @@ class ImprovedGCodeParser:
                 if result.spacer_type == 'hub_centric':
                     hub_h = result.hub_height if result.hub_height else 0.50
                     total_height = result.thickness + hub_h
+                elif (result.spacer_type in ('2PC LUG', '2PC STUD', '2PC UNSURE')
+                        and result.hub_height and result.hub_height <= 0.25):
+                    # 2PC with small hub (≤ 0.25") not stated in title:
+                    # add hub to title thickness and round UP to next 0.25" increment
+                    raw_total = result.thickness + result.hub_height
+                    total_height = math.ceil(round(raw_total, 6) / 0.25) * 0.25
                 else:
                     total_height = result.thickness
 
@@ -4272,6 +4279,25 @@ class ImprovedGCodeParser:
                     pcode_map = self._get_pcode_table_l2_l3()
                 else:
                     pcode_map = {}  # Unknown lathe, skip validation
+
+                # For 2PC programs: if hub wasn't detected yet but the actual P-codes
+                # imply a small unstated hub (≤ 0.25"), adjust total_height so the
+                # P-code validation accepts it.
+                # Example: title=1.25, hub=0.22 → raw=1.47 → round up → 1.50 → P-code OK.
+                if (result.spacer_type in ('2PC LUG', '2PC STUD', '2PC UNSURE')
+                        and pcode_map and result.pcodes_found
+                        and not (result.hub_height and result.hub_height <= 0.25)):
+                    for p in result.pcodes_found:
+                        if p in pcode_map:
+                            implied_hub = pcode_map[p] - result.thickness
+                            if 0 < implied_hub <= 0.25:
+                                raw_total = result.thickness + implied_hub
+                                adjusted = math.ceil(round(raw_total, 6) / 0.25) * 0.25
+                                if abs(adjusted - pcode_map[p]) < 0.01:
+                                    total_height = adjusted
+                                    if not result.hub_height:
+                                        result.hub_height = round(implied_hub, 3)
+                                    break
 
                 # Find expected P-code (odd number, OP1)
                 expected_pcode = None
