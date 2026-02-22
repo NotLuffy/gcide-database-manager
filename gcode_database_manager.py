@@ -5783,11 +5783,14 @@ class GCodeDatabaseGUI:
         # Pass 2: fix modal G00 bare-Z plunges (runs on already-patched content)
         fixed_content, changes_modal = AutoFixer.fix_modal_g00_z_plunge(fixed_content)
 
-        changes = changes_offset + changes_explicit + changes_modal
+        # Pass 3: ensure every G01 transition from G00 carries an F word
+        fixed_content, changes_feed = AutoFixer.fix_g01_missing_feedrate(fixed_content)
+
+        changes = changes_offset + changes_explicit + changes_modal + changes_feed
 
         if not changes:
             messagebox.showinfo("Auto-Fix: G00 Crash Risks",
-                                "No G00 crash-risk patterns found in this file.")
+                                "No crash-risk patterns found in this file.")
             return
 
         # Group changes by type for the summary
@@ -5801,6 +5804,9 @@ class GCodeDatabaseGUI:
         if changes_modal:
             sections.append(f"Modal G00 bare-Z plunges ({len(changes_modal)}):\n" +
                             "\n".join(f"  • {c}" for c in changes_modal))
+        if changes_feed:
+            sections.append(f"G01 transitions missing feedrate ({len(changes_feed)}):\n" +
+                            "\n".join(f"  • {c}" for c in changes_feed))
 
         change_summary = "\n\n".join(sections)
         confirmed = messagebox.askyesno(

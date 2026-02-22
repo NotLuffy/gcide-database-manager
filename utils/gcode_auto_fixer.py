@@ -160,6 +160,7 @@ class AutoFixer:
     _X_PAT           = re.compile(r'X(-?\d+\.?\d*)', re.IGNORECASE)
     _WORK_OFFSET_PAT = re.compile(r'\b(G55|G154\s*P\d+)\b', re.IGNORECASE)
     _Z_WORD_PAT      = re.compile(r'Z(-?\d+\.?\d*)', re.IGNORECASE)
+    _CANNED_PAT      = re.compile(r'\bG8[0-9]\b', re.IGNORECASE)   # G80-G89 canned cycles
 
     @staticmethod
     def fix_work_offset_z_clearance(content: str) -> Tuple[str, List[str]]:
@@ -258,6 +259,11 @@ class AutoFixer:
                 output.append(line)
                 continue
 
+            # Canned cycle lines (G80-G89) are handled by the controller — skip
+            if AutoFixer._CANNED_PAT.search(code_upper):
+                output.append(line)
+                continue
+
             # Update modal G-code from any explicit G0x on this line
             g_match = AutoFixer._G_CODE_PAT.search(code_upper)
             if g_match:
@@ -295,6 +301,82 @@ class AutoFixer:
                     continue
 
                 last_z = z_val
+
+            output.append(line)
+
+        return '\n'.join(output), changes
+
+    @staticmethod
+    def fix_g01_missing_feedrate(content: str) -> Tuple[str, List[str]]:
+        """
+        Ensure every G01 that opens a new feed-mode block carries an F word.
+
+        Rule: when the active modal changes from anything other than G01 to G01
+        (explicit G01 on the line), and that line has no F word, inject the last
+        known feedrate seen anywhere earlier in the file.
+
+        Canned-cycle lines (G80-G89), tool-change lines, and G53 lines are
+        skipped (they don't affect the feed modal and need no correction).
+
+        Example (o48501 line 129):
+            G00 Z0.1          ← modal G00
+            G01 Z-0.005       ← switches to G01, NO F  ← fixed to G01 Z-0.005 F0.007
+            G01 X4.878 F0.007 ← continuing G01 modal, F present — OK
+        """
+        lines  = content.split('\n')
+        output: List[str] = []
+        changes: List[str] = []
+
+        active_g = None
+        last_f   = None
+
+        for i, line in enumerate(lines, 1):
+            stripped = line.strip()
+            if not stripped or stripped.startswith('%') or stripped.startswith('('):
+                output.append(line)
+                continue
+
+            code_part  = line.split('(')[0]
+            code_upper = code_part.upper()
+
+            # Tool change / tool-home resets modal state
+            if 'G53' in code_upper or AutoFixer._TOOL_PAT.search(code_upper):
+                active_g = None
+                output.append(line)
+                f_m = AutoFixer._F_PAT.search(code_part)
+                if f_m:
+                    last_f = f_m.group(1)
+                continue
+
+            # Canned cycles: skip (controller manages their internal motion)
+            if AutoFixer._CANNED_PAT.search(code_upper):
+                output.append(line)
+                f_m = AutoFixer._F_PAT.search(code_part)
+                if f_m:
+                    last_f = f_m.group(1)
+                continue
+
+            g_match = AutoFixer._G_CODE_PAT.search(code_upper)
+            if g_match:
+                raw_g  = g_match.group(1).upper()
+                new_g  = ('G0' + raw_g[-1]) if len(raw_g) == 2 else raw_g
+
+                # G00→G01 (or G02/G03→G01, or None→G01) transition without F
+                if new_g == 'G01' and active_g != 'G01':
+                    if not AutoFixer._F_PAT.search(code_part):
+                        feedrate = last_f if last_f else '0.008'
+                        line = AutoFixer._inject_feedrate(line, feedrate)
+                        changes.append(
+                            f"Line {i}: G01 transition missing F → added F{feedrate}"
+                            f"  [{code_part.strip()[:50]}]"
+                        )
+
+                active_g = new_g
+
+            # Track last F seen on any line
+            f_m = AutoFixer._F_PAT.search(code_part)
+            if f_m:
+                last_f = f_m.group(1)
 
             output.append(line)
 
