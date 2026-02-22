@@ -4383,10 +4383,15 @@ class ImprovedGCodeParser:
                                                     f'TITLE MISLABELED: Title says {result.thickness}"+{hub_h}"hub={title_total:.2f}"total but P-code ({actual_desc}) and drill depth ({drill_total:.2f}"total) both indicate {pcode_total:.2f}"total - TITLE NEEDS CORRECTION'
                                                 )
                                         elif result.spacer_type in ('2PC LUG', '2PC STUD', '2PC UNSURE') and result.hub_height:
-                                            # 2PC with hub - show hub in error message
-                                            result.dimensional_issues.append(
-                                                f'TITLE MISLABELED: Title says {result.thickness}"+{result.hub_height:.2f}"hub={title_total:.2f}"total but P-code ({actual_desc}) and drill depth ({drill_total:.2f}"total) both indicate {pcode_total:.2f}"total - TITLE NEEDS CORRECTION'
-                                            )
+                                            # 2PC with hub - but some 2PC titles state TOTAL height
+                                            # not body-only.  If title_thickness ≈ pcode_total the
+                                            # label is already the total — suppress the false alarm.
+                                            if abs(result.thickness - pcode_total) < 0.02:
+                                                pass  # title states total height — valid
+                                            else:
+                                                result.dimensional_issues.append(
+                                                    f'TITLE MISLABELED: Title says {result.thickness}"+{result.hub_height:.2f}"hub={title_total:.2f}"total but P-code ({actual_desc}) and drill depth ({drill_total:.2f}"total) both indicate {pcode_total:.2f}"total - TITLE NEEDS CORRECTION'
+                                                )
                                         elif result.spacer_type == 'steel_ring' and result.hub_height:
                                             # Steel ring with unstated hub - show hub in error message
                                             result.dimensional_issues.append(
