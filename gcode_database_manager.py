@@ -12477,19 +12477,21 @@ class GCodeDatabaseGUI:
                 # We'll apply fuzzy matching to results later
                 pass
             else:
-                # Standard exact search
+                # Standard search - matches title OR program_number
                 # Check if using + operator for multi-term search
                 if '+' in search_text:
                     # Split by + and strip whitespace from each term
                     search_terms = [term.strip() for term in search_text.split('+') if term.strip()]
 
-                    # Each term must be present (AND logic)
+                    # Each term must be present in title OR program_number (AND logic across terms)
                     for term in search_terms:
-                        query += " AND title LIKE ?"
+                        query += " AND (title LIKE ? OR program_number LIKE ?)"
+                        params.append(f"%{term}%")
                         params.append(f"%{term}%")
                 else:
-                    # Single term search
-                    query += " AND title LIKE ?"
+                    # Single term search - match title or program number
+                    query += " AND (title LIKE ? OR program_number LIKE ?)"
+                    params.append(f"%{search_text}%")
                     params.append(f"%{search_text}%")
 
         # Program number filter - supports comma-separated values

@@ -1,0 +1,126 @@
+SINGLE-PASS HUB FACE FILES — MANUAL REVIEW NEEDED
+======================================================================
+Total: 84 files
+
+These programs take only ONE hub face pass (to Z-0.25")
+then immediately switch to OD turning.
+DB shows hub_height >= 0.50" — they may be missing passes.
+
+Program      Type           Hub Ht     Round    Thick      File
+------------------------------------------------------------------------------------------
+o05000       hub_centric    0.500"     5.75     1.7500     C:/Users/John Wayne/Documents/File organizer/repository\o05000.nc
+o55001       hub_centric    0.500"     5.75     1.7500     C:/Users/John Wayne/Documents/File organizer/repository\o55001.nc
+o58101       hub_centric    0.500"     5.75     2.0000     C:/Users/John Wayne/Documents/File organizer/repository\o58101.nc
+o58103       hub_centric    0.500"     5.75     0.4724     C:/Users/John Wayne/Documents/File organizer/repository\o58103.nc
+o58104       hub_centric    0.500"     5.75     2.2500     C:/Users/John Wayne/Documents/File organizer/repository\o58104.nc
+o58114       hub_centric    0.730"     5.75     0.7671     C:/Users/John Wayne/Documents/File organizer/repository\o58114.nc
+o58121       hub_centric    0.500"     5.75     1.2500     C:/Users/John Wayne/Documents/File organizer/repository\o58121.nc
+o58123       hub_centric    0.500"     5.75     1.2500     C:/Users/John Wayne/Documents/File organizer/repository\o58123.nc
+o58124       hub_centric    0.500"     5.75     2.0000     C:/Users/John Wayne/Documents/File organizer/repository\o58124.nc
+o58126       hub_centric    0.500"     5.75     1.0000     C:/Users/John Wayne/Documents/File organizer/repository\o58126.nc
+o58129       hub_centric    0.500"     5.75     1.5000     C:/Users/John Wayne/Documents/File organizer/repository\o58129.nc
+o58135       hub_centric    0.600"     5.75     1.2500     C:/Users/John Wayne/Documents/File organizer/repository\o58135.nc
+o58137       hub_centric    0.500"     5.75     1.5000     C:/Users/John Wayne/Documents/File organizer/repository\o58137.nc
+o58143       hub_centric    0.500"     5.75     1.0000     C:/Users/John Wayne/Documents/File organizer/repository\o58143.nc
+o58146       hub_centric    0.500"     5.75     1.0000     C:/Users/John Wayne/Documents/File organizer/repository\o58146.nc
+o58149       step           0.500"     5.75     0.3937     C:/Users/John Wayne/Documents/File organizer/repository\o58149.nc
+o58150       hub_centric    0.560"     5.75     0.5906     C:/Users/John Wayne/Documents/File organizer/repository\o58150.nc
+o58154       hub_centric    0.500"     5.75     2.2500     C:/Users/John Wayne/Documents/File organizer/repository\o58154.nc
+o58158       hub_centric    0.500"     5.75     2.5000     C:/Users/John Wayne/Documents/File organizer/repository\o58158.nc
+o58164       hub_centric    0.500"     5.75     2.5000     C:/Users/John Wayne/Documents/File organizer/repository\o58164.nc
+o58167       hub_centric    0.500"     5.75     1.5000     C:/Users/John Wayne/Documents/File organizer/repository\o58167.nc
+o58168       hub_centric    0.500"     5.75     1.2500     C:/Users/John Wayne/Documents/File organizer/repository\o58168.nc
+o58169       hub_centric    0.500"     5.75     1.7500     C:/Users/John Wayne/Documents/File organizer/repository\o58169.nc
+o58171       hub_centric    0.500"     5.75     0.6693     C:/Users/John Wayne/Documents/File organizer/repository\o58171.nc
+o58172       hub_centric    0.500"     5.75     1.7500     C:/Users/John Wayne/Documents/File organizer/repository\o58172.nc
+o58175       hub_centric    0.500"     5.75     0.7500     C:/Users/John Wayne/Documents/File organizer/repository\o58175.nc
+o58176       hub_centric    0.500"     5.75     1.7500     C:/Users/John Wayne/Documents/File organizer/repository\o58176.nc
+o58178       hub_centric    0.500"     5.75     1.5000     C:/Users/John Wayne/Documents/File organizer/repository\o58178.nc
+o58185       hub_centric    0.500"     5.75     3.4000     C:/Users/John Wayne/Documents/File organizer/repository\o58185.nc
+o58186       hub_centric    0.500"     5.75     0.2520     C:/Users/John Wayne/Documents/File organizer/repository\o58186.nc
+o61001       hub_centric    0.500"     6.0      1.2500     C:/Users/John Wayne/Documents/File organizer/repository\o61001.nc
+o61002       hub_centric    0.500"     6.0      1.5000     C:/Users/John Wayne/Documents/File organizer/repository\o61002.nc
+o61003       hub_centric    0.500"     6.0      1.7500     C:/Users/John Wayne/Documents/File organizer/repository\o61003.nc
+o61004       hub_centric    0.500"     6.0      1.7500     C:/Users/John Wayne/Documents/File organizer/repository\o61004.nc
+o61009       hub_centric    0.500"     6.0      1.2500     C:/Users/John Wayne/Documents/File organizer/repository\o61009.nc
+o61010       hub_centric    0.500"     6.0      0.7874     C:/Users/John Wayne/Documents/File organizer/repository\o61010.nc
+o61011       hub_centric    2.470"     6.0      1.0000     C:/Users/John Wayne/Documents/File organizer/repository\o61011.nc
+o61014       hub_centric    0.500"     6.0      1.5000     C:/Users/John Wayne/Documents/File organizer/repository\o61014.nc
+o61017       hub_centric    0.500"     6.0      1.7500     C:/Users/John Wayne/Documents/File organizer/repository\o61017.nc
+o61019       hub_centric    0.500"     6.0      2.0000     C:/Users/John Wayne/Documents/File organizer/repository\o61019.nc
+o61020       hub_centric    0.500"     6.0      1.0000     C:/Users/John Wayne/Documents/File organizer/repository\o61020.nc
+o61021       hub_centric    0.500"     6.0      0.7874     C:/Users/John Wayne/Documents/File organizer/repository\o61021.nc
+o61022       hub_centric    1.240"     6.0      1.2500     C:/Users/John Wayne/Documents/File organizer/repository\o61022.nc
+o61025       hub_centric    0.500"     6.0      0.7874     C:/Users/John Wayne/Documents/File organizer/repository\o61025.nc
+o61027       hub_centric    0.560"     6.0      0.7874     C:/Users/John Wayne/Documents/File organizer/repository\o61027.nc
+o61032       hub_centric    0.500"     6.0      1.0000     C:/Users/John Wayne/Documents/File organizer/repository\o61032.nc
+o61039       hub_centric    0.500"     6.0      2.0000     C:/Users/John Wayne/Documents/File organizer/repository\o61039.nc
+o61043       hub_centric    0.500"     6.0      0.7500     C:/Users/John Wayne/Documents/File organizer/repository\o61043.nc
+o61045       hub_centric    0.500"     6.0      1.5000     C:/Users/John Wayne/Documents/File organizer/repository\o61045.nc
+o61050       hub_centric    0.500"     6.0      1.5000     C:/Users/John Wayne/Documents/File organizer/repository\o61050.nc
+o61051       hub_centric    0.500"     6.0      1.0000     C:/Users/John Wayne/Documents/File organizer/repository\o61051.nc
+o61058       hub_centric    0.500"     6.0      2.5000     C:/Users/John Wayne/Documents/File organizer/repository\o61058.nc
+o61061       hub_centric    0.500"     6.0      1.5000     C:/Users/John Wayne/Documents/File organizer/repository\o61061.nc
+o61062       hub_centric    0.500"     6.0      1.2500     C:/Users/John Wayne/Documents/File organizer/repository\o61062.nc
+o61063       hub_centric    0.500"     6.0      1.5000     C:/Users/John Wayne/Documents/File organizer/repository\o61063.nc
+o61064       hub_centric    0.500"     6.0      1.5000     C:/Users/John Wayne/Documents/File organizer/repository\o61064.nc
+o40000       hub_centric    0.500"     7.0      2.0000     C:/Users/John Wayne/Documents/File organizer/repository\o40000.nc
+o73097       hub_centric    0.510"     7.0      1.2500     C:/Users/John Wayne/Documents/File organizer/repository\o73097.nc
+o73209       hub_centric    0.500"     7.0      1.2500     C:/Users/John Wayne/Documents/File organizer/repository\o73209.nc
+o73211       hub_centric    0.500"     7.0      1.0000     C:/Users/John Wayne/Documents/File organizer/repository\o73211.nc
+o73426       hub_centric    0.500"     7.0      1.2500     C:/Users/John Wayne/Documents/File organizer/repository\o73426.nc
+o75307       hub_centric    0.500"     7.0      1.7500     C:/Users/John Wayne/Documents/File organizer/repository\o75307.nc
+o00757       hub_centric    0.500"     7.5      1.5000     C:/Users/John Wayne/Documents/File organizer/repository\o00757.nc
+o75101       hub_centric    0.500"     7.5      1.2500     C:/Users/John Wayne/Documents/File organizer/repository\o75101.nc
+o08001       2PC STUD       0.500"     8.0      0.7500     C:/Users/John Wayne/Documents/File organizer/repository\o08001.nc
+o80012       hub_centric    0.500"     8.0      2.0000     C:/Users/John Wayne/Documents/File organizer/repository\o80012.nc
+o88008       2PC STUD       0.500"     8.0      0.7500     C:/Users/John Wayne/Documents/File organizer/repository\o88008.nc
+o89000       hub_centric    0.650"     8.0      0.8000     C:/Users/John Wayne/Documents/File organizer/repository\o89000.nc
+o38801       hub_centric    0.600"     8.5      1.2500     C:/Users/John Wayne/Documents/File organizer/repository\o38801.nc
+o09904       hub_centric    0.500"     9.5      4.0000     C:/Users/John Wayne/Documents/File organizer/repository\o09904.nc
+o09909       hub_centric    0.500"     9.5      1.0000     C:/Users/John Wayne/Documents/File organizer/repository\o09909.nc
+o09911       hub_centric    0.500"     9.5      2.5000     C:/Users/John Wayne/Documents/File organizer/repository\o09911.nc
+o95012       hub_centric    0.500"     9.5      4.0000     C:/Users/John Wayne/Documents/File organizer/repository\o95012.nc
+o95101       2PC STUD       0.500"     9.5      0.7500     C:/Users/John Wayne/Documents/File organizer/repository\o95101.nc
+o95111       2PC STUD       0.500"     9.5      0.7500     C:/Users/John Wayne/Documents/File organizer/repository\o95111.nc
+o13001       2PC LUG        0.500"     13.0     1.0000     C:/Users/John Wayne/Documents/File organizer/repository\o13001.nc
+o13005       2PC LUG        0.500"     13.0     2.0000     C:/Users/John Wayne/Documents/File organizer/repository\o13005.nc
+o13007       2PC LUG        0.500"     13.0     1.0000     C:/Users/John Wayne/Documents/File organizer/repository\o13007.nc
+o13014       hub_centric    0.500"     13.0     1.0000     C:/Users/John Wayne/Documents/File organizer/repository\o13014.nc
+o13200       hub_centric    0.500"     13.0     1.2500     C:/Users/John Wayne/Documents/File organizer/repository\o13200.nc
+o13210       hub_centric    0.500"     13.0     1.0000     C:/Users/John Wayne/Documents/File organizer/repository\o13210.nc
+o13770       hub_centric    0.500"     13.0     3.0000     C:/Users/John Wayne/Documents/File organizer/repository\o13770.nc
+o13777       hub_centric    0.500"     13.0     3.0000     C:/Users/John Wayne/Documents/File organizer/repository\o13777.nc
+o22222       hub_centric    0.600"     13.0     1.0000     C:/Users/John Wayne/Documents/File organizer/repository\o22222.nc
+
+
+NO-Z025-S2 FILES (different hub face structure)
+======================================================================
+Total: 24 files
+
+Program      Type           Hub Ht     Round    Thick      Reason
+------------------------------------------------------------------------------------------
+o61035       hub_centric    0.500"     6.0      1.2500     no_z025_on_s2 | C:/Users/John Wayne/Documents/File organizer/repository\o61035.nc
+o62544       hub_centric    0.500"     6.25     1.2500     no_z025_on_s2 | C:/Users/John Wayne/Documents/File organizer/repository\o62544.nc
+o62599       hub_centric    0.500"     6.25     1.2500     no_z025_on_s2 | C:/Users/John Wayne/Documents/File organizer/repository\o62599.nc
+o63668       hub_centric    0.500"     6.25     2.5000     no_z025_on_s2 | C:/Users/John Wayne/Documents/File organizer/repository\o63668.nc
+o63670       hub_centric    0.680"     6.25     1.5748     no_z025_on_s2 | C:/Users/John Wayne/Documents/File organizer/repository\o63670.nc
+o63671       hub_centric    0.500"     6.25     1.8504     no_z025_on_s2 | C:/Users/John Wayne/Documents/File organizer/repository\o63671.nc
+o63679       hub_centric    0.500"     6.25     2.5000     no_z025_on_s2 | C:/Users/John Wayne/Documents/File organizer/repository\o63679.nc
+o63704       hub_centric    0.500"     6.25     1.0000     no_z025_on_s2 | C:/Users/John Wayne/Documents/File organizer/repository\o63704.nc
+o63727       hub_centric    0.500"     6.25     2.0000     no_z025_on_s2 | C:/Users/John Wayne/Documents/File organizer/repository\o63727.nc
+o63757       2PC STUD       0.500"     6.25     0.7500     no_z025_on_s2 | C:/Users/John Wayne/Documents/File organizer/repository\o63757.nc
+o65005       2PC LUG        2.000"     6.5      3.1693     no_z025_on_s2 | C:/Users/John Wayne/Documents/File organizer/repository\o65005.nc
+o65011       hub_centric    0.500"     6.5      0.7874     no_z025_on_s2 | C:/Users/John Wayne/Documents/File organizer/repository\o65011.nc
+o65012       hub_centric    0.500"     6.5      1.0000     no_z025_on_s2 | C:/Users/John Wayne/Documents/File organizer/repository\o65012.nc
+o65693       hub_centric    0.500"     6.5      1.5000     no_z025_on_s2 | C:/Users/John Wayne/Documents/File organizer/repository\o65693.nc
+o73117       hub_centric    0.500"     7.0      1.7500     no_z025_on_s2 | C:/Users/John Wayne/Documents/File organizer/repository\o73117.nc
+o73171       hub_centric    0.500"     7.0      1.5000     no_z025_on_s2 | C:/Users/John Wayne/Documents/File organizer/repository\o73171.nc
+o73172       hub_centric    0.500"     7.0      1.7500     no_z025_on_s2 | C:/Users/John Wayne/Documents/File organizer/repository\o73172.nc
+o73242       hub_centric    0.500"     7.0      1.5000     no_z025_on_s2 | C:/Users/John Wayne/Documents/File organizer/repository\o73242.nc
+o07101       2PC STUD       0.500"     7.5      0.7500     no_z025_on_s2 | C:/Users/John Wayne/Documents/File organizer/repository\o07101.nc
+o40080       2PC STUD       0.500"     7.5      0.7500     no_z025_on_s2 | C:/Users/John Wayne/Documents/File organizer/repository\o40080.nc
+o75102       hub_centric    0.500"     7.5      0.7500     no_z025_on_s2 | C:/Users/John Wayne/Documents/File organizer/repository\o75102.nc
+o75445       2PC STUD       0.500"     7.5      0.7500     no_z025_on_s2 | C:/Users/John Wayne/Documents/File organizer/repository\o75445.nc
+o85003       2PC STUD       0.500"     8.5      1.5000     no_z025_on_s2 | C:/Users/John Wayne/Documents/File organizer/repository\o85003.nc
+o85110       hub_centric    0.500"     8.5      2.0000     no_z025_on_s2 | C:/Users/John Wayne/Documents/File organizer/repository\o85110.nc
