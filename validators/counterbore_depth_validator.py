@@ -137,9 +137,14 @@ class CounterboreDepthValidator:
         # Sort depths (shallow to deep)
         z_depths.sort()
 
-        # Counterbore depth = shallowest Z (first in sorted list)
-        cb_depth = z_depths[0]
-        full_depth = z_depths[-1]
+        # Filter out chamfer/approach moves (Z < 0.15") — these are not the step depth
+        step_depths = [z for z in z_depths if z >= 0.15]
+        if len(step_depths) < 2:
+            return None
+
+        # Counterbore depth = shallowest meaningful Z (first non-chamfer depth)
+        cb_depth = step_depths[0]
+        full_depth = step_depths[-1]
 
         # Sanity checks
         if cb_depth >= full_depth:
@@ -200,14 +205,8 @@ class CounterboreDepthValidator:
                 f"- will break through part!"
             )
 
-        # Check depth ratio (typical range 25-90% of thickness)
+        # Check depth ratio (upper bound only — shallow steps are valid for thick parts)
         depth_ratio = cb_depth / thickness
-
-        if depth_ratio < self.min_depth_ratio:
-            warnings.append(
-                f"Counterbore very shallow ({cb_depth:.3f}\" = {depth_ratio*100:.0f}% of {thickness:.3f}\" thickness) "
-                f"- step shoulder may be too thin"
-            )
 
         if depth_ratio > self.max_depth_ratio:
             warnings.append(
