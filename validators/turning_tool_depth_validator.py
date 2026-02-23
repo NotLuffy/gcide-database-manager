@@ -208,7 +208,7 @@ class TurningToolDepthValidator:
                     if was_at_od and now_at_hub and i not in flagged_lines:
                         baseline = prev_hub_face_z if prev_hub_face_z is not None else 0.0
                         increment = current_z - baseline
-                        if increment > hub_pass_max:
+                        if round(increment, 2) > hub_pass_max:
                             side_str = f"Side {side}"
                             warnings.append(
                                 f"{side_str} Line {i}: Hub face plunge at Z-{current_z:.2f} "
