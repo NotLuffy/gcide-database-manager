@@ -151,13 +151,6 @@ class BoreChamferSafetyValidator:
                                 f"(CB + {distance_from_cb:.2f}\" margin)"
                             )
 
-                        # Check for potentially incorrect positioning (inside CB)
-                        elif setup_x < cb_inches:
-                            warnings.append(
-                                f"Bore chamfer setup inside CB - Side 2 Line {i}: "
-                                f"Setup X{setup_x:.3f} is smaller than CB (X{cb_inches:.3f}). "
-                                f"Verify this is intentional"
-                            )
 
         return BoreChamferSafetyResult(
             critical_issues=critical_issues,
