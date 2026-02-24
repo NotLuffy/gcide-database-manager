@@ -1103,13 +1103,13 @@ class ImprovedGCodeParser:
         # CRITICAL: First number before DIA or at start of title is ALWAYS OD in inches (even without "IN")
         od_patterns = [
             r'^(\d+\.?\d*)\s+DIA',              # Match "6.00 DIA" - first value before DIA is ALWAYS OD in inches
+            r'^(\d+\.?\d*)\s+\d+\.?\d*[/\d\.]*(?:IN|MM)',  # OD at start before bore pattern (e.g., "13.0 170.1/220MM", "13.0 141.3/9.5IN")
+            r'^(\d+\.?\d*)\s+\d+\.?\d*CB',      # Match "13.0 220CB" - OD followed by CB value
+            r'^(\d+\.?\d*)\s+\d+\s*MM',         # Match "8 125 MM" - OD followed by MM value
             r'(\d+\.?\d*)\s*IN[\$]?\s+DIA',     # Match "5.75IN$ DIA" or "5.75IN DIA"
             r'(\d+\.?\d*)\s*IN\s+(?!DIA)\d',    # Match "5.75 IN 60MM" (IN followed by number, not DIA)
             r'(\d+\.?\d*)\s*IN\s+ROUND',
             r'(\d+\.?\d*)\s*"\s*(?:DIA|ROUND)',
-            r'^(\d+\.?\d*)\s+\d+\.?\d*[/\d\.]*(?:IN|MM)',  # OD at start before IN or MM pattern (e.g., "13.0 170.1/220MM")
-            r'^(\d+\.?\d*)\s+\d+\.?\d*CB',      # Match "13.0 220CB" - OD followed by CB value (no IN/DIA needed)
-            r'^(\d+\.?\d*)\s+\d+\s*MM',         # Match "8 125 MM" - OD followed by MM value
         ]
         for pattern in od_patterns:
             match = re.search(pattern, title, re.IGNORECASE)
