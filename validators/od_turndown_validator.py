@@ -49,7 +49,7 @@ class ODTurnDownValidator:
         9.50:  9.450,
         10.25: 10.170,
         10.50: 10.450,
-        13.00: 12.903,
+        13.00: 12.904,
     }
 
     _INWARD_THRESHOLD = 1.5   # X must move this far inward to signal "hub face"
