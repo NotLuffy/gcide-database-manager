@@ -27,6 +27,7 @@ from validators.counterbore_depth_validator import CounterboreDepthValidator
 from validators.g154_presence_validator import G154PresenceValidator
 from validators.steel_ring_recess_validator import SteelRingRecessValidator
 from validators.twopc_ring_size_validator import TwoPCRingSizeValidator
+from validators.bore_pass_steps_validator import BorePassStepsValidator
 
 
 # ── Known CB equivalence pairs ────────────────────────────────────────────────
@@ -518,6 +519,9 @@ class ImprovedGCodeParser:
 
             # 11i. 2PC mating hub ring size (CB → expected ring OD lookup)
             self._validate_2pc_ring_size(result)
+
+            # 11j. Bore pass step size (T121 BORE X increment <= 0.300")
+            self._validate_bore_pass_steps(result, lines)
 
             # 12. Get file timestamps
             try:
@@ -3919,6 +3923,23 @@ class ImprovedGCodeParser:
         except Exception as e:
             if self.debug:
                 print(f"Error in 2PC ring size validation: {e}")
+
+    def _validate_bore_pass_steps(self, result: GCodeParseResult, lines: list):
+        """
+        Validate T121 BORE pass X step size.
+        Consecutive bore passes must not exceed 0.300" diameter step.
+        Violations are stored in validation_warnings (YELLOW).
+        """
+        try:
+            validator = BorePassStepsValidator()
+            warnings, notes = validator.validate_file(lines)
+            if warnings:
+                result.validation_warnings.extend(warnings)
+            if notes:
+                result.detection_notes.extend(notes)
+        except Exception as e:
+            if self.debug:
+                print(f"Error in bore pass step validation: {e}")
 
     def _validate_consistency(self, result: GCodeParseResult):
         """
