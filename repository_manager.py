@@ -107,9 +107,7 @@ class RepositoryManager:
             try:
                 from improved_gcode_parser import ImprovedGCodeParser
                 parser = ImprovedGCodeParser()
-                # Parse from content to avoid file path issues after move
-                with open(str(old_file_path), 'r', encoding='utf-8', errors='ignore') as f:
-                    parse_result = parser.parse_content(f.read())
+                parse_result = parser.parse_file(str(old_file_path))
                 dimensions = {
                     'outer_diameter': parse_result.outer_diameter,
                     'thickness': parse_result.thickness,

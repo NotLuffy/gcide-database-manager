@@ -1,0 +1,350 @@
+FOLDER SCAN REPORT
+Generated : 2026-02-19 11:51:37
+Folder    : L:/My Drive/Repository Share/New Programs/2-16 _ 2-20/2-19
+
+SUMMARY
+-------
+Total Files : 31
+Pass        : 16
+Warnings    : 13
+Errors      : 2
+
+FILE DETAILS
+------------
+
+============================================================
+File    : o13102.nc
+Program : o13102
+Status  : WARNINGS (1)
+WARNINGS:
+  ! [Validation] Side 1 Line 78: Turning tool Z-2.00 exceeds standard depth (max: Z-1.30 for 2.50" total (2.00" + 0.50" hub)) - Over by 0.70"
+SUGGESTIONS:
+  > [Best Practice] Line 59: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)
+  > [Best Practice] Line 124: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)
+  > [Best Practice] Line 140: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)
+  > [Best Practice] Line 142: Best practice - add M09 before M30/M02 (M30 turns off coolant automatically, but explicit M09 is clearer)
+
+============================================================
+File    : o57283.nc
+Program : o57283
+Status  : PASS
+SUGGESTIONS:
+  > [Best Practice] Line 27: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)
+
+============================================================
+File    : o57293.nc
+Program : o57293
+Status  : PASS
+
+============================================================
+File    : o58546.nc
+Program : o58546
+Status  : WARNINGS (11)
+WARNINGS:
+  ! [Validation] Stock thickness mismatch: Drill depth suggests 0.75" but body+hub suggests 1.00" stock
+  ! [Validation] Side 1 Line 52: Turning tool Z-0.40 exceeds standard depth (max: Z-0.35 for 0.89" total (0.39" + 0.50" hub)) - Over by 0.05"
+  ! [Validation] Side 1 Line 86: Turning tool Z-0.40 exceeds standard depth (max: Z-0.35 for 0.89" total (0.39" + 0.50" hub)) - Over by 0.05"
+  ! [Validation] Side 1 Line 89: Turning tool Z-0.55 exceeds standard depth (max: Z-0.35 for 0.89" total (0.39" + 0.50" hub)) - Over by 0.20"
+  ! [Validation] Side 1 Line 90: Turning tool Z-0.50 exceeds standard depth (max: Z-0.35 for 0.89" total (0.39" + 0.50" hub)) - Over by 0.15"
+  ! [Validation] Side 1 Line 92: Turning tool Z-0.40 exceeds standard depth (max: Z-0.35 for 0.89" total (0.39" + 0.50" hub)) - Over by 0.05"
+  ! [Validation] Line 10: T101 (DRILL) — no work offset (G154 P#, G54, or G55) found within first 5 code lines of operation. Tool will cut in undefined/inherited coordinate space — verify correct fixture offset is active.
+  ! [Validation] Line 20: T121 (BORE) — no work offset (G154 P#, G54, or G55) found within first 5 code lines of operation. Tool will cut in undefined/inherited coordinate space — verify correct fixture offset is active.
+  ! [Validation] Line 46: T303 (TURN TOOL) — no work offset (G154 P#, G54, or G55) found within first 5 code lines of operation. Tool will cut in undefined/inherited coordinate space — verify correct fixture offset is active.
+  ! [Validation] Line 74: T303 (TURN TOOL) — no work offset (G154 P#, G54, or G55) found within first 5 code lines of operation. Tool will cut in undefined/inherited coordinate space — verify correct fixture offset is active.
+  ! [Validation] Line 102: T121 (CHAMPHER) — no work offset (G154 P#, G54, or G55) found within first 5 code lines of operation. Tool will cut in undefined/inherited coordinate space — verify correct fixture offset is active.
+SUGGESTIONS:
+  > [Best Practice] Line 31: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)
+  > [Best Practice] Line 111: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)
+
+============================================================
+File    : o61016.nc
+Program : o61016
+Status  : WARNINGS (1)
+WARNINGS:
+  ! [Validation] OUT OF COMMON PRACTICE - Side 2: OD turn-down X2.853" does not match standard X5.950" for 6.00" rounds (Line 87)
+SUGGESTIONS:
+  > [Best Practice] Line 30: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)
+  > [Best Practice] Line 108: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)
+
+============================================================
+File    : o61076.nc
+Program : o61076
+Status  : PASS
+SUGGESTIONS:
+  > [Best Practice] Line 29: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)
+  > [Best Practice] Line 35: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)
+  > [Best Practice] Line 111: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)
+
+============================================================
+File    : o61196.nc
+Program : o61196
+Status  : ERRORS (1)
+ERRORS:
+  x [Critical] CB TOO LARGE: Spec=66.9mm, G-code=70.4mm (+3.50mm) - CRITICAL ERROR
+WARNINGS:
+  ! [Validation] Bore chamfer setup inside CB - Side 2 Line 97: Setup X2.400 is smaller than CB (X2.634). Verify this is intentional
+
+============================================================
+File    : o61297.nc
+Program : o61297
+Status  : WARNINGS (1)
+WARNINGS:
+  ! [Validation] Bore chamfer setup inside CB - Side 2 Line 101: Setup X2.300 is smaller than CB (X2.602). Verify this is intentional
+
+============================================================
+File    : o61314.nc
+Program : o61314
+Status  : WARNINGS (2)
+WARNINGS:
+  ! [Validation] Side 1 Line 48: Turning tool Z-1.25 exceeds standard depth (max: Z-1.10 for 2.00" total (1.50" + 0.50" hub)) - Over by 0.15"
+  ! [Validation] Bore chamfer setup inside CB - Side 2 Line 104: Setup X2.200 is smaller than CB (X2.366). Verify this is intentional
+SUGGESTIONS:
+  > [Best Practice] Line 27: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)
+  > [Best Practice] Line 109: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)
+
+============================================================
+File    : o62661.nc
+Program : o62661
+Status  : PASS
+SUGGESTIONS:
+  > [Best Practice] Line 101: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)
+
+============================================================
+File    : o64999.nc
+Program : o64999
+Status  : WARNINGS (5)
+WARNINGS:
+  ! [Validation] Approaching hub limit - Side 1 Line 27: Z-1.15 at X2.60 (0.30" from hub) - Recommended max: Z-0.30 (margin: -0.65")
+  ! [Validation] Bore chamfer setup inside CB - Side 2 Line 109: Setup X3.300 is smaller than CB (X3.429). Verify this is intentional
+  ! [Validation] Line 11: T101 (DRILL) — no work offset (G154 P#, G54, or G55) found within first 5 code lines of operation. Tool will cut in undefined/inherited coordinate space — verify correct fixture offset is active.
+  ! [Validation] Line 19: T121 (BORE) — no work offset (G154 P#, G54, or G55) found within first 5 code lines of operation. Tool will cut in undefined/inherited coordinate space — verify correct fixture offset is active.
+  ! [Validation] Line 52: T303 (TURN TOOL) — no work offset (G154 P#, G54, or G55) found within first 5 code lines of operation. Tool will cut in undefined/inherited coordinate space — verify correct fixture offset is active.
+SUGGESTIONS:
+  > [Best Practice] Line 36: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)
+  > [Best Practice] Line 42: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)
+  > [Best Practice] Line 114: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)
+
+============================================================
+File    : o65715.nc
+Program : o65715
+Status  : PASS
+SUGGESTIONS:
+  > [Best Practice] Line 32: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)
+
+============================================================
+File    : o73133.nc
+Program : o73133
+Status  : WARNINGS (3)
+WARNINGS:
+  ! [Validation] OUT OF COMMON PRACTICE - Side 2: OD turn-down X3.703" does not match standard X6.945" for 7.00" rounds (Line 100)
+  ! [Validation] Side 1 Line 24: Turning tool Z-0.55 exceeds standard depth (max: Z-0.35 for 0.97" total (0.75" + 0.22" hub)) - Over by 0.20"
+  ! [Validation] Side 2 Line 95: Turning tool Z-0.55 exceeds standard depth (max: Z-0.35 for 0.97" total (0.75" + 0.22" hub)) - Over by 0.20"
+SUGGESTIONS:
+  > [Best Practice] Line 62: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)
+  > [Best Practice] Line 119: Best practice - add M09 before M30/M02 (M30 turns off coolant automatically, but explicit M09 is clearer)
+
+============================================================
+File    : o73363.nc
+Program : o73363
+Status  : PASS
+SUGGESTIONS:
+  > [Best Practice] Line 33: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)
+  > [Best Practice] Line 80: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)
+  > [Best Practice] Line 126: Best practice - add M09 before M30/M02 (M30 turns off coolant automatically, but explicit M09 is clearer)
+
+============================================================
+File    : o73737.nc
+Program : o73737
+Status  : PASS
+SUGGESTIONS:
+  > [Best Practice] Line 32: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)
+  > [Best Practice] Line 77: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)
+  > [Best Practice] Line 130: Best practice - add M09 before M30/M02 (M30 turns off coolant automatically, but explicit M09 is clearer)
+
+============================================================
+File    : o73945.nc
+Program : o73945
+Status  : WARNINGS (3)
+WARNINGS:
+  ! [Validation] OUT OF COMMON PRACTICE - Side 2: OD turn-down X3.500" does not match standard X6.945" for 7.00" rounds (Line 98)
+  ! [Validation] Side 1 Line 25: Turning tool Z-0.55 exceeds standard depth (max: Z-0.35 for 0.97" total (0.75" + 0.22" hub)) - Over by 0.20"
+  ! [Validation] Side 2 Line 93: Turning tool Z-0.55 exceeds standard depth (max: Z-0.35 for 0.97" total (0.75" + 0.22" hub)) - Over by 0.20"
+SUGGESTIONS:
+  > [Best Practice] Line 60: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)
+  > [Best Practice] Line 117: Best practice - add M09 before M30/M02 (M30 turns off coolant automatically, but explicit M09 is clearer)
+
+============================================================
+File    : o80059.nc
+Program : o80059
+Status  : PASS
+SUGGESTIONS:
+  > [Best Practice] Line 55: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)
+  > [Best Practice] Line 81: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)
+  > [Best Practice] Line 109: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)
+  > [Best Practice] Line 136: Best practice - add M09 before M30/M02 (M30 turns off coolant automatically, but explicit M09 is clearer)
+  > [Best Practice] Line 142: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)
+  > [Best Practice] Line 145: Best practice - add M09 before M30/M02 (M30 turns off coolant automatically, but explicit M09 is clearer)
+
+============================================================
+File    : o80265.nc
+Program : o80265
+Status  : WARNINGS (1)
+WARNINGS:
+  ! [Validation] Side 1 Line 75: Turning tool Z-1.75 exceeds standard depth (max: Z-1.30 for 2.50" total (2.00" + 0.50" hub)) - Over by 0.45"
+SUGGESTIONS:
+  > [Best Practice] Line 77: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)
+  > [Best Practice] Line 139: Best practice - add M09 before M30/M02 (M30 turns off coolant automatically, but explicit M09 is clearer)
+
+============================================================
+File    : o80534.nc
+Program : o80534
+Status  : PASS
+SUGGESTIONS:
+  > [Best Practice] Line 76: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)
+  > [Best Practice] Line 107: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)
+  > [Best Practice] Line 130: Best practice - add M09 before M30/M02 (M30 turns off coolant automatically, but explicit M09 is clearer)
+
+============================================================
+File    : o81058.nc
+Program : o81058
+Status  : WARNINGS (13)
+WARNINGS:
+  ! [Validation] OUT OF COMMON PRACTICE - Side 1: OD turn-down X7.960" does not match standard X7.945" for 8.00" rounds (Line 114)
+  ! [Validation] Side 1 Line 27: Turning tool Z-0.45 exceeds standard depth (max: Z-0.35 for 0.75" total (0.39" + 0.36" hub)) - Over by 0.10"
+  ! [Validation] Side 1 Line 28: Turning tool Z-0.40 exceeds standard depth (max: Z-0.35 for 0.75" total (0.39" + 0.36" hub)) - Over by 0.05"
+  ! [Validation] Side 2 Line 151: Turning tool Z-0.40 exceeds standard depth (max: Z-0.35 for 0.75" total (0.39" + 0.36" hub)) - Over by 0.05"
+  ! [Validation] Side 2 Line 154: Turning tool Z-0.48 exceeds standard depth (max: Z-0.35 for 0.75" total (0.39" + 0.36" hub)) - Over by 0.13"
+  ! [Validation] Side 2 Line 157: Turning tool Z-0.55 exceeds standard depth (max: Z-0.35 for 0.75" total (0.39" + 0.36" hub)) - Over by 0.20"
+  ! [Validation] Side 2 Line 158: Turning tool Z-0.50 exceeds standard depth (max: Z-0.35 for 0.75" total (0.39" + 0.36" hub)) - Over by 0.15"
+  ! [Validation] Bore chamfer setup inside CB - Side 2 Line 172: Setup X4.861 is smaller than CB (X4.921). Verify this is intentional
+  ! [Validation] Line 14: T303 (TURN TOOL) — no work offset (G154 P#, G54, or G55) found within first 5 code lines of operation. Tool will cut in undefined/inherited coordinate space — verify correct fixture offset is active.
+  ! [Validation] Line 47: T101 (DRILL) — no work offset (G154 P#, G54, or G55) found within first 5 code lines of operation. Tool will cut in undefined/inherited coordinate space — verify correct fixture offset is active.
+  ! [Validation] Line 55: T121 (BORE) — no work offset (G154 P#, G54, or G55) found within first 5 code lines of operation. Tool will cut in undefined/inherited coordinate space — verify correct fixture offset is active.
+  ! [Validation] Line 103: T303 (TURN TOOL) — no work offset (G154 P#, G54, or G55) found within first 5 code lines of operation. Tool will cut in undefined/inherited coordinate space — verify correct fixture offset is active.
+  ! [Validation] Line 141: T303 (TURN TOOL) — no work offset (G154 P#, G54, or G55) found within first 5 code lines of operation. Tool will cut in undefined/inherited coordinate space — verify correct fixture offset is active.
+SUGGESTIONS:
+  > [Best Practice] Line 117: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)
+  > [Best Practice] Line 179: Best practice - add M09 before M30/M02 (M30 turns off coolant automatically, but explicit M09 is clearer)
+
+============================================================
+File    : o81523.nc
+Program : o81523
+Status  : PASS
+SUGGESTIONS:
+  > [Best Practice] Line 82: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)
+  > [Best Practice] Line 110: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)
+  > [Best Practice] Line 132: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)
+  > [Best Practice] Line 136: Best practice - add M09 before M30/M02 (M30 turns off coolant automatically, but explicit M09 is clearer)
+
+============================================================
+File    : o85119.nc
+Program : o85119
+Status  : WARNINGS (2)
+WARNINGS:
+  ! [Validation] Approaching hub limit - Side 1 Line 47: Z-2.15 at X4.10 (0.10" from hub) - Recommended max: Z-1.30 (margin: -0.65")
+  ! [Validation] Side 2 Line 77: Turning tool Z-1.25 exceeds standard depth (max: Z-1.10 for 2.00" total (1.50" + 0.50" hub)) - Over by 0.15"
+SUGGESTIONS:
+  > [Best Practice] Line 53: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)
+  > [Best Practice] Line 79: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)
+  > [Best Practice] Line 137: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)
+  > [Best Practice] Line 139: Best practice - add M09 before M30/M02 (M30 turns off coolant automatically, but explicit M09 is clearer)
+
+============================================================
+File    : o86052.nc
+Program : o86052
+Status  : ERRORS (1)
+ERRORS:
+  x [Critical] OD MISMATCH: Spec=8.00", G-code=8.45" (+0.450") - G-CODE ERROR
+WARNINGS:
+  ! [Validation] OUT OF COMMON PRACTICE - Side 1: OD turn-down X8.440" does not match standard X7.945" for 8.00" rounds (Line 76)
+  ! [Validation] Stock thickness mismatch: Drill depth suggests 0.75" but body+hub suggests 1.00" stock
+  ! [Validation] Side 2 Line 77: Turning tool Z-0.40 exceeds standard depth (max: Z-0.35 for 0.75" total (0.39" + 0.36" hub)) - Over by 0.05"
+  ! [Validation] Side 2 Line 113: Turning tool Z-0.40 exceeds standard depth (max: Z-0.35 for 0.75" total (0.39" + 0.36" hub)) - Over by 0.05"
+  ! [Validation] Side 2 Line 116: Turning tool Z-0.48 exceeds standard depth (max: Z-0.35 for 0.75" total (0.39" + 0.36" hub)) - Over by 0.13"
+  ! [Validation] Side 2 Line 119: Turning tool Z-0.55 exceeds standard depth (max: Z-0.35 for 0.75" total (0.39" + 0.36" hub)) - Over by 0.20"
+  ! [Validation] Side 2 Line 120: Turning tool Z-0.50 exceeds standard depth (max: Z-0.35 for 0.75" total (0.39" + 0.36" hub)) - Over by 0.15"
+  ! [Validation] Side 2 Line 122: Turning tool Z-0.40 exceeds standard depth (max: Z-0.35 for 0.75" total (0.39" + 0.36" hub)) - Over by 0.05"
+  ! [Validation] Bore chamfer setup inside CB - Side 2 Line 135: Setup X4.831 is smaller than CB (X4.886). Verify this is intentional
+  ! [Validation] Line 11: T101 (DRILL) — no work offset (G154 P#, G54, or G55) found within first 5 code lines of operation. Tool will cut in undefined/inherited coordinate space — verify correct fixture offset is active.
+  ! [Validation] Line 19: T121 (BORE) — no work offset (G154 P#, G54, or G55) found within first 5 code lines of operation. Tool will cut in undefined/inherited coordinate space — verify correct fixture offset is active.
+  ! [Validation] Line 65: T303 (TURN TOOL) — no work offset (G154 P#, G54, or G55) found within first 5 code lines of operation. Tool will cut in undefined/inherited coordinate space — verify correct fixture offset is active.
+SUGGESTIONS:
+  > [Best Practice] Line 52: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)
+  > [Best Practice] Line 79: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)
+  > [Best Practice] Line 144: Best practice - add M09 before M30/M02 (M30 turns off coolant automatically, but explicit M09 is clearer)
+
+============================================================
+File    : o95494.nc
+Program : o95494
+Status  : PASS
+SUGGESTIONS:
+  > [Best Practice] Line 91: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)
+  > [Best Practice] Line 119: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)
+  > [Best Practice] Line 145: Best practice - add M09 before M30/M02 (M30 turns off coolant automatically, but explicit M09 is clearer)
+
+============================================================
+File    : o96026.nc
+Program : o96026
+Status  : PASS
+SUGGESTIONS:
+  > [Best Practice] Line 109: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)
+  > [Best Practice] Line 129: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)
+  > [Best Practice] Line 132: Best practice - add M09 before M30/M02 (M30 turns off coolant automatically, but explicit M09 is clearer)
+
+============================================================
+File    : o96041.nc
+Program : o96041
+Status  : PASS
+SUGGESTIONS:
+  > [Best Practice] Line 91: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)
+  > [Best Practice] Line 119: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)
+  > [Best Practice] Line 148: Best practice - add M09 before M30/M02 (M30 turns off coolant automatically, but explicit M09 is clearer)
+
+============================================================
+File    : o96048.nc
+Program : o96048
+Status  : PASS
+SUGGESTIONS:
+  > [Best Practice] Line 93: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)
+  > [Best Practice] Line 122: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)
+  > [Best Practice] Line 144: Best practice - add M09 before M30/M02 (M30 turns off coolant automatically, but explicit M09 is clearer)
+
+============================================================
+File    : o96049.nc
+Program : o96049
+Status  : PASS
+SUGGESTIONS:
+  > [Best Practice] Line 92: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)
+  > [Best Practice] Line 121: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)
+  > [Best Practice] Line 144: Best practice - add M09 before M30/M02 (M30 turns off coolant automatically, but explicit M09 is clearer)
+
+============================================================
+File    : o96194.nc
+Program : o96194
+Status  : WARNINGS (1)
+WARNINGS:
+  ! [Validation] Side 1 Line 78: Turning tool Z-1.85 exceeds standard depth (max: Z-1.60 for 3.00" total (1.75" + 1.25" hub)) - Over by 0.25"
+SUGGESTIONS:
+  > [Best Practice] Line 55: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)
+  > [Best Practice] Line 80: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)
+  > [Best Practice] Line 155: Best practice - add M09 before M30/M02 (M30 turns off coolant automatically, but explicit M09 is clearer)
+
+============================================================
+File    : o96456.nc
+Program : o96456
+Status  : WARNINGS (1)
+WARNINGS:
+  ! [Validation] Side 1 Line 56: Turning tool Z-1.75 exceeds standard depth (max: Z-1.30 for 2.50" total (2.00" + 0.50" hub)) - Over by 0.45"
+SUGGESTIONS:
+  > [Best Practice] Line 33: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)
+  > [Best Practice] Line 58: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)
+  > [Best Practice] Line 125: Best practice - add M09 before M30/M02 (M30 turns off coolant automatically, but explicit M09 is clearer)
+
+============================================================
+File    : o96461.nc
+Program : o96461
+Status  : PASS
+SUGGESTIONS:
+  > [Best Practice] Line 54: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)
+  > [Best Practice] Line 80: Best practice - add decimal to Z0 (Z0.0 is clearer, though functionally identical)
+  > [Best Practice] Line 161: Best practice - add M09 before M30/M02 (M30 turns off coolant automatically, but explicit M09 is clearer)

@@ -461,9 +461,15 @@ class GCodeDatabaseGUI:
 
             self.root.configure(bg=self.bg_color)
 
-            # Database setup
+            # Configuration must load first so custom db_path/repository_path take effect
+            logger.debug("Loading configuration...")
+            self.config_file = "gcode_manager_config.json"
+            self.load_config()
+
+            # Database setup — use path from config if set, otherwise default
             logger.info("Initializing database...")
-            self.db_path = "gcode_database.db"
+            config_db_path = self.config.get("db_path", "").strip()
+            self.db_path = config_db_path if config_db_path else "gcode_database.db"
             self.init_database()
             logger.info("Database initialized successfully")
 
@@ -473,11 +479,6 @@ class GCodeDatabaseGUI:
             self.current_username = None
             self.current_user_role = None
             self.user_permissions = {}
-
-            # Configuration
-            logger.debug("Loading configuration...")
-            self.config_file = "gcode_manager_config.json"
-            self.load_config()
 
             # Initialize repository system
             logger.info("Initializing repository system...")
@@ -2124,8 +2125,9 @@ class GCodeDatabaseGUI:
         # Get base path (where this script is located)
         base_path = os.path.dirname(os.path.abspath(__file__))
 
-        # Define repository paths
-        self.repository_path = os.path.join(base_path, 'repository')
+        # Define repository paths — use config override if set (e.g. Google Drive path)
+        config_repo_path = self.config.get("repository_path", "").strip() if hasattr(self, 'config') else ""
+        self.repository_path = config_repo_path if config_repo_path else os.path.join(base_path, 'repository')
         self.revised_repository_path = os.path.join(base_path, 'revised_repository')
         self.versions_path = os.path.join(base_path, 'versions')
         self.backups_path = os.path.join(base_path, 'backups')
@@ -3114,7 +3116,7 @@ class GCodeDatabaseGUI:
             conn.close()
 
             if result and result[0]:
-                ob_value = result[0]
+                ob_value = float(result[0])
                 # ob_from_gcode is the outer bore/diameter
                 if 5.0 <= ob_value <= 15.0:
                     return ob_value
@@ -3137,7 +3139,7 @@ class GCodeDatabaseGUI:
             conn.close()
 
             if result and result[0]:
-                od_value = result[0]
+                od_value = float(result[0])
                 if 5.0 <= od_value <= 15.0:
                     return od_value
         except sqlite3.Error as e:
@@ -5269,7 +5271,7 @@ class GCodeDatabaseGUI:
                             # Same part, updated version - archive old and replace
                             logger.info(f"Updated version detected for {program_number}, archiving old version")
                             if hasattr(self, 'repo_manager') and self.repo_manager:
-                                self.repo_manager.archive_file(final_path, "replaced_by_update")
+                                self.repo_manager.archive_old_file(final_path, program_number, "replaced_by_update")
 
                             # Copy new file
                             import shutil
@@ -5857,14 +5859,23 @@ class GCodeDatabaseGUI:
             return
 
         import glob
-        nc_files = sorted(set(
-            glob.glob(os.path.join(folder, '*.nc')) +
-            glob.glob(os.path.join(folder, '*.NC'))
-        ))
+        gcode_patterns = ['*.nc', '*.NC', '*.txt', '*.TXT', '*.tap', '*.TAP', '*.gcode', '*.GCODE']
+        found_files = []
+        for pattern in gcode_patterns:
+            found_files.extend(glob.glob(os.path.join(folder, pattern)))
+
+        # Also find extensionless O-number files (e.g., o13006, O57500)
+        o_number_pattern = re.compile(r'^[oO]\d{4,}$')
+        for item in glob.glob(os.path.join(folder, '*')):
+            if os.path.isfile(item) and o_number_pattern.match(os.path.basename(item)):
+                found_files.append(item)
+
+        nc_files = sorted(set(found_files))
 
         if not nc_files:
             messagebox.showinfo("No Files Found",
-                                f"No .nc or .NC files found in:\n{folder}")
+                                f"No G-code files found in:\n{folder}\n\n"
+                                f"Searched for: .nc, .txt, .tap, .gcode, and extensionless O-number files")
             return
 
         # --- Progress window ---
@@ -7081,7 +7092,11 @@ class GCodeDatabaseGUI:
             # Phase 1: Auto-Fixer settings
             "auto_fix_tool_home": True,
             "auto_fix_coolant": True,
-            "auto_fix_create_backup": True
+            "auto_fix_create_backup": True,
+
+            # Configurable paths (empty = use default next to app)
+            "db_path": "",
+            "repository_path": ""
         }
 
         if os.path.exists(self.config_file):
@@ -7565,6 +7580,11 @@ class GCodeDatabaseGUI:
                  command=self.show_standards_reference,
                  bg="#00BCD4", fg=self.fg_color, font=("Arial", 8, "bold"),
                  width=20).pack(side=tk.LEFT, padx=2, expand=True, fill=tk.X)
+
+        tk.Button(repo_buttons3, text="⚙️ Configure Paths",
+                 command=self.show_configure_paths_dialog,
+                 bg="#607D8B", fg=self.fg_color, font=("Arial", 8, "bold"),
+                 width=16).pack(side=tk.LEFT, padx=2, expand=True, fill=tk.X)
 
     def setup_revised_tab(self):
         """Setup the Revised Repository tab (hand-refined programs)"""
@@ -8751,7 +8771,8 @@ class GCodeDatabaseGUI:
                     None, None,  # tool_home_status, tool_home_issues
                     None, None,  # hub_height_display, counter_bore_depth_display
                     None, None, None,  # feasibility_status, feasibility_issues, feasibility_warnings
-                    None, None,  # crash_issues, crash_warnings
+                    json.dumps(record.crash_issues) if record.crash_issues else None,
+                    json.dumps(record.crash_warnings) if record.crash_warnings else None,
                     datetime.now().isoformat()  # date_imported
                 ))
 
@@ -9484,7 +9505,8 @@ class GCodeDatabaseGUI:
                                  record.cb_from_gcode, record.ob_from_gcode,
                                  record.bore_warnings, record.dimensional_issues, record.lathe,
                                  None, None, None,  # feasibility_status, feasibility_issues, feasibility_warnings (CREATE TABLE positions 28-30)
-                                 None, None,  # crash_issues, crash_warnings (CREATE TABLE positions 31-32)
+                                 json.dumps(record.crash_issues) if record.crash_issues else None,
+                                 json.dumps(record.crash_warnings) if record.crash_warnings else None,
                                  datetime.now().isoformat(),  # date_imported (CREATE TABLE position 33)
                                  None, None, None,  # duplicate_type, parent_file, duplicate_group
                                  None, current_username, is_managed_file,  # current_version, modified_by, is_managed
@@ -9709,9 +9731,16 @@ class GCodeDatabaseGUI:
             cursor = conn.cursor()
 
             files_to_import = []
-            for filepath in all_files:
+            total_check = len(all_files)
+            for idx, filepath in enumerate(all_files):
                 filename = os.path.basename(filepath)
                 prog_num = os.path.splitext(filename)[0].lower()
+
+                # Live counter on step label
+                step_labels[1].config(
+                    text=f"▶ 2. Checking for duplicates — {idx+1}/{total_check} | Skipped: {stats['duplicates_skipped']} | New: {len(files_to_import)}",
+                    fg="#2196F3")
+                workflow_win.update()
 
                 # Check if already in database
                 cursor.execute("SELECT program_number FROM programs WHERE program_number = ?", (prog_num,))
@@ -9756,7 +9785,13 @@ class GCodeDatabaseGUI:
             cursor = conn.cursor()
 
             imported_programs = []
+            total_import = len(files_to_import)
             for i, filepath in enumerate(files_to_import):
+                # Live counter on step label
+                step_labels[2].config(
+                    text=f"▶ 3. Importing — {i+1}/{total_import} | Imported: {stats['files_imported']} | Errors: {len(stats['errors'])}",
+                    fg="#2196F3")
+                workflow_win.update()
                 try:
                     # Parse the file
                     record = self.parse_gcode_file(filepath)
@@ -9802,7 +9837,8 @@ class GCodeDatabaseGUI:
                          record.tool_home_status, tool_home_issues_json,  # tool_home_status, tool_home_issues
                          None, None,  # hub_height_display, counter_bore_depth_display
                          None, None, None,  # feasibility_status, feasibility_issues, feasibility_warnings
-                         None, None,  # crash_issues, crash_warnings
+                         json.dumps(record.crash_issues) if record.crash_issues else None,
+                         json.dumps(record.crash_warnings) if record.crash_warnings else None,
                          datetime.now().isoformat(),  # date_imported
                          0, None))  # is_deleted, deleted_date
 
@@ -10287,7 +10323,8 @@ class GCodeDatabaseGUI:
                         None, None,  # tool_home_status, tool_home_issues
                         None, None,  # hub_height_display, counter_bore_depth_display
                         None, None, None,  # feasibility_status, feasibility_issues, feasibility_warnings
-                        None, None,  # crash_issues, crash_warnings
+                        json.dumps(record.crash_issues) if record.crash_issues else None,
+                        json.dumps(record.crash_warnings) if record.crash_warnings else None,
                         datetime.now().isoformat(),  # date_imported
                         0, None  # is_deleted, deleted_date
                     ))
@@ -25641,11 +25678,11 @@ For more documentation, see project README files in the application directory.
                 output_text.insert(tk.END, f"Revised path: {self.revised_repository_path}\n\n")
             progress_window.update()
 
-            # Get all managed programs
+            # Get all active programs (not deleted)
             cursor.execute("""
                 SELECT program_number, file_path
                 FROM programs
-                WHERE is_managed = 1
+                WHERE is_deleted = 0 OR is_deleted IS NULL
             """)
             programs = cursor.fetchall()
 
@@ -26328,6 +26365,69 @@ For more documentation, see project README files in the application directory.
                      bg=self.button_bg, fg=self.fg_color,
                      font=("Arial", 10, "bold")).pack(pady=10)
             messagebox.showerror("Sync Error", f"Failed to sync registry:\n{str(e)}")
+
+    def show_configure_paths_dialog(self):
+        """Dialog to configure db_path and repository_path (e.g. for Google Drive)"""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Configure Paths")
+        dialog.geometry("600x280")
+        dialog.configure(bg=self.bg_color)
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        tk.Label(dialog, text="Configure Database and Repository Paths",
+                 bg=self.bg_color, fg=self.fg_color,
+                 font=("Arial", 12, "bold")).pack(pady=(15, 5))
+        tk.Label(dialog, text="Leave blank to use the default location next to the app.\nChanges take effect on next app restart.",
+                 bg=self.bg_color, fg=self.fg_color,
+                 font=("Arial", 9)).pack(pady=(0, 10))
+
+        frame = tk.Frame(dialog, bg=self.bg_color)
+        frame.pack(fill=tk.X, padx=20)
+
+        # DB path row
+        tk.Label(frame, text="Database file (.db):", bg=self.bg_color, fg=self.fg_color,
+                 font=("Arial", 10)).grid(row=0, column=0, sticky='w', pady=5)
+        db_var = tk.StringVar(value=self.config.get("db_path", ""))
+        db_entry = tk.Entry(frame, textvariable=db_var, width=45, bg=self.entry_bg, fg=self.fg_color)
+        db_entry.grid(row=0, column=1, padx=5)
+        def browse_db():
+            path = filedialog.asksaveasfilename(title="Select Database File",
+                filetypes=[("SQLite DB", "*.db")], defaultextension=".db")
+            if path:
+                db_var.set(path)
+        tk.Button(frame, text="Browse", command=browse_db,
+                  bg=self.button_bg, fg=self.fg_color).grid(row=0, column=2)
+
+        # Repository path row
+        tk.Label(frame, text="Repository folder:", bg=self.bg_color, fg=self.fg_color,
+                 font=("Arial", 10)).grid(row=1, column=0, sticky='w', pady=5)
+        repo_var = tk.StringVar(value=self.config.get("repository_path", ""))
+        repo_entry = tk.Entry(frame, textvariable=repo_var, width=45, bg=self.entry_bg, fg=self.fg_color)
+        repo_entry.grid(row=1, column=1, padx=5)
+        def browse_repo():
+            path = filedialog.askdirectory(title="Select Repository Folder")
+            if path:
+                repo_var.set(path)
+        tk.Button(frame, text="Browse", command=browse_repo,
+                  bg=self.button_bg, fg=self.fg_color).grid(row=1, column=2)
+
+        def save_paths():
+            self.config["db_path"] = db_var.get().strip()
+            self.config["repository_path"] = repo_var.get().strip()
+            self.save_config()
+            messagebox.showinfo("Saved", "Paths saved. Restart the app for changes to take effect.",
+                                parent=dialog)
+            dialog.destroy()
+
+        btn_frame = tk.Frame(dialog, bg=self.bg_color)
+        btn_frame.pack(pady=15)
+        tk.Button(btn_frame, text="Save", command=save_paths,
+                  bg=self.button_bg, fg=self.fg_color,
+                  font=("Arial", 10, "bold"), width=12).pack(side=tk.LEFT, padx=10)
+        tk.Button(btn_frame, text="Cancel", command=dialog.destroy,
+                  bg=self.button_bg, fg=self.fg_color,
+                  font=("Arial", 10), width=12).pack(side=tk.LEFT, padx=10)
 
     def detect_round_sizes_ui(self):
         """UI wrapper for detecting round sizes in all programs"""
