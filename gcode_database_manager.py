@@ -5333,7 +5333,9 @@ class GCodeDatabaseGUI:
                         bore_warnings = ?, dimensional_issues = ?,
                         cb_from_gcode = ?, ob_from_gcode = ?, content_hash = ?,
                         is_managed = ?, round_size = ?,
-                        tool_home_status = ?, tool_home_issues = ?
+                        tool_home_status = ?, tool_home_issues = ?,
+                        feasibility_status = ?, feasibility_issues = ?, feasibility_warnings = ?,
+                        crash_issues = ?, crash_warnings = ?
                     WHERE program_number = ?
                 """, (
                     parse_result.title, parse_result.outer_diameter,
@@ -5351,6 +5353,11 @@ class GCodeDatabaseGUI:
                     parse_result.outer_diameter,
                     parse_result.tool_home_status,
                     json.dumps(parse_result.tool_home_issues) if parse_result.tool_home_issues else None,
+                    parse_result.feasibility_status,
+                    json.dumps(parse_result.feasibility_issues) if parse_result.feasibility_issues else None,
+                    json.dumps(parse_result.feasibility_warnings) if parse_result.feasibility_warnings else None,
+                    json.dumps(parse_result.crash_issues) if parse_result.crash_issues else None,
+                    json.dumps(parse_result.crash_warnings) if parse_result.crash_warnings else None,
                     program_number
                 ))
             else:
@@ -9456,7 +9463,9 @@ class GCodeDatabaseGUI:
                                     validation_status = ?, validation_issues = ?,
                                     validation_warnings = ?, bore_warnings = ?, dimensional_issues = ?,
                                     cb_from_gcode = ?, ob_from_gcode = ?, lathe = ?,
-                                    tool_home_status = ?, tool_home_issues = ?
+                                    tool_home_status = ?, tool_home_issues = ?,
+                                    feasibility_status = ?, feasibility_issues = ?, feasibility_warnings = ?,
+                                    crash_issues = ?, crash_warnings = ?
                                 WHERE program_number = ?
                             ''', (record.title, record.spacer_type, record.outer_diameter, record.thickness, record.thickness_display,
                                  record.center_bore, record.hub_height, record.hub_diameter,
@@ -9468,6 +9477,11 @@ class GCodeDatabaseGUI:
                                  record.cb_from_gcode, record.ob_from_gcode, record.lathe,
                                  record.tool_home_status,
                                  json.dumps(record.tool_home_issues) if record.tool_home_issues else None,
+                                 record.feasibility_status,
+                                 json.dumps(record.feasibility_issues) if record.feasibility_issues else None,
+                                 json.dumps(record.feasibility_warnings) if record.feasibility_warnings else None,
+                                 json.dumps(record.crash_issues) if record.crash_issues else None,
+                                 json.dumps(record.crash_warnings) if record.crash_warnings else None,
                                  record.program_number))
                             updated += 1
                         else:
@@ -10322,7 +10336,9 @@ class GCodeDatabaseGUI:
                         None,  # content_hash
                         None, None,  # tool_home_status, tool_home_issues
                         None, None,  # hub_height_display, counter_bore_depth_display
-                        None, None, None,  # feasibility_status, feasibility_issues, feasibility_warnings
+                        record.feasibility_status,
+                        json.dumps(record.feasibility_issues) if record.feasibility_issues else None,
+                        json.dumps(record.feasibility_warnings) if record.feasibility_warnings else None,
                         json.dumps(record.crash_issues) if record.crash_issues else None,
                         json.dumps(record.crash_warnings) if record.crash_warnings else None,
                         datetime.now().isoformat(),  # date_imported
@@ -14029,13 +14045,26 @@ class GCodeDatabaseGUI:
                         cursor = conn.cursor()
                         cursor.execute("""
                             UPDATE programs SET
-                                validation_status = ?, tool_home_status = ?,
-                                tool_home_issues = ?, last_modified = ?
+                                validation_status = ?, validation_issues = ?, validation_warnings = ?,
+                                bore_warnings = ?, dimensional_issues = ?,
+                                tool_home_status = ?, tool_home_issues = ?,
+                                feasibility_status = ?, feasibility_issues = ?, feasibility_warnings = ?,
+                                crash_issues = ?, crash_warnings = ?,
+                                last_modified = ?
                             WHERE program_number = ?
                         """, (
                             validation_status,
+                            json.dumps(parse_result.validation_issues) if parse_result.validation_issues else None,
+                            json.dumps(parse_result.validation_warnings) if parse_result.validation_warnings else None,
+                            json.dumps(parse_result.bore_warnings) if parse_result.bore_warnings else None,
+                            json.dumps(parse_result.dimensional_issues) if parse_result.dimensional_issues else None,
                             parse_result.tool_home_status,
                             json.dumps(parse_result.tool_home_issues) if parse_result.tool_home_issues else None,
+                            parse_result.feasibility_status,
+                            json.dumps(parse_result.feasibility_issues) if parse_result.feasibility_issues else None,
+                            json.dumps(parse_result.feasibility_warnings) if parse_result.feasibility_warnings else None,
+                            json.dumps(parse_result.crash_issues) if parse_result.crash_issues else None,
+                            json.dumps(parse_result.crash_warnings) if parse_result.crash_warnings else None,
                             datetime.now().isoformat(),
                             prog_num
                         ))
@@ -26123,7 +26152,9 @@ For more documentation, see project README files in the application directory.
                             bore_warnings = ?, dimensional_issues = ?,
                             tools_used = ?, tool_sequence = ?, tool_validation_status = ?,
                             tool_validation_issues = ?, safety_blocks_status = ?, safety_blocks_issues = ?,
-                            tool_home_status = ?, tool_home_issues = ?
+                            tool_home_status = ?, tool_home_issues = ?,
+                            feasibility_status = ?, feasibility_issues = ?, feasibility_warnings = ?,
+                            crash_issues = ?, crash_warnings = ?
                         WHERE program_number = ?
                     """, (
                         parse_result.title, parse_result.spacer_type, parse_result.outer_diameter,
@@ -26142,6 +26173,11 @@ For more documentation, see project README files in the application directory.
                         None,  # safety_blocks_issues - DISABLED
                         parse_result.tool_home_status,
                         json.dumps(parse_result.tool_home_issues) if parse_result.tool_home_issues else None,
+                        parse_result.feasibility_status,
+                        json.dumps(parse_result.feasibility_issues) if parse_result.feasibility_issues else None,
+                        json.dumps(parse_result.feasibility_warnings) if parse_result.feasibility_warnings else None,
+                        json.dumps(parse_result.crash_issues) if parse_result.crash_issues else None,
+                        json.dumps(parse_result.crash_warnings) if parse_result.crash_warnings else None,
                         prog_num
                     ))
                     success += 1

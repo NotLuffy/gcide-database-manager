@@ -3926,15 +3926,16 @@ class ImprovedGCodeParser:
 
     def _validate_bore_pass_steps(self, result: GCodeParseResult, lines: list):
         """
-        Validate T121 BORE pass X step size.
-        Consecutive bore passes must not exceed 0.300" diameter step.
-        Violations are stored in validation_warnings (YELLOW).
+        Validate T121 BORE pass X step size and bore entry position.
+        - Consecutive bore passes must not exceed 0.300" diameter step.
+        - First bore pass must start at X2.300 or less (safe entry after drill).
+        Violations are stored in bore_warnings (ORANGE) so they appear as BORE_WARNING.
         """
         try:
             validator = BorePassStepsValidator()
             warnings, notes = validator.validate_file(lines)
             if warnings:
-                result.validation_warnings.extend(warnings)
+                result.bore_warnings.extend(warnings)
             if notes:
                 result.detection_notes.extend(notes)
         except Exception as e:
