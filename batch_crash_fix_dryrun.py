@@ -35,15 +35,16 @@ from gcode_auto_fixer import AutoFixer
 # ─────────────────────────────────────────────────────────────────────────────
 def run_all_passes(content: str):
     """
-    Run all 4 crash-fix passes on content and return
-    (fixed_content, changes_offset, changes_explicit, changes_modal, changes_feed).
+    Run all 5 crash-fix passes on content and return
+    (fixed_content, changes_offset, changes_explicit, changes_modal, changes_feed, changes_z0).
     No files are written.
     """
     fixed, chg_offset   = AutoFixer.fix_work_offset_z_clearance(content)
     fixed, chg_explicit = AutoFixer.fix_rapid_to_negative_z(fixed)
     fixed, chg_modal    = AutoFixer.fix_modal_g00_z_plunge(fixed)
     fixed, chg_feed     = AutoFixer.fix_g01_missing_feedrate(fixed)
-    return fixed, chg_offset, chg_explicit, chg_modal, chg_feed
+    fixed, chg_z0       = AutoFixer.fix_bare_z0_approach(fixed)
+    return fixed, chg_offset, chg_explicit, chg_modal, chg_feed, chg_z0
 
 
 def format_section(label, changes):
@@ -124,8 +125,8 @@ def main():
         with open(file_path, 'r', encoding='utf-8', errors='ignore') as fh:
             original = fh.read()
 
-        fixed, chg_off, chg_exp, chg_mod, chg_feed = run_all_passes(original)
-        all_changes = chg_off + chg_exp + chg_mod + chg_feed
+        fixed, chg_off, chg_exp, chg_mod, chg_feed, chg_z0 = run_all_passes(original)
+        all_changes = chg_off + chg_exp + chg_mod + chg_feed + chg_z0
         n = len(all_changes)
 
         if n == 0:
@@ -147,6 +148,7 @@ def main():
         if chg_exp:   change_types.append('explicit_g00')
         if chg_mod:   change_types.append('modal_g00')
         if chg_feed:  change_types.append('g01_missing_f')
+        if chg_z0:    change_types.append('bare_z0_chamfer')
 
         csv_rows.append({
             'program':   program_number,
@@ -156,10 +158,11 @@ def main():
         })
 
         sections = '\n'.join(filter(None, [
-            format_section('Work-offset Z clearance',    chg_off),
-            format_section('Explicit G00 rapids',        chg_exp),
-            format_section('Modal G00 bare-Z plunges',   chg_mod),
-            format_section('G01 transition missing F',   chg_feed),
+            format_section('Work-offset Z clearance',       chg_off),
+            format_section('Explicit G00 rapids',           chg_exp),
+            format_section('Modal G00 bare-Z plunges',      chg_mod),
+            format_section('G01 transition missing F',      chg_feed),
+            format_section('Bare Z0 chamfer approach',      chg_z0),
         ]))
 
         report_lines += [

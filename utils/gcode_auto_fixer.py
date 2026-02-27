@@ -111,10 +111,10 @@ class AutoFixer:
         indent = line[:len(line) - len(line.lstrip())]
         if last_z is None or last_z > 0.2:
             clearance_line = f"{indent}G00 Z0.2"
-            desc = (f"Line {line_num}: G00 Z{z_val} → G00 Z0.2 + G01 Z{z_val} F{feedrate}")
+            desc = (f"Line {line_num}: G00 Z{z_val} -> G00 Z0.2 + G01 Z{z_val} F{feedrate}")
         else:
             clearance_line = None
-            desc = f"Line {line_num}: G00 Z{z_val} → G01 Z{z_val} F{feedrate}"
+            desc = f"Line {line_num}: G00 Z{z_val} -> G01 Z{z_val} F{feedrate}"
 
         return clearance_line, fixed_line, desc
 
@@ -177,7 +177,7 @@ class AutoFixer:
     # Patterns shared by fix_modal_g00_z_plunge and fix_work_offset_z_clearance
     _G_CODE_PAT      = re.compile(r'\b(G0*[0-3])(?!\d)', re.IGNORECASE)  # (?!\d) handles G01Z (no space)
     _X_PAT           = re.compile(r'X(-?\d+\.?\d*)', re.IGNORECASE)
-    _WORK_OFFSET_PAT = re.compile(r'\b(G55|G154\s*P\d+|G155)\b', re.IGNORECASE)
+    _WORK_OFFSET_PAT = re.compile(r'\b(G55|G154\s*P\d+|G155)', re.IGNORECASE)  # no trailing \b: handles G154 P20G00 (combined format)
     _Z_WORD_PAT      = re.compile(r'Z(-?\d+\.?\d*)', re.IGNORECASE)
     _CANNED_PAT      = re.compile(r'\bG8[0-9]\b', re.IGNORECASE)   # G80-G89 canned cycles
 
@@ -240,12 +240,12 @@ class AutoFixer:
                             indent = line[:len(line) - len(line.lstrip())]
                             output.append(f"{indent}G00 Z0.2")
                             changes.append(
-                                f"Line {line_num}: work offset Z{z_val} → Z1."
+                                f"Line {line_num}: work offset Z{z_val} -> Z1."
                                 f" + G00 Z0.2  [{code_part.strip()[:50]}]"
                             )
                         else:
                             changes.append(
-                                f"Line {line_num}: work offset Z{z_val} → Z1."
+                                f"Line {line_num}: work offset Z{z_val} -> Z1."
                                 f"  [{code_part.strip()[:50]}]"
                             )
                         continue
@@ -334,8 +334,15 @@ class AutoFixer:
                     feedrate = _lookahead_f(i + 1)
                     indent   = line[:len(line) - len(line.lstrip())]
 
-                    # 1. Safe clearance approach
-                    output.append(f"{indent}G00 Z0.2")
+                    # 1. Safe clearance approach (skip if already present)
+                    last_real = ''
+                    for prev_line in reversed(output):
+                        s = prev_line.strip()
+                        if s and not s.startswith('(') and not s.startswith('%'):
+                            last_real = s.upper()
+                            break
+                    if last_real != 'G00 Z0.2':
+                        output.append(f"{indent}G00 Z0.2")
 
                     # 2. Controlled feed line (preserve any inline comment)
                     code_stripped = code_part.strip()
@@ -346,9 +353,14 @@ class AutoFixer:
                         fixed += ' ' + line[line.index('('):]
 
                     output.append(fixed)
-                    changes.append(
-                        f"Line {i + 1}: modal G00 Z{z_val} → G00 Z0.2 + G01 Z{z_val} F{feedrate}"
-                    )
+                    if last_real == 'G00 Z0.2':
+                        changes.append(
+                            f"Line {i + 1}: modal G00 Z{z_val} -> G01 Z{z_val} F{feedrate} (clearance already present)"
+                        )
+                    else:
+                        changes.append(
+                            f"Line {i + 1}: modal G00 Z{z_val} -> G00 Z0.2 + G01 Z{z_val} F{feedrate}"
+                        )
                     last_z = z_val
                     continue
 
@@ -409,16 +421,92 @@ class AutoFixer:
                 raw_g  = g_match.group(1).upper()
                 new_g  = ('G0' + raw_g[-1]) if len(raw_g) == 2 else raw_g
 
-                # G00→G01 (or G02/G03→G01, or None→G01) transition without F
+                # G00->G01 (or G02/G03->G01, or None->G01) transition without F
                 if new_g == 'G01' and active_g != 'G01':
                     if not AutoFixer._F_PAT.search(code_part):
                         line = AutoFixer._inject_feedrate(line, '0.008')
                         changes.append(
-                            f"Line {i}: G01 transition missing F → added F0.008"
+                            f"Line {i}: G01 transition missing F -> added F0.008"
                             f"  [{code_part.strip()[:50]}]"
                         )
 
                 active_g = new_g
+
+            output.append(line)
+
+        return '\n'.join(output), changes
+
+    @staticmethod
+    def fix_bare_z0_approach(content: str) -> Tuple[str, List[str]]:
+        """
+        Pass 4: Convert bare Z0/Z0./Z0.0 lines in T121 CHAMFER blocks to
+        G01 Z0.0 F0.008, inserting G00 Z0.2 first if not already present.
+
+        Two sub-cases (both require T121 CHAMFER/CHAMPHER section):
+          A) Previous real line is 'G00 Z0.2' -> convert only
+          B) Previous real line has Z > 0.2 (no clearance) -> insert G00 Z0.2 + convert
+
+        Immune: T303 Z0. moves (not in CHAMFER block), bore section Z0 lines
+        that already have a G-prefix, Z0.1/Z0.2 etc. (regex requires exact Z=0).
+        """
+        import re
+        z0_exact = re.compile(r'^Z0\.?0*$', re.IGNORECASE)
+        z_val_pat = re.compile(r'Z([\-\d\.]+)', re.IGNORECASE)
+        t_comment = re.compile(r'^T\d+\s*\(([^)]*)\)', re.IGNORECASE)
+
+        lines = content.splitlines()
+        output = []
+        changes = []
+
+        in_chamfer = False  # True when inside a T121 CHAMFER/CHAMPHER block
+
+        def prev_real(out):
+            """Return the last non-blank, non-comment line written to output."""
+            for l in reversed(out):
+                s = l.strip()
+                if s and not s.startswith('(') and not s.startswith('%'):
+                    return s
+            return ''
+
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            upper = stripped.upper()
+
+            # Track active tool block
+            tm = t_comment.match(stripped)
+            if tm:
+                comment = tm.group(1).upper()
+                if 'T121' in upper or stripped.upper().startswith('T121'):
+                    in_chamfer = ('CHAMFER' in comment or 'CHAMPHER' in comment)
+                elif stripped.upper().startswith('T'):
+                    in_chamfer = False  # different tool resets flag
+
+            # Only act on exact bare Z0/Z0./Z0.0 lines — z0_exact anchored regex
+            # already guarantees the line is ONLY a Z=0 word with nothing else
+            if in_chamfer and z0_exact.match(stripped):
+                prev = prev_real(output)
+                indent = line[:len(line) - len(line.lstrip())]
+
+                if prev.upper() == 'G00 Z0.2':
+                    # Sub-case A: clearance already present — just convert
+                    output.append(f"{indent}G01 Z0.0 F0.008")
+                    changes.append(f"Line {i+1}: bare {stripped} -> G01 Z0.0 F0.008 (clearance already present)")
+                    continue
+                else:
+                    # Sub-case B: check if previous line had Z > 0.2 (came from clearance height)
+                    zm = z_val_pat.search(prev)
+                    if zm:
+                        try:
+                            pz = float(zm.group(1))
+                        except ValueError:
+                            pz = 0.0
+                        if pz > 0.2:
+                            output.append(f"{indent}G00 Z0.2")
+                            output.append(f"{indent}G01 Z0.0 F0.008")
+                            changes.append(
+                                f"Line {i+1}: bare {stripped} after Z{pz} -> inserted G00 Z0.2 + G01 Z0.0 F0.008"
+                            )
+                            continue
 
             output.append(line)
 
