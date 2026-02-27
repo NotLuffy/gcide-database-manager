@@ -173,7 +173,9 @@ def main():
         ]
 
         if apply_mode:
-            backup = file_path + '.crash_fix_backup'
+            backup_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'archive', 'crash_fix_backups')
+            os.makedirs(backup_dir, exist_ok=True)
+            backup = os.path.join(backup_dir, os.path.basename(file_path) + '.crash_fix_backup')
             shutil.copy2(file_path, backup)
             with open(file_path, 'w', encoding='utf-8') as fh:
                 fh.write(fixed)

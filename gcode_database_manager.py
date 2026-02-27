@@ -5830,7 +5830,9 @@ class GCodeDatabaseGUI:
 
         # Backup
         import shutil
-        backup_path = file_path + '.crash_fix_backup'
+        _backup_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'archive', 'crash_fix_backups')
+        os.makedirs(_backup_dir, exist_ok=True)
+        backup_path = os.path.join(_backup_dir, os.path.basename(file_path) + '.crash_fix_backup')
         shutil.copy2(file_path, backup_path)
 
         with open(file_path, 'w', encoding='utf-8') as f:
